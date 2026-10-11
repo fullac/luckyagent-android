@@ -540,28 +540,69 @@ class LuckyAgentApi(
 
     suspend fun listGateways(): Result<List<GatewayStatus>> = withContext(Dispatchers.IO) {
         runCatching {
-            val paths = listOf("/api/v1/gateways", "/api/v1/msg-gateway")
-            var lastError: Throwable? = null
-            for (p in paths) {
-                try {
-                    val request = Request.Builder().url(url(p)).get().build()
-                    client.newCall(request).execute().use { resp ->
-                        val body = resp.body?.string().orEmpty()
-                        if (!resp.isSuccessful) error("gateways ${resp.code}: $body")
-                        val decoded = json.decodeFromString(GatewaysResponse.serializer(), body)
-                        val list = when {
-                            decoded.gateways.isNotEmpty() -> decoded.gateways
-                            decoded.items.isNotEmpty() -> decoded.items
-                            else -> emptyList()
-                        }
-                        return@runCatching list
-                    }
-                } catch (t: Throwable) {
-                    lastError = t
+            val request = Request.Builder().url(url("/api/v1/gateways")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("gateways ${resp.code}: $body")
+                val decoded = json.decodeFromString(GatewaysResponse.serializer(), body)
+                when {
+                    decoded.gateways.isNotEmpty() -> decoded.gateways
+                    decoded.items.isNotEmpty() -> decoded.items
+                    else -> emptyList()
                 }
             }
-            throw lastError ?: error("gateways unavailable")
         }
+    }
+
+    /** Starts a gateway in the host `lh serve` process. Other settings are read from host config. */
+    suspend fun startGateway(platform: String, token: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val name = normalizeGatewayName(platform)
+            val payload = json.encodeToString(
+                GatewayStartRequest.serializer(),
+                GatewayStartRequest(token = token?.trim()?.takeIf { it.isNotEmpty() }),
+            )
+            val request = Request.Builder()
+                .url(url("/api/v1/gateways/$name/start"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("start gateway $name ${resp.code}: ${gatewayError(body)}")
+            }
+        }
+    }
+
+    /** Stops a gateway that is registered in the host `lh serve` process. */
+    suspend fun stopGateway(platform: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val name = normalizeGatewayName(platform)
+            val request = Request.Builder()
+                .url(url("/api/v1/gateways/$name/stop"))
+                .post("".toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("stop gateway $name ${resp.code}: ${gatewayError(body)}")
+            }
+        }
+    }
+
+    private fun normalizeGatewayName(platform: String): String {
+        val name = platform.trim().lowercase()
+        require(name.isNotEmpty() && name.all { it.isLetterOrDigit() || it == '-' || it == '_' }) {
+            "invalid gateway name"
+        }
+        return name
+    }
+
+    private fun gatewayError(body: String): String {
+        if (body.isBlank()) return "request failed"
+        return runCatching {
+            json.decodeFromString(GatewayErrorResponse.serializer(), body).error
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: body.take(500)
     }
 
     suspend fun listSkills(): Result<SkillsResponse> = withContext(Dispatchers.IO) {
@@ -698,6 +739,39 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun listBlackboard(taskId: String): Result<List<BlackboardEntry>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(taskId.isNotBlank()) { "task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/agents/blackboard", mapOf("task_id" to taskId)))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("blackboard ${resp.code}: $body")
+                json.decodeFromString(BlackboardResponse.serializer(), body).items
+            }
+        }
+    }
+
+    suspend fun listAgentMessages(taskId: String, limit: Int = 50): Result<List<AgentMessage>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(taskId.isNotBlank()) { "task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/agents/messages", mapOf(
+                    "task_id" to taskId,
+                    "limit" to limit.coerceIn(1, 200).toString(),
+                )))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("agent messages ${resp.code}: $body")
+                json.decodeFromString(AgentMessagesResponse.serializer(), body).messages
+            }
+        }
+    }
+
     suspend fun getTaskResult(id: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             require(id.isNotBlank()) { "task id required" }
@@ -706,6 +780,19 @@ class LuckyAgentApi(
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("task result ${resp.code}: $body")
                 json.decodeFromString(TaskResultResponse.serializer(), body).result
+            }
+        }
+    }
+
+    /** Planner/MDP trace for a task. Older tasks legitimately return 404. */
+    suspend fun getTaskTrace(id: String): Result<kotlinx.serialization.json.JsonElement> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/trace")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task trace ${resp.code}: $body")
+                json.parseToJsonElement(body)
             }
         }
     }

@@ -9,8 +9,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -19,7 +21,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,12 +34,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.luckyagent.android.ui.theme.CloverBgSide
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText2
@@ -56,6 +65,7 @@ private val BRIDGE_KEY = "mermaid-bridge".hashCode()
 internal fun MermaidView(source: String) {
     var failed by remember(source) { mutableStateOf(false) }
     var heightPx by remember(source) { mutableIntStateOf(0) }
+    var expanded by remember(source) { mutableStateOf(false) }
     if (failed || source.isBlank()) {
         SourceBlock(source)
         return
@@ -77,48 +87,115 @@ internal fun MermaidView(source: String) {
             .then(heightModifier)
             .background(CloverBgSide, RoundedCornerShape(8.dp))
             .border(1.dp, CloverLine, RoundedCornerShape(8.dp))
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+            .clickable(onClick = { expanded = true }),
     ) {
-        AndroidView(
+        MermaidWebView(
+            source = source,
+            background = background,
+            foreground = foreground,
+            line = line,
+            zoomable = false,
             modifier = Modifier.fillMaxWidth(),
-            factory = { context ->
-                WebView(context).apply {
-                    setBackgroundColor(0)
-                    settings.javaScriptEnabled = true
-                    settings.allowFileAccess = true
-                    settings.blockNetworkLoads = true
-                    val bridge = MermaidBridge(
-                        onRendered = { px -> heightPx = px },
-                        onFailed = { failed = true },
-                    )
-                    addJavascriptInterface(bridge, "MermaidBridge")
-                    setTag(BRIDGE_KEY, bridge)
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView, url: String) {
-                            view.render(source, background, foreground, line, bridge)
-                        }
-
-                        override fun shouldInterceptRequest(
-                            view: WebView,
-                            request: android.webkit.WebResourceRequest,
-                        ): WebResourceResponse? {
-                            val url = request.url?.toString().orEmpty()
-                            if (url.startsWith("file:///android_asset/mermaid/")) return null
-                            return WebResourceResponse("text/plain", "utf-8", null)
-                        }
-                    }
-                    loadUrl("file:///android_asset/mermaid/index.html")
-                }
-            },
-            update = { webView ->
-                val bridge = webView.getTag(BRIDGE_KEY) as? MermaidBridge ?: return@AndroidView
-                webView.evaluateJavascript("window.__ready === true") { ready ->
-                    if (ready == "true") webView.render(source, background, foreground, line, bridge)
-                }
-            },
-            onRelease = { it.destroy() },
+            onRendered = { heightPx = it },
+            onFailed = { failed = true },
+            onClick = { expanded = true },
         )
     }
+    if (expanded) {
+        Dialog(
+            onDismissRequest = { expanded = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(CloverBgSide),
+            ) {
+                MermaidWebView(
+                    source = source,
+                    background = background,
+                    foreground = foreground,
+                    line = line,
+                    zoomable = true,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp),
+                    onRendered = {},
+                    onFailed = { expanded = false },
+                    onClick = {},
+                )
+                IconButton(
+                    onClick = { expanded = false },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp),
+                ) {
+                    Icon(Icons.Outlined.Close, contentDescription = "关闭 Mermaid 放大预览")
+                }
+            }
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun MermaidWebView(
+    source: String,
+    background: Int,
+    foreground: Int,
+    line: Int,
+    zoomable: Boolean,
+    modifier: Modifier,
+    onRendered: (Int) -> Unit,
+    onFailed: () -> Unit,
+    onClick: () -> Unit,
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            WebView(context).apply {
+                setBackgroundColor(0)
+                settings.javaScriptEnabled = true
+                settings.allowFileAccess = true
+                settings.blockNetworkLoads = true
+                if (zoomable) {
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                }
+                setOnClickListener { onClick() }
+                val bridge = MermaidBridge(
+                    onRendered = onRendered,
+                    onFailed = onFailed,
+                )
+                addJavascriptInterface(bridge, "MermaidBridge")
+                setTag(BRIDGE_KEY, bridge)
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView, url: String) {
+                        view.render(source, background, foreground, line, bridge)
+                    }
+
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: android.webkit.WebResourceRequest,
+                    ): WebResourceResponse? {
+                        val url = request.url?.toString().orEmpty()
+                        if (url.startsWith("file:///android_asset/mermaid/")) return null
+                        return WebResourceResponse("text/plain", "utf-8", null)
+                    }
+                }
+                loadUrl("file:///android_asset/mermaid/index.html")
+            }
+        },
+        update = { webView ->
+            val bridge = webView.getTag(BRIDGE_KEY) as? MermaidBridge ?: return@AndroidView
+            webView.evaluateJavascript("window.__ready === true") { ready ->
+                if (ready == "true") webView.render(source, background, foreground, line, bridge)
+            }
+        },
+        onRelease = { it.destroy() },
+    )
 }
 
 private fun WebView.render(

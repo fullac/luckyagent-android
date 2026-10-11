@@ -9,14 +9,35 @@ package com.luckyagent.android.ui.components
  */
 internal const val HTML_MAX_DEPTH = 8
 
-private val ALLOWED = setOf("b", "strong", "i", "em", "code", "br", "p", "a", "details", "summary")
+private val ALLOWED = setOf("b", "strong", "i", "em", "code", "br", "p", "a", "span", "details", "summary")
 private val VOID_TAGS = setOf("br")
+
+internal enum class HtmlColor {
+    ACCENT,
+    MUTED,
+    SUCCESS,
+    WARNING,
+    ERROR,
+    ;
+
+    companion object {
+        fun parse(value: String): HtmlColor? = when (value.trim().lowercase()) {
+            "accent" -> ACCENT
+            "muted" -> MUTED
+            "success" -> SUCCESS
+            "warning" -> WARNING
+            "error" -> ERROR
+            else -> null
+        }
+    }
+}
 
 internal sealed class HtmlNode {
     data class Text(val value: String) : HtmlNode()
     data class Element(
         val tag: String,
         val href: String? = null,
+        val color: HtmlColor? = null,
         val children: List<HtmlNode> = emptyList(),
     ) : HtmlNode()
 }
@@ -30,7 +51,7 @@ internal fun parseHtml(source: String): List<HtmlNode>? {
 
 private sealed class Tok {
     data class Text(val value: String) : Tok()
-    data class Open(val tag: String, val href: String?) : Tok()
+    data class Open(val tag: String, val href: String?, val color: HtmlColor?) : Tok()
     data class Close(val tag: String) : Tok()
 }
 
@@ -60,9 +81,11 @@ private fun tokenize(source: String): List<Tok>? {
             val href = if (tag == "a") linkHref(body) else null
             if (tag == "a" && href == null && body.contains("href", ignoreCase = true)) {
                 // An href was present but not http(s). Keep the words, drop the link.
-                out += Tok.Open("a", null)
+                out += Tok.Open("a", null, null)
             } else {
-                out += Tok.Open(tag, href)
+                val color = if (tag == "span") parseSpanColor(body) else null
+                if (tag == "span" && spanHasUnsupportedAttributes(body, color)) return null
+                out += Tok.Open(tag, href, color)
             }
             if (selfClose || tag in VOID_TAGS) out += Tok.Close(tag)
         }
@@ -79,8 +102,32 @@ private fun linkHref(body: String): String? {
     return href.takeIf { it.startsWith("http://") || it.startsWith("https://") }
 }
 
+private val spanColorAttribute = Regex(
+    """data-color\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""",
+    RegexOption.IGNORE_CASE,
+)
+
+private fun parseSpanColor(body: String): HtmlColor? {
+    val match = spanColorAttribute.find(body) ?: return null
+    val value = (match.groupValues[1].ifEmpty { match.groupValues[2] })
+        .ifEmpty { match.groupValues[3] }
+    return HtmlColor.parse(unescape(value))
+}
+
+private fun spanHasUnsupportedAttributes(body: String, color: HtmlColor?): Boolean {
+    val attributes = body.substringAfter(' ', "").trim()
+    if (attributes.isEmpty()) return false
+    if (color == null) return true
+    return spanColorAttribute.replace(attributes, "").trim().isNotEmpty()
+}
+
 private fun buildTree(tokens: List<Tok>): List<HtmlNode>? {
-    data class Frame(val tag: String, val href: String?, val children: MutableList<HtmlNode>)
+    data class Frame(
+        val tag: String,
+        val href: String?,
+        val color: HtmlColor?,
+        val children: MutableList<HtmlNode>,
+    )
     val root = mutableListOf<HtmlNode>()
     val stack = ArrayDeque<Frame>()
     fun add(node: HtmlNode) {
@@ -92,12 +139,12 @@ private fun buildTree(tokens: List<Tok>): List<HtmlNode>? {
             is Tok.Text -> if (tok.value.isNotEmpty()) add(HtmlNode.Text(tok.value))
             is Tok.Open -> {
                 if (stack.size >= HTML_MAX_DEPTH) return null
-                stack.addLast(Frame(tok.tag, tok.href, mutableListOf()))
+                stack.addLast(Frame(tok.tag, tok.href, tok.color, mutableListOf()))
             }
             is Tok.Close -> {
                 val frame = stack.removeLastOrNull() ?: return null
                 if (frame.tag != tok.tag) return null
-                add(HtmlNode.Element(frame.tag, frame.href, frame.children.toList()))
+                add(HtmlNode.Element(frame.tag, frame.href, frame.color, frame.children.toList()))
             }
         }
     }

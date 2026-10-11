@@ -6,7 +6,8 @@
 
 只画允许列表里的标签。其余整段保持原文。
 
-- 允许：`b` `strong` `i` `em` `code` `br` `p` `a` `details` `summary`。
+- 允许：`b` `strong` `i` `em` `code` `br` `p` `a` `span` `details` `summary`。
+- `span` 只接受 `data-color` 语义颜色：`accent`、`muted`、`success`、`warning`、`error`；不接受任意 `style` 或 CSS。
 - 行内标签先转成已有的 Markdown 标记，再走原来的上色。
 - `a` 只留 `http` `https`。别的只显示文字。
 - `details` 用 `rememberSaveable` 记住开合，默认收起。
@@ -16,12 +17,12 @@
 
 ## 不做
 
-- 不执行脚本，不加载远程资源，不读 `style`。
+- 不执行脚本，不加载远程资源，不读 `style` 或 `class`。
 - 不支持 HTML 的 `table` `img`。表格和图片继续走 Markdown。
 - 不改服务端，不改桌面 GUI。
 
 ## 验收
 
-`HtmlInlineTest` 9 条、`MarkdownParserTest` 里的围栏和 details 都过了。
+`HtmlInlineTest` 13 条、`MarkdownParserTest` 里的围栏和 details 都过了。
 
 还没在设备上点过链接和 details 的开合。

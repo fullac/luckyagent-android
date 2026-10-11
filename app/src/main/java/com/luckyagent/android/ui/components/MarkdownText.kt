@@ -32,6 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -41,16 +42,17 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.ui.theme.CloverBgSide
+import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
+import com.luckyagent.android.ui.theme.CloverWarning
 
 /**
  * Lightweight Markdown renderer: bold, italic, inline code, fenced code blocks,
@@ -91,7 +93,6 @@ fun MarkdownText(
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 color = CloverText2,
-                                lineHeight = 18.sp,
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -258,6 +259,19 @@ private fun sameOrigin(source: String, baseUrl: String): Boolean {
 
 private fun defaultPort(scheme: String?): Int = if (scheme.equals("https", true)) 443 else 80
 
+private const val HTML_COLOR_MARKER = "\u0002color:"
+private const val HTML_COLOR_END_MARKER = "\u0002/color\u0003"
+private const val HTML_COLOR_MARKER_END = "\u0003"
+
+@Composable
+private fun htmlColorPalette(): Map<String, Color> = mapOf(
+    "accent" to MaterialTheme.colorScheme.primary,
+    "muted" to MaterialTheme.colorScheme.onSurfaceVariant,
+    "success" to CloverAccent,
+    "warning" to CloverWarning,
+    "error" to MaterialTheme.colorScheme.error,
+)
+
 @Composable
 private fun RichMarkdownText(
     text: String,
@@ -267,29 +281,28 @@ private fun RichMarkdownText(
 ) {
     val rendered = remember(text) { renderHtmlInline(text) }
     val pieces = remember(rendered) { splitInlineMath(rendered) }
+    val htmlColors = htmlColorPalette()
     if (pieces.none { it.math }) {
-        LinkedText(text = inlineMarkdown(rendered), style = style, color = color, modifier = modifier)
+        LinkedText(text = inlineMarkdown(rendered, htmlColors), style = style, color = color, modifier = modifier)
         return
     }
     Column(modifier) {
         pieces.chunkedByText().forEach { row ->
             if (row.size == 1 && row[0].math && row[0].displayFence) {
-                LatexView(latex = row[0].value, display = true, color = color)
+                LatexBlock(latex = row[0].value, display = true, color = color)
             } else {
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    row.forEach { piece ->
+                InlineMathText(
+                    runs = row.map { piece ->
                         if (piece.math) {
-                            LatexView(
-                                latex = piece.value,
-                                display = piece.displaySize,
-                                inline = true,
-                                color = color,
-                            )
-                        } else if (piece.value.isNotEmpty()) {
-                            LinkedText(text = inlineMarkdown(piece.value), style = style, color = color)
+                            InlineMathRun.Math(piece.value, piece.displaySize)
+                        } else {
+                            InlineMathRun.Text(inlineMarkdown(piece.value, htmlColors))
                         }
-                    }
-                }
+                    },
+                    style = style,
+                    color = color,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
@@ -335,7 +348,7 @@ private fun List<InlinePiece>.chunkedByText(): List<List<InlinePiece>> {
         if (!piece.math && piece.value.contains('\n')) {
             val parts = piece.value.split('\n')
             parts.forEachIndexed { index, part ->
-                if (part.isNotEmpty()) current += InlinePiece(part)
+                if (part.isNotEmpty()) current += piece.copy(value = part)
                 if (index < parts.lastIndex) {
                     if (current.isNotEmpty()) rows += current
                     current = mutableListOf()
@@ -382,34 +395,62 @@ private val inlinePattern = Regex(
     """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[\s\S]+?\$\$)|(\$(?:\\\$|[^$\n])+\$)|(\[[^\]]+\]\([^)]+\))"""
 )
 
-private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+private val htmlColorMarkerPattern = Regex(
+    "${Regex.escape(HTML_COLOR_MARKER)}([a-z]+)${Regex.escape(HTML_COLOR_MARKER_END)}|" +
+        Regex.escape(HTML_COLOR_END_MARKER),
+)
+
+private fun inlineMarkdown(
+    text: String,
+    htmlColors: Map<String, Color> = emptyMap(),
+): AnnotatedString = buildAnnotatedString {
+    val colorStack = ArrayDeque<Color>()
+    var cursor = 0
+    for (marker in htmlColorMarkerPattern.findAll(text)) {
+        if (marker.range.first > cursor) {
+            appendMarkdownSegment(text.substring(cursor, marker.range.first), colorStack.lastOrNull())
+        }
+        val name = marker.groupValues.getOrNull(1).orEmpty()
+        if (name.isNotEmpty()) {
+            htmlColors[name]?.let(colorStack::addLast)
+        } else if (colorStack.isNotEmpty()) {
+            colorStack.removeLast()
+        }
+        cursor = marker.range.last + 1
+    }
+    if (cursor < text.length) appendMarkdownSegment(text.substring(cursor), colorStack.lastOrNull())
+}
+
+private fun AnnotatedString.Builder.appendMarkdownSegment(text: String, color: Color?) {
     // patterns: **bold**, *italic*, `code`, [label](url)
     val pattern = Regex(
         """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[^$]+\$\$)|(\$[^$]+\$)|(\[[^\]]+\]\([^)]+\))"""
     )
+    fun styled(style: SpanStyle, body: AnnotatedString.Builder.() -> Unit) {
+        if (color == null) withStyle(style, body) else withStyle(SpanStyle(color = color).merge(style), body)
+    }
     var last = 0
     for (m in pattern.findAll(text)) {
-        if (m.range.first > last) append(text.substring(last, m.range.first))
+        if (m.range.first > last) {
+            if (color == null) append(text.substring(last, m.range.first))
+            else withStyle(SpanStyle(color = color)) { append(text.substring(last, m.range.first)) }
+        }
         val token = m.value
         when {
             token.startsWith("**") && token.endsWith("**") -> {
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                    append(token.removeSurrounding("**"))
-                }
+                styled(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.removeSurrounding("**")) }
             }
             token.startsWith("`") && token.endsWith("`") -> {
-                withStyle(
+                styled(
                     SpanStyle(
                         fontFamily = FontFamily.Monospace,
                         background = Color(0x143F8A37),
                     ),
                 ) { append(token.removeSurrounding("`")) }
             }
-            token.startsWith("$") -> append(renderLatex(token.trim('$')))
+            token.startsWith("$") -> styled(SpanStyle()) { append(renderLatex(token.trim('$'))) }
             token.startsWith("*") && token.endsWith("*") -> {
-                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                    append(token.removeSurrounding("*"))
-                }
+                styled(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.removeSurrounding("*")) }
             }
             token.startsWith("[") -> {
                 val lm = Regex("""\[([^\]]+)\]\(([^)]+)\)""").matchEntire(token)
@@ -424,14 +465,19 @@ private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString
                     ) { append(lm.groupValues[1]) }
                     pop()
                 } else if (lm != null) {
-                    append(lm.groupValues[1])
-                } else append(token)
+                    if (color == null) append(lm.groupValues[1])
+                    else withStyle(SpanStyle(color = color)) { append(lm.groupValues[1]) }
+                } else appendStyledText(token, color)
             }
-            else -> append(token)
+            else -> appendStyledText(token, color)
         }
         last = m.range.last + 1
     }
-    if (last < text.length) append(text.substring(last))
+    if (last < text.length) appendStyledText(text.substring(last), color)
+}
+
+private fun AnnotatedString.Builder.appendStyledText(text: String, color: Color?) {
+    if (color == null) append(text) else withStyle(SpanStyle(color = color)) { append(text) }
 }
 
 
@@ -456,6 +502,9 @@ private fun renderNode(node: HtmlNode): String = when (node) {
             "br" -> " "
             "p" -> inner
             "a" -> if (node.href != null) "[$inner](${node.href})" else inner
+            "span" -> node.color?.let { color ->
+                "$HTML_COLOR_MARKER${color.name.lowercase()}$HTML_COLOR_MARKER_END$inner$HTML_COLOR_END_MARKER"
+            } ?: inner
             else -> inner
         }
     }
@@ -468,19 +517,20 @@ private fun HtmlBlock(source: String, color: Color) {
         Text(text = source, color = color, style = MaterialTheme.typography.bodyLarge)
         return
     }
+    val htmlColors = htmlColorPalette()
     Column {
-        nodes.forEach { node -> HtmlNodeView(node, color) }
+        nodes.forEach { node -> HtmlNodeView(node, color, htmlColors) }
     }
 }
 
 @Composable
-private fun HtmlNodeView(node: HtmlNode, color: Color) {
+private fun HtmlNodeView(node: HtmlNode, color: Color, htmlColors: Map<String, Color>) {
     when (node) {
         is HtmlNode.Text -> if (node.value.isNotBlank()) {
             RichMarkdownText(text = node.value, color = color)
         }
         is HtmlNode.Element -> when (node.tag) {
-            "details" -> DetailsView(node, color)
+            "details" -> DetailsView(node, color, htmlColors)
             "br" -> Spacer(Modifier.height(8.dp))
             else -> RichMarkdownText(text = renderNode(node), color = color)
         }
@@ -488,7 +538,7 @@ private fun HtmlNodeView(node: HtmlNode, color: Color) {
 }
 
 @Composable
-private fun DetailsView(node: HtmlNode.Element, color: Color) {
+private fun DetailsView(node: HtmlNode.Element, color: Color, htmlColors: Map<String, Color>) {
     val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" }
         ?.let { (it as HtmlNode.Element).children.joinToString("") { child -> renderNode(child) } }
         ?: "详情"
@@ -496,10 +546,17 @@ private fun DetailsView(node: HtmlNode.Element, color: Color) {
     var open by rememberSaveable(node) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         TextButton(onClick = { open = !open }) {
-            Text(text = (if (open) "▾ " else "▸ ") + summary, color = color)
+            androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = if (open) "▾ " else "▸ ", color = color)
+                LinkedText(
+                    text = inlineMarkdown(summary, htmlColors),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = color,
+                )
+            }
         }
         if (open) {
-            body.forEach { HtmlNodeView(it, color) }
+            body.forEach { HtmlNodeView(it, color, htmlColors) }
         }
     }
 }

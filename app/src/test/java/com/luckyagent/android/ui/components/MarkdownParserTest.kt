@@ -222,15 +222,11 @@ class MarkdownParserTest {
     }
 
     @Test
-    fun streamingMermaidStaysSourceUntilItsOwnFenceCloses() {
-        val blocks = splitMarkdownBlocks("```mermaid\nflowchart LR\n  A-->B\n```kotlin\nval x = 1\n```")
-        val res = MarkdownParserTest::class.java.classLoader.getResource("com/luckyagent/android/ui/components/MarkdownParserKt.class")
-        println("RESOURCE " + res)
-        println("COUNT " + blocks.size); blocks.forEach { println("BLOCK " + it::class.simpleName + " " + it.toString().replace("\n", "|")) }
+    fun adjacentFencesRemainSeparate() {
+        val blocks = splitMarkdownBlocks("```mermaid\nflowchart LR\n  A-->B\n```\n```kotlin\nval x = 1\n```")
 
-        val first = blocks[0] as MdBlock.Code
-        assertEquals("mermaid", first.lang)
-        assertTrue(first.body.contains("A-->B"))
+        val first = blocks[0] as MdBlock.Mermaid
+        assertTrue(first.source.contains("A-->B"))
         assertEquals("kotlin", (blocks[1] as MdBlock.Code).lang)
         assertEquals("val x = 1", (blocks[1] as MdBlock.Code).body)
     }

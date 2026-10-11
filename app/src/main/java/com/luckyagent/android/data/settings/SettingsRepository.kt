@@ -45,6 +45,10 @@ data class ClientSettings(
     val chromeOpacity: Int = 62,
     val cardOpacity: Int = 82,
     val drawerOpacity: Int = 90,
+    /** App text scale, persisted locally and applied to the Material typography. */
+    val fontScale: Float = 1.0f,
+    /** `serif` uses the Android Noto Serif CJK fallback; `sans` uses Noto Sans CJK. */
+    val fontFamily: String = "serif",
 )
 
 /**
@@ -102,6 +106,11 @@ class SettingsRepository(context: Context) {
             chromeOpacity = prefs.getInt(KEY_CHROME_OPACITY, 62).coerceIn(0, 100),
             cardOpacity = prefs.getInt(KEY_CARD_OPACITY, 82).coerceIn(0, 100),
             drawerOpacity = prefs.getInt(KEY_DRAWER_OPACITY, 90).coerceIn(0, 100),
+            fontScale = prefs.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.35f),
+            fontFamily = prefs.getString(KEY_FONT_FAMILY, "serif")
+                ?.lowercase()
+                ?.takeIf { it == "serif" || it == "sans" }
+                ?: "serif",
         )
     }
 
@@ -114,6 +123,10 @@ class SettingsRepository(context: Context) {
                 apiKey = it.apiKey.trim(),
                 sessionId = it.sessionId.trim().ifEmpty { "android-main" },
                 wsUrl = it.wsUrl.trim(),
+                fontScale = it.fontScale.coerceIn(0.85f, 1.35f),
+                fontFamily = it.fontFamily.lowercase().let { family ->
+                    if (family == "sans") "sans" else "serif"
+                },
             )
         }
         val legacyConnectionChanged = next.apiBase != previous.apiBase ||
@@ -160,6 +173,8 @@ class SettingsRepository(context: Context) {
             if (next.chromeOpacity != previous.chromeOpacity) putInt(KEY_CHROME_OPACITY, next.chromeOpacity.coerceIn(0, 100))
             if (next.cardOpacity != previous.cardOpacity) putInt(KEY_CARD_OPACITY, next.cardOpacity.coerceIn(0, 100))
             if (next.drawerOpacity != previous.drawerOpacity) putInt(KEY_DRAWER_OPACITY, next.drawerOpacity.coerceIn(0, 100))
+            if (next.fontScale != previous.fontScale) putFloat(KEY_FONT_SCALE, next.fontScale.coerceIn(0.85f, 1.35f))
+            if (next.fontFamily != previous.fontFamily) putString(KEY_FONT_FAMILY, next.fontFamily)
         }.apply()
         _settings.value = next
     }
@@ -225,6 +240,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_CHROME_OPACITY = "chrome_opacity"
         private const val KEY_CARD_OPACITY = "card_opacity"
         private const val KEY_DRAWER_OPACITY = "drawer_opacity"
+        private const val KEY_FONT_SCALE = "font_scale"
+        private const val KEY_FONT_FAMILY = "font_family"
     }
 }
 

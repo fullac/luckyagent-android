@@ -13,11 +13,12 @@
 - 非 `file:///android_asset/mermaid/` 的请求被 `shouldInterceptRequest` 丢掉。
 - 源码经 `JSONObject` 传给 `renderMermaid`，不拼进 HTML。
 - 页面 `onPageFinished` 之后才渲染。成功回传高度，上限 480dp。
+- 点击图表打开全屏预览；预览中的 WebView 开启双指缩放，右上角按钮关闭预览。
 - 渲染失败，或 3 秒没有回调，撤掉 WebView，显示源码。
 
 ## 不做
 
-- 不做节点点击。缩放用 WebView 默认行为。
+- 不做节点点击或节点详情交互。缩放只在全屏预览中启用。
 - 不认 ` ``` ` 以外的 mermaid。
 - 不改服务端，不改桌面 GUI。
 - 不给普通代码块加语法高亮。

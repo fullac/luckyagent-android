@@ -36,6 +36,7 @@ import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
+import com.luckyagent.android.data.api.executionSession as autonomyExecutionSession
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.CompactTraceRecord
 import com.luckyagent.android.data.api.ContextInspectResponse
@@ -56,6 +57,7 @@ import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.api.TaskDetail
 import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.data.api.toTaskNode
 import com.luckyagent.android.data.api.toTaskSummary
@@ -64,6 +66,7 @@ import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.data.update.AvailableUpdate
+import com.luckyagent.android.data.work.AgentTaskWork
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
@@ -225,6 +228,9 @@ data class AppUiState(
     val gateways: List<GatewayStatus> = emptyList(),
     val gatewaysLoading: Boolean = false,
     val gatewaysError: String? = null,
+    /** Gateway name currently being started or stopped from the phone. */
+    val gatewayAction: String? = null,
+    val gatewayActionError: String? = null,
     val skills: List<SkillSummary> = emptyList(),
     val skillsDir: String? = null,
     val skillsLoading: Boolean = false,
@@ -932,7 +938,7 @@ class AppViewModel(
                 if (task.childCount > 0) append(" · ${task.completedChildren}/${task.childCount}")
                 task.error?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it.take(80)) }
             }
-            container.notifications.notifyTask(kind, task.id, title, body, task.metadata["session_id"].orEmpty(), terminal)
+            container.notifications.notifyTask(kind, task.id, title, body, task.executionSession().orEmpty(), terminal)
         }
         taskFingerprints.keys.retainAll(seen)
         if (tasks.isNotEmpty() || progressWatchReady) progressWatchReady = true
@@ -949,7 +955,7 @@ class AppViewModel(
             val terminal = task.state.isTerminalTaskStatus() || task.state.equals("done", true) || task.state.equals("succeeded", true)
             val title = "LuckyAgent · 后台任务 · ${task.title.ifBlank { task.id }}"
             val body = listOfNotNull(task.state.ifBlank { null }, task.resultPreview?.take(80), task.error?.take(80)).joinToString(" · ")
-            container.notifications.notifyTask(RuntimeNoticeKind.Background, task.id, title, body, task.sessionId.orEmpty(), terminal)
+            container.notifications.notifyTask(RuntimeNoticeKind.Background, task.id, title, body, task.autonomyExecutionSession().orEmpty(), terminal)
         }
         backgroundFingerprints.keys.retainAll(seen)
     }
@@ -984,7 +990,7 @@ class AppViewModel(
         val status = extractField(data, "status").orEmpty()
         val message = extractField(data, "message").orEmpty()
         val description = extractField(data, "description").orEmpty()
-        val sessionId = extractField(data, "session_id").orEmpty()
+        val sessionId = extractTaskEventSessionId(data)
         val parentId = extractField(data, "parent_id").orEmpty()
         val progress = extractField(data, "progress")?.toDoubleOrNull()
         val terminal = status.isTerminalTaskStatus() || type.endsWith("completed") || type.endsWith("failed") || type.endsWith("cancelled")
@@ -1014,6 +1020,20 @@ class AppViewModel(
             if (message.isNotBlank()) append(" · ").append(message.take(80))
         }
         container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal)
+    }
+
+    /** Reads both explicit and legacy metadata session links from task events. */
+    private fun extractTaskEventSessionId(data: kotlinx.serialization.json.JsonElement?): String {
+        val obj = data as? JsonObject ?: return ""
+        val metadata = obj["metadata"] as? JsonObject
+        return sequenceOf(
+            extractField(data, "execution_session_id"),
+            extractField(data, "session_id"),
+            extractField(data, "owner_session_id"),
+            (metadata?.get("execution_session_id") as? JsonPrimitive)?.contentOrNull,
+            (metadata?.get("session_id") as? JsonPrimitive)?.contentOrNull,
+            (metadata?.get("owner_session_id") as? JsonPrimitive)?.contentOrNull,
+        ).mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull().orEmpty()
     }
 
     private fun ensureReplayedRun(event: WsEvent) {
@@ -1732,8 +1752,34 @@ class AppViewModel(
     }
 
     fun openSessionFromNotification(sessionId: String) {
+        openSession(sessionId)
+    }
+
+    /**
+     * Opens a runtime conversation from any task or notification deep link.
+     * Task detail state is cleared first so Android back returns to the normal
+     * chat screen instead of a stale task detail overlay.
+     */
+    fun openSession(sessionId: String?) {
+        val target = sessionId?.trim().orEmpty()
+        if (target.isBlank()) {
+            _ui.update { it.copy(snackbarMessage = "这个任务还没有关联执行会话") }
+            return
+        }
+        clearSelectedTask()
+        clearSelectedBackgroundTask()
         navigate(AppDestination.Chat)
-        selectSession(sessionId)
+        selectSession(target)
+    }
+
+    /** Opens the execution conversation associated with a unified or legacy task. */
+    fun openTaskSession(task: TaskSummary) {
+        openSession(task.executionSession())
+    }
+
+    /** Opens the conversation used by an autonomy queue task, when present. */
+    fun openBackgroundSession(sessionId: String?) {
+        openSession(sessionId)
     }
 
     fun openDestinationFromNotification(destination: String) {
@@ -3305,6 +3351,14 @@ class AppViewModel(
         )
         val hasData = unified.isSuccess || legacy.isSuccess
         val selectedId = _ui.value.selectedTaskId
+        if (hasData) {
+            merged.filter { it.origin == TaskOrigin.Unified }.forEach { task ->
+                if (task.status.lowercase() in setOf("pending", "queued", "running", "in_progress", "in-progress", "blocked")) {
+                    AgentTaskWork.enqueue(container.appContext, task.id, task.executionSession())
+                }
+                else AgentTaskWork.cancel(container.appContext, task.id)
+            }
+        }
         _ui.update {
             it.copy(
                 tasksLoading = false,
@@ -3366,7 +3420,15 @@ class AppViewModel(
                 taskDetailError = null,
             )
         }
-        viewModelScope.launch { loadTaskDetailNow(id, showLoading = false) }
+        viewModelScope.launch {
+            // Notification taps can cold-start the process before the task
+            // polling loop has populated the list. Refresh once so the deep
+            // link is actionable instead of immediately reporting “not found”.
+            if (_ui.value.tasks.none { it.id == id }) {
+                refreshTasksNow()
+            }
+            loadTaskDetailNow(id, showLoading = false)
+        }
     }
 
     fun clearSelectedTask() {
@@ -3392,6 +3454,7 @@ class AppViewModel(
                 TaskDetail(
                     root = legacy.toTaskNode(),
                     result = legacy.result,
+                    messages = container.api.listAgentMessages(id).getOrDefault(emptyList()),
                     origin = TaskOrigin.Legacy,
                 )
             }
@@ -3402,11 +3465,17 @@ class AppViewModel(
             } else {
                 val events = container.api.getTaskEvents(id).getOrDefault(emptyList())
                 val result = container.api.getTaskResult(id).getOrNull()
+                val blackboard = container.api.listBlackboard(id).getOrDefault(emptyList())
+                val messages = container.api.listAgentMessages(id).getOrDefault(emptyList())
+                val plannerTrace = container.api.getTaskTrace(id).getOrNull()
                 tree.map { node ->
                     TaskDetail(
                         root = node.toTaskNode(result),
                         events = events,
                         result = result,
+                        blackboard = blackboard,
+                        messages = messages,
+                        plannerTrace = plannerTrace,
                         origin = TaskOrigin.Unified,
                     )
                 }
@@ -3493,6 +3562,23 @@ class AppViewModel(
                 backgroundTasks = dashboard?.tasks ?: it.backgroundTasks,
                 backgroundError = result.exceptionOrNull()?.message,
             )
+        }
+        if (result.isSuccess && dashboard != null) {
+            dashboard.tasks.forEach { task ->
+                when (task.state.lowercase()) {
+                    "ready", "in_progress", "blocked" -> AgentTaskWork.enqueue(
+                        container.appContext,
+                        task.id,
+                        task.executionSession(),
+                        AgentTaskWork.ORIGIN_AUTONOMY,
+                    )
+                    else -> AgentTaskWork.cancel(
+                        container.appContext,
+                        task.id,
+                        AgentTaskWork.ORIGIN_AUTONOMY,
+                    )
+                }
+            }
         }
         noteBackgroundProgress(dashboard?.tasks.orEmpty())
         val selectedId = _ui.value.selectedBackgroundTaskId
@@ -3759,6 +3845,62 @@ class AppViewModel(
                         gatewaysLoading = false,
                         gatewaysError = result.exceptionOrNull()?.message,
                         gatewaysJson = result.exceptionOrNull()?.message,
+                    )
+                }
+            }
+        }
+    }
+
+    fun startGateway(platform: String, token: String? = null) {
+        val name = platform.trim().lowercase()
+        if (name.isBlank() || _ui.value.gatewayAction != null) return
+        _ui.update { it.copy(gatewayAction = name, gatewayActionError = null, gatewaysError = null) }
+        viewModelScope.launch {
+            val result = container.api.startGateway(name, token)
+            if (result.isSuccess) {
+                _ui.update {
+                    it.copy(
+                        gatewayAction = null,
+                        gatewayActionError = null,
+                        activityLine = "$name · started",
+                        snackbarMessage = "$name gateway started",
+                    )
+                }
+                refreshGateways()
+            } else {
+                _ui.update {
+                    it.copy(
+                        gatewayAction = null,
+                        gatewayActionError = result.exceptionOrNull()?.message ?: "Unable to start $name gateway",
+                        activityLine = "$name · start failed",
+                    )
+                }
+            }
+        }
+    }
+
+    fun stopGateway(platform: String) {
+        val name = platform.trim().lowercase()
+        if (name.isBlank() || _ui.value.gatewayAction != null) return
+        _ui.update { it.copy(gatewayAction = name, gatewayActionError = null, gatewaysError = null) }
+        viewModelScope.launch {
+            val result = container.api.stopGateway(name)
+            if (result.isSuccess) {
+                _ui.update {
+                    it.copy(
+                        gatewayAction = null,
+                        gatewayActionError = null,
+                        activityLine = "$name · stopped",
+                        snackbarMessage = "$name gateway stopped",
+                    )
+                }
+                refreshGateways()
+            } else {
+                _ui.update {
+                    it.copy(
+                        gatewayAction = null,
+                        gatewayActionError = result.exceptionOrNull()?.message ?: "Unable to stop $name gateway",
+                        activityLine = "$name · stop failed",
                     )
                 }
             }

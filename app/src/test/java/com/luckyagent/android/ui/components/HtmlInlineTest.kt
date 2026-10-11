@@ -1,7 +1,9 @@
 package com.luckyagent.android.ui.components
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HtmlInlineTest {
@@ -65,5 +67,27 @@ class HtmlInlineTest {
     @Test
     fun lineBreakBecomesASpace() {
         assertEquals("a b", renderHtmlInline("a<br>b"))
+    }
+
+    @Test
+    fun semanticColorSpanIsAccepted() {
+        val nodes = parseHtml("<span data-color=\"accent\">重点</span>")
+        val span = nodes?.single() as HtmlNode.Element
+
+        assertEquals("span", span.tag)
+        assertEquals(HtmlColor.ACCENT, span.color)
+    }
+
+    @Test
+    fun arbitraryStyleOnColorSpanIsRejected() {
+        assertNull(parseHtml("<span style=\"color:red\">危险</span>"))
+    }
+
+    @Test
+    fun colorSpanRendersWithoutHtmlTags() {
+        val rendered = renderHtmlInline("普通 <span data-color=\"warning\">警告</span>")
+
+        assertTrue(rendered.contains("警告"))
+        assertFalse(rendered.contains("<span"))
     }
 }

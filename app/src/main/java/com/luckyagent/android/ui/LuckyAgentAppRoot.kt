@@ -311,7 +311,12 @@ private fun AppScaffold(
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     Box(Modifier.widthIn(max = 1440.dp).fillMaxSize()) {
                         when (state.destination) {
-                            AppDestination.Chat -> ChatScreen(state = state, vm = vm, railOccupied = useRail)
+                            AppDestination.Chat -> ChatScreen(
+                                state = state,
+                                vm = vm,
+                                railOccupied = useRail,
+                                onOpenSettings = { vm.navigate(AppDestination.Settings) },
+                            )
                             AppDestination.Tasks -> TasksScreen(state = state, vm = vm)
                             AppDestination.Background -> BackgroundScreen(state = state, vm = vm)
                             AppDestination.Cron -> CronScreen(state = state, vm = vm)
@@ -322,6 +327,7 @@ private fun AppScaffold(
                             AppDestination.Settings -> SettingsScreen(
                                 state = state,
                                 vm = vm,
+                                onBack = { vm.navigate(AppDestination.Chat) },
                                 onScan = startPairingScan,
                                 onPickQrImage = {
                                     qrImagePicker.launch(
@@ -472,13 +478,9 @@ private fun NavigationDrawerContent(
                 groupItems.forEach { DrawerNavItem(it, state, onSelect) }
             }
         }
-        HorizontalDivider(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f),
-        )
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            DrawerNavItem(nav(AppDestination.Settings), state, onSelect)
-        }
+        // Settings is deliberately outside the drawer. On compact layouts the
+        // chat page opens it with a horizontal page gesture; on expanded
+        // layouts it remains available through the rail.
     }
 }
 

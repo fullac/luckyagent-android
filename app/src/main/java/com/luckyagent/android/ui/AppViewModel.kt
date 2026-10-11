@@ -1820,6 +1820,24 @@ class AppViewModel(
         _ui.update { it.copy(snackbarMessage = "已复制") }
     }
 
+    /** Removes a message from the current local transcript after confirmation. */
+    fun deleteBubble(id: String) {
+        if (id.isBlank()) return
+        _ui.update { state -> state.copy(bubbles = state.bubbles.filterNot { it.id == id }) }
+    }
+
+    /** Re-sends the latest user turn so the last assistant answer can be regenerated. */
+    fun retryLastResponse() {
+        val text = _ui.value.bubbles
+            .lastOrNull { it.role.equals("user", ignoreCase = true) }
+            ?.content
+            ?.trim()
+            .orEmpty()
+        if (text.isBlank()) return
+        _ui.update { it.copy(composer = text, pendingQuote = null, snackbarMessage = null) }
+        sendComposer()
+    }
+
     fun consumeSnackbar() {
         _ui.update { it.copy(snackbarMessage = null) }
     }

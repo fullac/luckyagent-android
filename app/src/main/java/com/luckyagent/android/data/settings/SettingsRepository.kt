@@ -32,6 +32,23 @@ data class ClientSettings(
     val wsUrl: String = "",
     val runtimeEndpoints: List<RuntimeEndpoint> = emptyList(),
     val activeRuntimeEndpointId: String = "",
+    val notifyOnChatCompleted: Boolean = true,
+    val notifyOnCron: Boolean = true,
+    val notifyOnSubagent: Boolean = true,
+    val notifyOnBackground: Boolean = true,
+    val chatBackgroundFile: String = "",
+    val chatBackgroundDim: Int = 12,
+    val avatarFile: String = "",
+    /** 0 全透明，100 不透明。 */
+    val composerOpacity: Int = 78,
+    val bubbleOpacity: Int = 92,
+    val chromeOpacity: Int = 62,
+    val cardOpacity: Int = 82,
+    val drawerOpacity: Int = 90,
+    /** App text scale, persisted locally and applied to the Material typography. */
+    val fontScale: Float = 1.0f,
+    /** `serif` uses the Android Noto Serif CJK fallback; `sans` uses Noto Sans CJK. */
+    val fontFamily: String = "serif",
 )
 
 /**
@@ -77,6 +94,23 @@ class SettingsRepository(context: Context) {
             wsUrl = active.wsUrl,
             runtimeEndpoints = endpoints,
             activeRuntimeEndpointId = activeId,
+            notifyOnChatCompleted = prefs.getBoolean(KEY_NOTIFY_ON_CHAT_COMPLETED, true),
+            notifyOnCron = prefs.getBoolean(KEY_NOTIFY_ON_CRON, true),
+            notifyOnSubagent = prefs.getBoolean(KEY_NOTIFY_ON_SUBAGENT, true),
+            notifyOnBackground = prefs.getBoolean(KEY_NOTIFY_ON_BACKGROUND, true),
+            chatBackgroundFile = prefs.getString(KEY_CHAT_BACKGROUND, "") ?: "",
+            chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 12).coerceIn(0, 70),
+            avatarFile = prefs.getString(KEY_AVATAR, "") ?: "",
+            composerOpacity = prefs.getInt(KEY_COMPOSER_OPACITY, 78).coerceIn(0, 100),
+            bubbleOpacity = prefs.getInt(KEY_BUBBLE_OPACITY, 92).coerceIn(0, 100),
+            chromeOpacity = prefs.getInt(KEY_CHROME_OPACITY, 62).coerceIn(0, 100),
+            cardOpacity = prefs.getInt(KEY_CARD_OPACITY, 82).coerceIn(0, 100),
+            drawerOpacity = prefs.getInt(KEY_DRAWER_OPACITY, 90).coerceIn(0, 100),
+            fontScale = prefs.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.35f),
+            fontFamily = prefs.getString(KEY_FONT_FAMILY, "serif")
+                ?.lowercase()
+                ?.takeIf { it == "serif" || it == "sans" }
+                ?: "serif",
         )
     }
 
@@ -89,6 +123,10 @@ class SettingsRepository(context: Context) {
                 apiKey = it.apiKey.trim(),
                 sessionId = it.sessionId.trim().ifEmpty { "android-main" },
                 wsUrl = it.wsUrl.trim(),
+                fontScale = it.fontScale.coerceIn(0.85f, 1.35f),
+                fontFamily = it.fontFamily.lowercase().let { family ->
+                    if (family == "sans") "sans" else "serif"
+                },
             )
         }
         val legacyConnectionChanged = next.apiBase != previous.apiBase ||
@@ -123,11 +161,62 @@ class SettingsRepository(context: Context) {
             if (next.wsUrl != previous.wsUrl) putString(KEY_WS_URL, next.wsUrl)
             if (next.runtimeEndpoints != previous.runtimeEndpoints) putString(KEY_ENDPOINTS, json.encodeToString(next.runtimeEndpoints))
             if (next.activeRuntimeEndpointId != previous.activeRuntimeEndpointId) putString(KEY_ACTIVE_ENDPOINT, next.activeRuntimeEndpointId)
+            if (next.notifyOnChatCompleted != previous.notifyOnChatCompleted) putBoolean(KEY_NOTIFY_ON_CHAT_COMPLETED, next.notifyOnChatCompleted)
+            if (next.notifyOnCron != previous.notifyOnCron) putBoolean(KEY_NOTIFY_ON_CRON, next.notifyOnCron)
+            if (next.notifyOnSubagent != previous.notifyOnSubagent) putBoolean(KEY_NOTIFY_ON_SUBAGENT, next.notifyOnSubagent)
+            if (next.notifyOnBackground != previous.notifyOnBackground) putBoolean(KEY_NOTIFY_ON_BACKGROUND, next.notifyOnBackground)
+            if (next.chatBackgroundFile != previous.chatBackgroundFile) putString(KEY_CHAT_BACKGROUND, next.chatBackgroundFile)
+            if (next.chatBackgroundDim != previous.chatBackgroundDim) putInt(KEY_CHAT_BACKGROUND_DIM, next.chatBackgroundDim.coerceIn(0, 70))
+            if (next.avatarFile != previous.avatarFile) putString(KEY_AVATAR, next.avatarFile)
+            if (next.composerOpacity != previous.composerOpacity) putInt(KEY_COMPOSER_OPACITY, next.composerOpacity.coerceIn(0, 100))
+            if (next.bubbleOpacity != previous.bubbleOpacity) putInt(KEY_BUBBLE_OPACITY, next.bubbleOpacity.coerceIn(0, 100))
+            if (next.chromeOpacity != previous.chromeOpacity) putInt(KEY_CHROME_OPACITY, next.chromeOpacity.coerceIn(0, 100))
+            if (next.cardOpacity != previous.cardOpacity) putInt(KEY_CARD_OPACITY, next.cardOpacity.coerceIn(0, 100))
+            if (next.drawerOpacity != previous.drawerOpacity) putInt(KEY_DRAWER_OPACITY, next.drawerOpacity.coerceIn(0, 100))
+            if (next.fontScale != previous.fontScale) putFloat(KEY_FONT_SCALE, next.fontScale.coerceIn(0.85f, 1.35f))
+            if (next.fontFamily != previous.fontFamily) putString(KEY_FONT_FAMILY, next.fontFamily)
         }.apply()
         _settings.value = next
     }
 
     fun snapshot(): ClientSettings = _settings.value
+
+    /** Last visible chat position, keyed by session so switching chats keeps context. */
+    fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
+        if (sessionId.isBlank()) return@synchronized null
+        val raw = prefs.getString(KEY_SCROLL_ANCHORS, null) ?: return@synchronized null
+        val anchor = runCatching { json.decodeFromString<Map<String, List<Int>>>(raw)[sessionId] }.getOrNull()
+            ?: return@synchronized null
+        if (anchor.size < 2) null else anchor[0].coerceAtLeast(0) to anchor[1].coerceAtLeast(0)
+    }
+
+    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
+        if (sessionId.isBlank()) return
+        synchronized(prefs) {
+            val current = prefs.getString(KEY_SCROLL_ANCHORS, null)
+                ?.let { runCatching { json.decodeFromString<Map<String, List<Int>>>(it) }.getOrDefault(emptyMap()) }
+                .orEmpty().toMutableMap()
+            current[sessionId] = listOf(index.coerceAtLeast(0), offset.coerceAtLeast(0))
+            prefs.edit().putString(KEY_SCROLL_ANCHORS, json.encodeToString(current)).apply()
+        }
+    }
+
+    fun eventCursor(sessionId: String): String = synchronized(prefs) {
+        val raw = prefs.getString(KEY_EVENT_CURSORS, null) ?: return@synchronized ""
+        runCatching { json.decodeFromString<Map<String, String>>(raw)[sessionId].orEmpty() }.getOrDefault("")
+    }
+
+    fun saveEventCursor(sessionId: String, cursor: String) {
+        if (sessionId.isBlank() || cursor.isBlank()) return
+        synchronized(prefs) {
+            val current = prefs.getString(KEY_EVENT_CURSORS, null)
+                ?.let { runCatching { json.decodeFromString<Map<String, String>>(it) }.getOrDefault(emptyMap()) }
+                .orEmpty()
+                .toMutableMap()
+            current[sessionId] = cursor
+            prefs.edit().putString(KEY_EVENT_CURSORS, json.encodeToString(current)).apply()
+        }
+    }
 
     companion object {
         private const val KEY_API_BASE = "api_base"
@@ -137,5 +226,23 @@ class SettingsRepository(context: Context) {
         private const val KEY_WS_URL = "ws_url"
         private const val KEY_ENDPOINTS = "runtime_endpoints"
         private const val KEY_ACTIVE_ENDPOINT = "active_runtime_endpoint"
+        private const val KEY_EVENT_CURSORS = "event_cursors"
+        private const val KEY_SCROLL_ANCHORS = "scroll_anchors"
+        private const val KEY_NOTIFY_ON_CHAT_COMPLETED = "notify_on_chat_completed"
+        private const val KEY_NOTIFY_ON_CRON = "notify_on_cron"
+        private const val KEY_NOTIFY_ON_SUBAGENT = "notify_on_subagent"
+        private const val KEY_NOTIFY_ON_BACKGROUND = "notify_on_background"
+        private const val KEY_CHAT_BACKGROUND = "chat_background_file"
+        private const val KEY_CHAT_BACKGROUND_DIM = "chat_background_dim"
+        private const val KEY_AVATAR = "avatar_file"
+        private const val KEY_COMPOSER_OPACITY = "composer_opacity"
+        private const val KEY_BUBBLE_OPACITY = "bubble_opacity"
+        private const val KEY_CHROME_OPACITY = "chrome_opacity"
+        private const val KEY_CARD_OPACITY = "card_opacity"
+        private const val KEY_DRAWER_OPACITY = "drawer_opacity"
+        private const val KEY_FONT_SCALE = "font_scale"
+        private const val KEY_FONT_FAMILY = "font_family"
     }
 }
+
+fun Int.opacityFraction(): Float = coerceIn(0, 100) / 100f

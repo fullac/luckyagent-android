@@ -29,8 +29,11 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
   - WebSocket 事件：`stream_chunk` / `assistant_delta`、`tool_call`、`tool_result`、`stream_end` / `final`、`error`、`status`、`reasoning`、`cancel`
   - 流式助手气泡 + 轻量 Markdown（标题 / 列表 / 粗斜体 / 行内代码 / 代码块）
   - 工具调用卡片（名称、参数摘要、结果、running/done/failed）
+  - 长文本在界面内截断并显示提示：正文最多 32,000 字符，思考/工具输出 16,000 字符，工具参数 8,000 字符；每条消息最多显示 32 个附件。限制只影响客户端展示，服务端原始会话不受影响。
+  - 入站帧另有一层保护，和界面展示上限不是同一件事：超过 8,000,000 字符的 WebSocket 帧不解析，记一条截断错误并照常推进事件游标，避免重连反复重放；64,000 字符以内的完整帧才会原样进入调试通道，超限帧不会把半截 JSON 当正常消息。
   - 连接状态条 + 断线有限次自动重连（最多 8 次，指数退避）
   - 发送 / 停止（cancel）
+  - Agent 运行期间普通消息、命令、页面操作、切换会话和修改连接配置不会中断当前任务；只有 Stop 或 `/stop` 会取消
 - **Sessions**
   - 抽屉搜索、切换 session、加载历史（含历史 tool_calls）
 - **Settings**
@@ -44,11 +47,10 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 
 ## 还缺什么
 
-- 会话历史分页 / 向上加载更多
-- Memory graph 真正可视化（力导向或列表关系图）
-- 附件上传（图片等多模态）
 - 证书 pinning / 正式 release 签名密钥（CI 已支持可选 secrets 签名）
-- Trajectory 结构化时间线 UI（部分已卡片化，细节可继续对齐 GUI）
+- Trajectory 仍需真机检查长 JSON、复制和筛选交互
+- Memory graph 仍需真机检查窄屏缩放、节点详情和图例可读性
+- Session 时间戳、附件失败重试等本轮 UI 改动仍需真机回归
 
 ## UI 对照 GUI
 
@@ -65,7 +67,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 | topbar + composer | `ChatTopBar` + `ComposerBar` |
 | 四叶草绿主题 | `CloverTheme` |
 
-主题色：bg `#f9faf4` / side `#eef1e5` / surface `#ffffff` / text `#16190f` / accent `#3f8a37`。
+主题色：bg `#f8f5ee` / side `#f2efe8` / surface `#fffcf7` / text `#2b2925` / accent `#356f42`。
 
 ## 鉴权
 
@@ -103,6 +105,8 @@ Key 存在 `EncryptedSharedPreferences`，不进 URL / 默认不进 body 日志�
 | `workflow_dispatch` | 仅 debug 构建（不发 release） |
 
 **Release 策略：只打 `v*` tag 才 release**（例如 `v0.1.0`）。普通 push/PR 只做 debug CI。
+
+普通 PR 不会创建 GitHub Release，只有推送 `v*` tag 才会发布版本。
 
 ### 发版（tag → Release）
 

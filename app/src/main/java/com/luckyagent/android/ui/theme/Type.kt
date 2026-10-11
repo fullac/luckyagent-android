@@ -6,12 +6,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-val CloverTypography = Typography(
+private val CloverBaseTypography = Typography(
     headlineSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp,
+        fontSize = 28.sp,
+        lineHeight = 34.sp,
         letterSpacing = (-0.2).sp,
     ),
     titleLarge = TextStyle(
@@ -70,3 +70,40 @@ val CloverTypography = Typography(
         letterSpacing = 0.2.sp,
     ),
 )
+
+/**
+ * Uses Android's bundled CJK families. `serif` resolves to Noto Serif CJK on
+ * supported Android images, so the app gets a polished reading face without
+ * downloading a font or shipping a third-party font file.
+ */
+fun cloverFontFamily(id: String): FontFamily = when (id.lowercase()) {
+    "sans" -> FontFamily.SansSerif
+    else -> FontFamily.Serif
+}
+
+private fun scaled(style: TextStyle, family: FontFamily, scale: Float): TextStyle = style.copy(
+    fontFamily = family,
+    fontSize = (style.fontSize.value * scale).sp,
+    lineHeight = (style.lineHeight.value * scale).sp,
+)
+
+fun cloverTypography(fontScale: Float = 1f, family: FontFamily = FontFamily.Serif): Typography {
+    val scale = fontScale.coerceIn(0.85f, 1.35f)
+    return CloverBaseTypography.copy(
+        displayLarge = scaled(CloverBaseTypography.displayLarge, family, scale),
+        displayMedium = scaled(CloverBaseTypography.displayMedium, family, scale),
+        displaySmall = scaled(CloverBaseTypography.displaySmall, family, scale),
+        headlineLarge = scaled(CloverBaseTypography.headlineLarge, family, scale),
+        headlineMedium = scaled(CloverBaseTypography.headlineMedium, family, scale),
+        headlineSmall = scaled(CloverBaseTypography.headlineSmall, family, scale),
+        titleLarge = scaled(CloverBaseTypography.titleLarge, family, scale),
+        titleMedium = scaled(CloverBaseTypography.titleMedium, family, scale),
+        titleSmall = scaled(CloverBaseTypography.titleSmall, family, scale),
+        bodyLarge = scaled(CloverBaseTypography.bodyLarge, family, scale),
+        bodyMedium = scaled(CloverBaseTypography.bodyMedium, family, scale),
+        bodySmall = scaled(CloverBaseTypography.bodySmall, family, scale),
+        labelLarge = scaled(CloverBaseTypography.labelLarge, family, scale),
+        labelMedium = scaled(CloverBaseTypography.labelMedium, family, scale),
+        labelSmall = scaled(CloverBaseTypography.labelSmall, family, scale),
+    )
+}

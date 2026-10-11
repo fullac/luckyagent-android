@@ -4,6 +4,13 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+
+@Serializable
+data class SoulInfo(
+    val name: String = "",
+    @SerialName("system_prompt") val systemPrompt: String = "",
+)
 
 @Serializable
 data class SessionsResponse(
@@ -15,7 +22,14 @@ data class SessionsResponse(
 data class RuntimeSession(
     val id: String,
     val title: String? = null,
+    @SerialName("agent_role") val agentRole: String? = null,
+    val pinned: Boolean = false,
+    val project: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
+    /** On-disk size when the server reports it (segment_v1 / legacy md). */
+    @SerialName("byte_size") val byteSize: Long? = null,
+    /** Session storage format: legacy_md or segment_v1. */
+    val format: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
 )
@@ -24,6 +38,15 @@ data class RuntimeSession(
 data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
+    @SerialName("agent_role") val agentRole: String? = null,
+    @SerialName("agent_system_prompt") val agentSystemPrompt: String? = null,
+    val pinned: Boolean = false,
+    val project: String? = null,
+    @SerialName("message_count") val messageCount: Int? = null,
+    val format: String? = null,
+    @SerialName("byte_size") val byteSize: Long? = null,
+    /** True when message bodies were capped; pass include=full for complete text. */
+    @SerialName("content_truncated") val contentTruncated: Boolean? = null,
     val messages: List<ProviderMessage> = emptyList(),
     val limit: Int? = null,
     val offset: Int? = null,
@@ -31,14 +54,87 @@ data class SessionHistory(
     @SerialName("has_more") val hasMore: Boolean? = null,
 )
 
+/** POST /api/v1/sessions/{id}/compact response. */
+@Serializable
+data class CompactSessionResult(
+    @SerialName("boundary_id") val boundaryId: String? = null,
+    val trigger: String? = null,
+    val summary: String? = null,
+    @SerialName("from_message") val fromMessage: Int? = null,
+    @SerialName("to_message") val toMessage: Int? = null,
+    @SerialName("pre_token_estimate") val preTokenEstimate: Int? = null,
+    @SerialName("post_token_estimate") val postTokenEstimate: Int? = null,
+    @SerialName("summary_tokens") val summaryTokens: Int? = null,
+    @SerialName("dropped_messages") val droppedMessages: Int? = null,
+    @SerialName("retained_messages") val retainedMessages: Int? = null,
+    @SerialName("restored_attachments") val restoredAttachments: Int? = null,
+    @SerialName("summary_source") val summarySource: String? = null,
+    @SerialName("dry_run") val dryRun: Boolean? = null,
+    val display: CompactDisplay? = null,
+)
+
+@Serializable
+data class CompactTraceRecord(
+    val id: String? = null,
+    val trigger: String? = null,
+    val summary: String? = null,
+    @SerialName("pre_token_estimate") val preTokenEstimate: Int? = null,
+    @SerialName("post_token_estimate") val postTokenEstimate: Int? = null,
+    @SerialName("dropped_messages") val droppedMessages: Int? = null,
+    @SerialName("summary_source") val summarySource: String? = null,
+)
+
+@Serializable
+data class CompactDisplay(
+    val title: String? = null,
+    val subtitle: String? = null,
+    val message: String? = null,
+)
+
+@Serializable
+data class CompactSessionRequest(
+    @SerialName("dry_run") val dryRun: Boolean = false,
+    @SerialName("force_local") val forceLocal: Boolean = false,
+)
+
 @Serializable
 data class ProviderMessage(
     val role: String? = null,
     val content: String? = null,
     @SerialName("reasoning_content") val reasoningContent: String? = null,
+    @SerialName("content_parts") val contentParts: List<ProviderContentPart> = emptyList(),
+    val attachments: List<MediaAttachment> = emptyList(),
+    @SerialName("created_at") val createdAt: String? = null,
+    val usage: TokenUsage? = null,
     val name: String? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<HistoryToolCall> = emptyList(),
+    /** Present when large tool/assistant bodies are externalized server-side. */
+    @SerialName("blob_hash") val blobHash: String? = null,
+    @SerialName("blob_bytes") val blobBytes: Int? = null,
+)
+
+@Serializable
+data class ProviderContentPart(
+    val type: String? = null,
+    val text: String? = null,
+    val image: ProviderImagePart? = null,
+)
+
+@Serializable
+data class ProviderImagePart(
+    val url: String? = null,
+    @SerialName("file_path") val filePath: String? = null,
+    @SerialName("mime_type") val mimeType: String? = null,
+)
+
+@Serializable
+data class TokenUsage(
+    @SerialName("input_tokens") val inputTokens: Int = 0,
+    @SerialName("output_tokens") val outputTokens: Int = 0,
+    @SerialName("total_tokens") val totalTokens: Int = 0,
+    @SerialName("cached_input_tokens") val cachedInputTokens: Int = 0,
+    val model: String? = null,
 )
 
 @Serializable
@@ -59,9 +155,25 @@ data class WsEnvelope(
     val type: String,
     @SerialName("session_id") val sessionId: String? = null,
     val id: String? = null,
+    @SerialName("event_id") val eventId: String? = null,
     @SerialName("parent_id") val parentId: String? = null,
+    @SerialName("run_id") val runId: String? = null,
+    val timestamp: String? = null,
     val data: JsonElement? = null,
     val error: String? = null,
+)
+
+data class WsEvent(
+    val connectionId: String,
+    val sessionId: String,
+    val envelope: WsEnvelope,
+)
+
+data class WsChatHandle(
+    val connectionId: String,
+    val sessionId: String,
+    val requestId: String,
+    val ownsLease: Boolean = true,
 )
 
 @Serializable
@@ -86,10 +198,202 @@ data class MediaAttachment(
 @Serializable
 data class UploadResponse(val attachments: List<MediaAttachment> = emptyList())
 
+/** Model kinds supported by the LuckyAgent runtime model switch API. */
+enum class FunctionalModelKind(val wireValue: String, val label: String) {
+    Chat("chat", "对话"),
+    Vision("vision", "视觉"),
+    Embedding("embedding", "向量"),
+    Transcription("transcription", "转写"),
+    Image("image", "生图"),
+    Tts("tts", "语音"),
+    Reranker("reranker", "重排"),
+    Compact("compact", "压缩"),
+}
+
+val FunctionalModelKinds: List<FunctionalModelKind> = FunctionalModelKind.entries
+
+fun modelKindLabel(kind: String): String =
+    FunctionalModelKind.entries.firstOrNull { it.wireValue == kind.lowercase() }?.label
+        ?: kind.ifBlank { "其他" }
+
+/** A model advertised by GET /api/v1/models. */
+@Serializable
+data class ModelRef(
+    val id: String,
+    val kind: String,
+    val provider: String? = null,
+    @SerialName("display_name") val displayName: String? = null,
+    @SerialName("api_base") val apiBase: String? = null,
+    val protocol: String? = null,
+    val capabilities: JsonElement? = null,
+    val current: Boolean = false,
+)
+
+@Serializable
+data class ModelsResponse(
+    val models: List<ModelRef> = emptyList(),
+    val count: Int? = null,
+    val source: String? = null,
+    val error: String? = null,
+)
+
+@Serializable
+data class SwitchModelRequest(
+    val kind: String,
+    val model: String,
+    val provider: String? = null,
+)
+
+/** Keeps grouping behavior deterministic for the composer sheet and unit tests. */
+fun modelsByKind(models: List<ModelRef>): Map<String, List<ModelRef>> =
+    models.groupBy { it.kind.trim().lowercase() }
+
 @Serializable
 data class ChatOutbound(
     val type: String = "chat",
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
     val data: ChatOutboundData,
+)
+
+@Serializable
+data class ApprovalResponseOutbound(
+    val type: String = "approval_response",
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val data: ApprovalResponseOutboundData,
+)
+
+@Serializable
+data class ApprovalResponseOutboundData(
+    @SerialName("request_id") val requestId: String,
+    val provider: String = "runtime",
+    val decision: String,
+    val input: String = "",
+)
+
+@Serializable
+data class LuckyOutbound(
+    val type: String = "lucky",
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val data: LuckyOutboundData,
+)
+
+@Serializable
+data class LuckyOutboundData(
+    val action: String,
+)
+
+@Serializable
+data class ApprovalOption(
+    val id: String,
+    val label: String,
+    val kind: String? = null,
+)
+
+@Serializable
+data class PendingApproval(
+    val provider: String,
+    val id: String,
+    val method: String? = null,
+    @SerialName("thread_id") val threadId: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("turn_id") val turnId: String? = null,
+    val reason: String? = null,
+    val summary: String? = null,
+    val params: kotlinx.serialization.json.JsonElement? = null,
+    val options: List<ApprovalOption> = emptyList(),
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+@Serializable
+data class ApprovalsResponse(
+    val approvals: List<PendingApproval>? = emptyList(),
+    val count: Int? = null,
+)
+
+@Serializable
+data class ApprovalResolutionRequest(
+    val provider: String,
+    @SerialName("approval_id") val approvalId: String,
+    val decision: String,
+    val input: String = "",
+)
+
+fun PendingApproval.needsTextInput(): Boolean {
+    if (method.equals("input", ignoreCase = true) || method.equals("credential", ignoreCase = true)) return true
+    return options.any { option ->
+        option.kind.equals("submit", ignoreCase = true) || option.id.equals("submit", ignoreCase = true)
+    }
+}
+
+fun PendingApproval.isSecureCredentialForm(): Boolean {
+    if (method.equals("credential", ignoreCase = true)) return true
+    val obj = params as? JsonObject ?: return false
+    val kind = (obj["kind"] as? JsonPrimitive)?.content
+    val secure = (obj["secure"] as? JsonPrimitive)?.content
+    return kind.equals("credential", ignoreCase = true) || secure.equals("true", ignoreCase = true)
+}
+
+fun PendingApproval.inputPrompt(): String {
+    val fromParams = (params as? JsonObject)?.get("prompt") as? JsonPrimitive
+    return fromParams?.content?.takeIf { it.isNotBlank() }
+        ?: reason?.takeIf { it.isNotBlank() }
+        ?: summary?.takeIf { it.isNotBlank() }
+        ?: "请补充完成任务所需的信息"
+}
+
+/** GET /api/v1/context?inspect=1. Local planner estimate, not billed usage. */
+@Serializable
+data class ContextInspectResponse(
+    @SerialName("max_tokens") val maxTokens: Int = 0,
+    @SerialName("reserved_tokens") val reservedTokens: Int = 0,
+    @SerialName("available_tokens") val availableTokens: Int = 0,
+    val strategy: String? = null,
+    val usage: ContextUsage? = null,
+    val sections: List<ContextSection> = emptyList(),
+)
+
+@Serializable
+data class ContextUsage(
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("message_count") val messageCount: Int = 0,
+    @SerialName("total_tokens") val totalTokens: Int = 0,
+    @SerialName("available_tokens") val availableTokens: Int = 0,
+    val ratio: Double = 0.0,
+    @SerialName("headroom_tokens") val headroomTokens: Int = 0,
+    val estimate: String? = null,
+    val buckets: Map<String, ContextBucketUsage> = emptyMap(),
+)
+
+@Serializable
+data class ContextBucketUsage(
+    val tokens: Int = 0,
+    val messages: Int = 0,
+    val budget: Int = 0,
+)
+
+@Serializable
+data class ContextSection(
+    val index: Int = 0,
+    val role: String = "",
+    val bucket: String = "",
+    val label: String = "",
+    val tokens: Int = 0,
+    val chars: Int = 0,
+    val preview: String = "",
+)
+
+@Serializable
+data class ReconnectOutbound(
+    val type: String = "reconnect",
+    val data: ReconnectOutboundData,
+)
+
+@Serializable
+data class ReconnectOutboundData(
+    @SerialName("last_message_id") val lastMessageId: String = "",
 )
 
 @Serializable
@@ -100,6 +404,8 @@ data class SessionCreateRequest(
 @Serializable
 data class SessionPatchRequest(
     val title: String? = null,
+    val pinned: Boolean? = null,
+    val project: String? = null,
 )
 
 @Serializable
@@ -271,6 +577,10 @@ data class SessionToolTrace(
     val successes: Int? = null,
     val failures: Int? = null,
     @SerialName("success_rate") val successRate: Double? = null,
+    val limit: Int? = null,
+    val offset: Int? = null,
+    val returned: Int? = null,
+    @SerialName("has_more") val hasMore: Boolean = false,
 )
 
 @Serializable
@@ -290,11 +600,22 @@ data class GatewayStatus(
     val error: String? = null,
 )
 
+/** Optional credentials sent when a gateway is started from a remote client. */
+@Serializable
+data class GatewayStartRequest(
+    val token: String? = null,
+)
+
 @Serializable
 data class GatewaysResponse(
     val gateways: List<GatewayStatus> = emptyList(),
     val items: List<GatewayStatus> = emptyList(),
     val count: Int? = null,
+)
+
+@Serializable
+data class GatewayErrorResponse(
+    val error: String = "",
 )
 
 @Serializable

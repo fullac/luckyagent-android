@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -16,7 +19,14 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +46,7 @@ import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.DetailDisclosure
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -65,8 +76,7 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
 
     Column(
         Modifier
-            .fillMaxSize()
-            .background(CloverBg),
+            .fillMaxSize(),
     ) {
         ScreenHeader(
             eyebrow = "Capabilities",
@@ -117,6 +127,8 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No skills loaded",
                     body = "The runtime returned an empty skills list.",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "刷新",
+                    onAction = vm::refreshSkills,
                 )
             }
             !state.skillsLoading && filtered.isEmpty() -> {
@@ -143,11 +155,32 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
     }
 }
 
+private fun skillIcon(skill: SkillSummary): androidx.compose.ui.graphics.vector.ImageVector {
+    val hint = (skill.name + " " + (skill.description ?: "") + " " + skill.aliases.joinToString(" ") +
+        " " + skill.tools.joinToString(" ") { it.name }).lowercase()
+    return when {
+        "memory" in hint || "vault" in hint || "recall" in hint -> Icons.Outlined.Memory
+        "web" in hint || "search" in hint || "http" in hint || "network" in hint -> Icons.Outlined.Language
+        "file" in hint || "filesystem" in hint || "read" in hint || "write" in hint || "folder" in hint -> Icons.Outlined.FolderOpen
+        "shell" in hint || "bash" in hint || "exec" in hint || "terminal" in hint || "command" in hint -> Icons.Outlined.Terminal
+        "code" in hint || "python" in hint || "javascript" in hint || "script" in hint -> Icons.Outlined.Code
+        "agent" in hint || "think" in hint || "reason" in hint || "plan" in hint -> Icons.Outlined.Psychology
+        else -> Icons.Outlined.Build
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SkillCard(skill: SkillSummary) {
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                skillIcon(skill),
+                contentDescription = null,
+                tint = CloverAccent,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
                 skill.name.ifBlank { "(unnamed)" },
                 style = MaterialTheme.typography.titleMedium,
@@ -158,7 +191,10 @@ private fun SkillCard(skill: SkillSummary) {
         }
         val blurb = skill.summary?.takeIf { it.isNotBlank() } ?: skill.description
         if (!blurb.isNullOrBlank()) {
-            Text(blurb, color = CloverText2, style = MaterialTheme.typography.bodyMedium)
+            Text(blurb, color = CloverText2, style = MaterialTheme.typography.bodyMedium, maxLines = 3)
+            if (skill.description != null && skill.description != blurb) {
+                DetailDisclosure("完整说明", skill.description, previewLines = 3)
+            }
         }
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -175,19 +211,14 @@ private fun SkillCard(skill: SkillSummary) {
         if (skill.tools.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Tools", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                skill.tools.take(8).forEach { tool ->
-                    Text(
-                        buildString {
-                            append(tool.fullName ?: tool.name)
-                            if (tool.enabled == false) append(" · off")
-                            if (tool.registered == false) append(" · missing")
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                val toolText = skill.tools.joinToString("\n") { tool ->
+                    buildString {
+                        append(tool.fullName ?: tool.name)
+                        if (tool.enabled == false) append(" · off")
+                        if (tool.registered == false) append(" · missing")
+                    }
                 }
-                if (skill.tools.size > 8) {
-                    Text("+${skill.tools.size - 8} more", color = CloverText3, style = MaterialTheme.typography.labelSmall)
-                }
+                DetailDisclosure("工具列表（${skill.tools.size}）", toolText, previewLines = 4)
             }
         }
         if (skill.unhealthyTools.isNotEmpty()) {

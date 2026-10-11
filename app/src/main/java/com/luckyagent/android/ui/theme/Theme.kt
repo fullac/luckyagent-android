@@ -12,8 +12,8 @@ import androidx.compose.ui.unit.dp
 
 private val CloverShapes = Shapes(
     small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(26.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
 )
 
 private val LightColors = lightColorScheme(
@@ -23,6 +23,12 @@ private val LightColors = lightColorScheme(
     onPrimaryContainer = CloverLeafInk,
     secondary = CloverLeaf,
     onSecondary = CloverLeafInk,
+    secondaryContainer = Color(0xFFE8F0DE),
+    onSecondaryContainer = CloverAccent,
+    tertiary = CloverAccent,
+    tertiaryContainer = Color(0xFFE8F0DE),
+    onTertiaryContainer = CloverAccent,
+    outlineVariant = CloverLine,
     background = CloverBg,
     onBackground = CloverText,
     surface = CloverSurface,
@@ -40,6 +46,12 @@ private val DarkColors = darkColorScheme(
     onPrimaryContainer = Color.White,
     secondary = CloverAccent,
     onSecondary = Color.White,
+    secondaryContainer = Color(0xFF30422E),
+    onSecondaryContainer = CloverDarkAccent,
+    tertiary = CloverDarkAccent,
+    tertiaryContainer = Color(0xFF30422E),
+    onTertiaryContainer = CloverDarkAccent,
+    outlineVariant = CloverDarkLine,
     background = CloverDarkBg,
     onBackground = CloverDarkText,
     surface = CloverDarkSurface,
@@ -53,11 +65,13 @@ private val DarkColors = darkColorScheme(
 @Composable
 fun CloverTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    fontScale: Float = 1f,
+    fontFamily: String = "serif",
     content: @Composable () -> Unit,
 ) {
     MaterialTheme(
         colorScheme = if (darkTheme) DarkColors else LightColors,
-        typography = CloverTypography,
+        typography = cloverTypography(fontScale, cloverFontFamily(fontFamily)),
         shapes = CloverShapes,
         content = content,
     )

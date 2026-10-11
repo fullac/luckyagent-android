@@ -1,7 +1,13 @@
 package com.luckyagent.android.data.api
 
+import android.app.DownloadManager
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.OpenableColumns
+import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,7 +20,39 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
+import okio.BufferedSink
 import java.util.concurrent.TimeUnit
+
+/** Streams picker content into OkHttp without holding a full attachment in RAM. */
+private class ContentResolverRequestBody(
+    private val resolver: ContentResolver,
+    private val uri: Uri,
+    private val mime: String,
+) : okhttp3.RequestBody() {
+    override fun contentType() = mime.toMediaType()
+
+    override fun contentLength(): Long = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(cursor.getColumnIndexOrThrow(OpenableColumns.SIZE)) else -1L
+        } ?: -1L
+    }.getOrDefault(-1L)
+
+    override fun writeTo(sink: BufferedSink) {
+        val input = resolver.openInputStream(uri) ?: error("无法读取所选文件")
+        input.use {
+            val buffer = ByteArray(16 * 1024)
+            var total = 0L
+            val output = sink.outputStream()
+            while (true) {
+                val read = it.read(buffer)
+                if (read < 0) break
+                total += read
+                require(total <= 31L * 1024L * 1024L) { "文件不能超过 31 MB" }
+                output.write(buffer, 0, read)
+            }
+        }
+    }
+}
 
 class LuckyAgentApi(
     private val settingsRepository: SettingsRepository,
@@ -47,7 +85,11 @@ class LuckyAgentApi(
             req.header("Accept", "application/json")
             chain.proceed(req.build())
         }
-        .addInterceptor(logging)
+        .apply {
+            // BASIC logging is useful during local development, but it adds
+            // work to every request and is unnecessary in a release build.
+            if (BuildConfig.DEBUG) addInterceptor(logging)
+        }
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -55,21 +97,11 @@ class LuckyAgentApi(
     suspend fun uploadAttachment(resolver: ContentResolver, uri: Uri, fileName: String): Result<MediaAttachment> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val bytes = resolver.openInputStream(uri)?.use { input ->
-                    val output = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(16 * 1024)
-                    var total = 0
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        total += read
-                        require(total <= 31 * 1024 * 1024) { "文件不能超过 31 MB" }
-                        output.write(buffer, 0, read)
-                    }
-                    output.toByteArray()
-                } ?: error("无法读取所选文件")
                 val mime = resolver.getType(uri) ?: "application/octet-stream"
-                val fileBody = bytes.toRequestBody(mime.toMediaType())
+                val fileBody = ContentResolverRequestBody(resolver, uri, mime)
+                fileBody.contentLength().takeIf { it >= 0L }?.let { length ->
+                    require(length <= MaxUploadBytes) { "文件不能超过 31 MB" }
+                }
                 val multipart = MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", fileName, fileBody)
@@ -84,8 +116,76 @@ class LuckyAgentApi(
             }
         }
 
+    private companion object {
+        const val MaxUploadBytes = 31L * 1024L * 1024L
+    }
+
+    fun enqueueAttachmentDownload(context: Context, attachment: MediaAttachment): Result<Long> = runCatching {
+        val rawUrl = attachment.fileUrl?.trim().orEmpty()
+        require(rawUrl.isNotBlank()) { "附件没有可下载的 URL" }
+        val downloadUrl = absoluteUrl(rawUrl)
+        require(downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
+            "附件 URL 无效"
+        }
+        val fileName = attachment.fileName
+            ?.trim()
+            ?.replace('/', '_')
+            ?.replace('\\', '_')
+            ?.takeIf { it.isNotBlank() }
+            ?: "luckyagent-attachment"
+        val destinationName = uniqueDownloadName(context, fileName)
+        val request = DownloadManager.Request(Uri.parse(downloadUrl))
+            .setTitle(destinationName)
+            .setDescription("LuckyAgent attachment")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+        attachment.mimeType?.takeIf { it.isNotBlank() }?.let(request::setMimeType)
+        if (isApiUrl(downloadUrl)) {
+            val snap = settingsRepository.snapshot()
+            if (snap.apiKey.isNotBlank()) {
+                if (snap.useBearer) request.addRequestHeader("Authorization", "Bearer ${snap.apiKey}")
+                else request.addRequestHeader("X-API-Key", snap.apiKey)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ allows DownloadManager to write the public Downloads
+            // directory without broad storage permission. This makes the file
+            // visible to the user's file manager and share sheet.
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, destinationName)
+        } else {
+            // Older Android versions keep the permission-free app-specific
+            // fallback; the completion notification still exposes the file.
+            request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, destinationName)
+        }
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+            ?: error("系统下载服务不可用")
+        manager.enqueue(request)
+    }
+
     private fun baseUrl(): String =
         settingsRepository.snapshot().apiBase.trim().trimEnd('/')
+
+    private fun uniqueDownloadName(context: Context, requested: String): String {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: return requested
+        if (!java.io.File(dir, requested).exists()) return requested
+        val dot = requested.lastIndexOf('.')
+        val stem = if (dot > 0) requested.substring(0, dot) else requested
+        val ext = if (dot > 0) requested.substring(dot) else ""
+        return "$stem-${System.currentTimeMillis()}$ext"
+    }
+
+    private fun absoluteUrl(raw: String): String = when {
+        raw.startsWith("http://") || raw.startsWith("https://") -> raw
+        else -> baseUrl() + "/" + raw.trimStart('/')
+    }
+
+    private fun isApiUrl(raw: String): Boolean {
+        val target = raw.toHttpUrlOrNull() ?: return false
+        val base = baseUrl().toHttpUrlOrNull() ?: return false
+        return target.scheme == base.scheme && target.host == base.host && target.port == base.port
+    }
 
     private fun url(path: String, query: Map<String, String> = emptyMap()): String {
         val raw = baseUrl().trimEnd('/') + "/" + path.trimStart('/')
@@ -94,6 +194,68 @@ class LuckyAgentApi(
         val builder = http.newBuilder()
         query.forEach { (k, v) -> builder.addQueryParameter(k, v) }
         return builder.build().toString()
+    }
+
+    suspend fun inspectContext(sessionId: String): Result<ContextInspectResponse> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val id = sessionId.trim()
+                require(id.isNotEmpty()) { "session id required" }
+                val request = Request.Builder()
+                    .url(url("/api/v1/context", mapOf("session_id" to id, "inspect" to "1")))
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("context ${resp.code}: $body")
+                    json.decodeFromString(ContextInspectResponse.serializer(), body)
+                }
+            }
+        }
+
+    suspend fun listApprovals(): Result<List<PendingApproval>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/approvals")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("approvals ${resp.code}: $body")
+                json.decodeFromString(ApprovalsResponse.serializer(), body).approvals.orEmpty()
+            }
+        }
+    }
+
+    suspend fun resolveApproval(approval: PendingApproval, decision: String, input: String = ""): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = json.encodeToString(
+                    ApprovalResolutionRequest.serializer(),
+                    ApprovalResolutionRequest(
+                        provider = approval.provider,
+                        approvalId = approval.id,
+                        decision = decision,
+                        input = input,
+                    ),
+                )
+                val request = Request.Builder()
+                    .url(url("/api/v1/approvals"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("resolve approval ${resp.code}: $body")
+                }
+            }
+        }
+
+    suspend fun soul(): Result<SoulInfo> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/soul")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("soul ${resp.code}: $body")
+                json.decodeFromString(SoulInfo.serializer(), body)
+            }
+        }
     }
 
     suspend fun healthLive(): Result<String> = withContext(Dispatchers.IO) {
@@ -106,6 +268,47 @@ class LuckyAgentApi(
             }
         }
     }
+
+    suspend fun listModels(kind: String? = null, refresh: Boolean = false): Result<ModelsResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val query = buildMap<String, String> {
+                kind?.trim()?.takeIf { it.isNotEmpty() }?.let { put("kind", it) }
+                if (refresh) put("refresh", "1")
+            }
+            val request = Request.Builder().url(url("/api/v1/models", query)).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("models ${resp.code}: $body")
+                val decoded = json.decodeFromString(ModelsResponse.serializer(), body)
+                decoded.error?.takeIf { it.isNotBlank() }?.let { error(it) }
+                decoded
+            }
+        }
+    }
+
+    suspend fun switchModel(kind: String, model: String, provider: String? = null): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                require(kind.isNotBlank()) { "model kind required" }
+                require(model.isNotBlank()) { "model id required" }
+                val payload = json.encodeToString(
+                    SwitchModelRequest(
+                        kind = kind,
+                        model = model,
+                        provider = provider?.takeIf { it.isNotBlank() },
+                    ),
+                )
+                val request = Request.Builder()
+                    .url(url("/api/v1/models/switch"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .header("Content-Type", "application/json")
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("model switch ${resp.code}: $body")
+                }
+            }
+        }
 
     suspend fun listSessions(query: String = ""): Result<List<RuntimeSession>> = withContext(Dispatchers.IO) {
         runCatching {
@@ -136,10 +339,10 @@ class LuckyAgentApi(
             }
         }
 
-    suspend fun renameSession(id: String, title: String): Result<RuntimeSession> =
+    suspend fun patchSession(id: String, patch: SessionPatchRequest): Result<RuntimeSession> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val payload = json.encodeToString(SessionPatchRequest(title = title))
+                val payload = json.encodeToString(patch)
                 val request = Request.Builder()
                     .url(url("/api/v1/sessions/$id"))
                     .patch(payload.toRequestBody(jsonMedia))
@@ -147,27 +350,87 @@ class LuckyAgentApi(
                     .build()
                 client.newCall(request).execute().use { resp ->
                     val body = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) error("rename session ${resp.code}: $body")
+                    if (!resp.isSuccessful) error("update session ${resp.code}: $body")
                     runCatching {
                         json.decodeFromString(RuntimeSession.serializer(), body)
                     }.getOrElse {
-                        RuntimeSession(id = id, title = title)
+                        RuntimeSession(
+                            id = id,
+                            title = patch.title,
+                            pinned = patch.pinned == true,
+                            project = patch.project,
+                        )
                     }
                 }
             }
         }
 
-    suspend fun sessionHistory(sessionId: String, limit: Int = 100): Result<SessionHistory> =
+    suspend fun renameSession(id: String, title: String): Result<RuntimeSession> =
+        patchSession(id, SessionPatchRequest(title = title))
+
+    suspend fun deleteSession(id: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val request = Request.Builder()
-                    .url(url("/api/v1/sessions/$sessionId", mapOf("limit" to limit.toString())))
+                    .url(url("/api/v1/sessions/$id"))
+                    .delete()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("delete session ${resp.code}: $body")
+                }
+            }
+        }
+
+    suspend fun sessionHistory(
+        sessionId: String,
+        limit: Int = 40,
+        offset: Int = 0,
+        /** When true, request full message bodies (include=full). Default uses server preview caps. */
+        includeFull: Boolean = false,
+    ): Result<SessionHistory> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val query = buildMap {
+                    put("limit", limit.coerceIn(1, 500).toString())
+                    put("offset", offset.coerceAtLeast(0).toString())
+                    if (includeFull) {
+                        put("include", "full")
+                    }
+                }
+                val request = Request.Builder()
+                    .url(url("/api/v1/sessions/$sessionId", query))
                     .get()
                     .build()
                 client.newCall(request).execute().use { resp ->
                     val body = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) error("session history ${resp.code}: $body")
                     json.decodeFromString(SessionHistory.serializer(), body)
+                }
+            }
+        }
+
+    /** POST /api/v1/sessions/{id}/compact — compress session history into a boundary. */
+    suspend fun compactSession(
+        sessionId: String,
+        dryRun: Boolean = false,
+        forceLocal: Boolean = false,
+    ): Result<CompactSessionResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = json.encodeToString(
+                    CompactSessionRequest.serializer(),
+                    CompactSessionRequest(dryRun = dryRun, forceLocal = forceLocal),
+                )
+                val request = Request.Builder()
+                    .url(url("/api/v1/sessions/$sessionId/compact"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .header("Content-Type", "application/json")
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("compact session ${resp.code}: $body")
+                    json.decodeFromString(CompactSessionResult.serializer(), body)
                 }
             }
         }
@@ -251,12 +514,20 @@ class LuckyAgentApi(
         }
     }
 
-    suspend fun sessionToolTrace(sessionId: String): Result<SessionToolTrace> = withContext(Dispatchers.IO) {
+    suspend fun sessionToolTrace(
+        sessionId: String,
+        limit: Int = 100,
+        offset: Int = 0,
+    ): Result<SessionToolTrace> = withContext(Dispatchers.IO) {
         runCatching {
             val id = sessionId.trim()
             require(id.isNotEmpty()) { "session id required" }
+            val query = mapOf(
+                "limit" to limit.coerceIn(1, 200).toString(),
+                "offset" to offset.coerceAtLeast(0).toString(),
+            )
             val request = Request.Builder()
-                .url(url("/api/v1/sessions/$id/tools"))
+                .url(url("/api/v1/sessions/$id/tools", query))
                 .get()
                 .build()
             client.newCall(request).execute().use { resp ->
@@ -269,28 +540,69 @@ class LuckyAgentApi(
 
     suspend fun listGateways(): Result<List<GatewayStatus>> = withContext(Dispatchers.IO) {
         runCatching {
-            val paths = listOf("/api/v1/gateways", "/api/v1/msg-gateway")
-            var lastError: Throwable? = null
-            for (p in paths) {
-                try {
-                    val request = Request.Builder().url(url(p)).get().build()
-                    client.newCall(request).execute().use { resp ->
-                        val body = resp.body?.string().orEmpty()
-                        if (!resp.isSuccessful) error("gateways ${resp.code}: $body")
-                        val decoded = json.decodeFromString(GatewaysResponse.serializer(), body)
-                        val list = when {
-                            decoded.gateways.isNotEmpty() -> decoded.gateways
-                            decoded.items.isNotEmpty() -> decoded.items
-                            else -> emptyList()
-                        }
-                        return@runCatching list
-                    }
-                } catch (t: Throwable) {
-                    lastError = t
+            val request = Request.Builder().url(url("/api/v1/gateways")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("gateways ${resp.code}: $body")
+                val decoded = json.decodeFromString(GatewaysResponse.serializer(), body)
+                when {
+                    decoded.gateways.isNotEmpty() -> decoded.gateways
+                    decoded.items.isNotEmpty() -> decoded.items
+                    else -> emptyList()
                 }
             }
-            throw lastError ?: error("gateways unavailable")
         }
+    }
+
+    /** Starts a gateway in the host `lh serve` process. Other settings are read from host config. */
+    suspend fun startGateway(platform: String, token: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val name = normalizeGatewayName(platform)
+            val payload = json.encodeToString(
+                GatewayStartRequest.serializer(),
+                GatewayStartRequest(token = token?.trim()?.takeIf { it.isNotEmpty() }),
+            )
+            val request = Request.Builder()
+                .url(url("/api/v1/gateways/$name/start"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("start gateway $name ${resp.code}: ${gatewayError(body)}")
+            }
+        }
+    }
+
+    /** Stops a gateway that is registered in the host `lh serve` process. */
+    suspend fun stopGateway(platform: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val name = normalizeGatewayName(platform)
+            val request = Request.Builder()
+                .url(url("/api/v1/gateways/$name/stop"))
+                .post("".toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("stop gateway $name ${resp.code}: ${gatewayError(body)}")
+            }
+        }
+    }
+
+    private fun normalizeGatewayName(platform: String): String {
+        val name = platform.trim().lowercase()
+        require(name.isNotEmpty() && name.all { it.isLetterOrDigit() || it == '-' || it == '_' }) {
+            "invalid gateway name"
+        }
+        return name
+    }
+
+    private fun gatewayError(body: String): String {
+        if (body.isBlank()) return "request failed"
+        return runCatching {
+            json.decodeFromString(GatewayErrorResponse.serializer(), body).error
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: body.take(500)
     }
 
     suspend fun listSkills(): Result<SkillsResponse> = withContext(Dispatchers.IO) {
@@ -315,6 +627,17 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun listCronJobs(): Result<CronListResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/cron")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("cron ${resp.code}: $body")
+                json.decodeFromString(CronListResponse.serializer(), body)
+            }
+        }
+    }
+
     suspend fun runCommand(
         command: String,
         args: String,
@@ -334,6 +657,196 @@ class LuckyAgentApi(
             }
         }
     }
+
+    suspend fun listTaskRecords(limit: Int = 200): Result<List<TaskRecord>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(url("/api/v1/tasks", mapOf("limit" to limit.coerceIn(1, 200).toString())))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("tasks ${resp.code}: $body")
+                json.decodeFromString(TaskListResponse.serializer(), body).tasks
+            }
+        }
+    }
+
+    suspend fun getAutonomyDashboard(state: String? = null, limit: Int = 200): Result<AutonomyDashboardResponse> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val query = buildMap {
+                    state?.trim()?.takeIf { it.isNotEmpty() }?.let { put("state", it) }
+                    put("limit", limit.coerceIn(1, 200).toString())
+                }
+                val request = Request.Builder()
+                    .url(url("/api/v1/autonomy/dashboard", query))
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("autonomy dashboard ${resp.code}: $body")
+                    json.decodeFromString(AutonomyDashboardResponse.serializer(), body)
+                }
+            }
+        }
+
+    suspend fun getAutonomyTask(id: String): Result<AutonomyTaskDetailResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "background task id required" }
+            val request = Request.Builder().url(url("/api/v1/autonomy/tasks/$id")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("background task ${resp.code}: $body")
+                json.decodeFromString(AutonomyTaskDetailResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun getTaskRecord(id: String): Result<TaskRecord> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task ${resp.code}: $body")
+                json.decodeFromString(TaskRecord.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun getTaskTree(id: String): Result<TaskTreeNode> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/tree")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task tree ${resp.code}: $body")
+                json.decodeFromString(TaskTreeNode.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun getTaskEvents(id: String): Result<List<TaskEvent>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/events")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task events ${resp.code}: $body")
+                json.decodeFromString(TaskEventsResponse.serializer(), body).events
+            }
+        }
+    }
+
+    suspend fun listBlackboard(taskId: String): Result<List<BlackboardEntry>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(taskId.isNotBlank()) { "task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/agents/blackboard", mapOf("task_id" to taskId)))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("blackboard ${resp.code}: $body")
+                json.decodeFromString(BlackboardResponse.serializer(), body).items
+            }
+        }
+    }
+
+    suspend fun listAgentMessages(taskId: String, limit: Int = 50): Result<List<AgentMessage>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(taskId.isNotBlank()) { "task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/agents/messages", mapOf(
+                    "task_id" to taskId,
+                    "limit" to limit.coerceIn(1, 200).toString(),
+                )))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("agent messages ${resp.code}: $body")
+                json.decodeFromString(AgentMessagesResponse.serializer(), body).messages
+            }
+        }
+    }
+
+    suspend fun getTaskResult(id: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/result")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task result ${resp.code}: $body")
+                json.decodeFromString(TaskResultResponse.serializer(), body).result
+            }
+        }
+    }
+
+    /** Planner/MDP trace for a task. Older tasks legitimately return 404. */
+    suspend fun getTaskTrace(id: String): Result<kotlinx.serialization.json.JsonElement> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/trace")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task trace ${resp.code}: $body")
+                json.parseToJsonElement(body)
+            }
+        }
+    }
+
+    suspend fun listLegacyTasks(): Result<List<LegacyCollabTask>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/agents/tasks")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("legacy tasks ${resp.code}: $body")
+                json.decodeFromString(LegacyTasksResponse.serializer(), body).tasks
+            }
+        }
+    }
+
+    suspend fun getLegacyTask(id: String): Result<LegacyCollabTask> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/agents/task", mapOf("id" to id)))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("legacy task ${resp.code}: $body")
+                json.decodeFromString(LegacyCollabTask.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun cancelTask(id: String, origin: TaskOrigin, reason: String = "cancelled by user"): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                require(id.isNotBlank()) { "task id required" }
+                val request = if (origin == TaskOrigin.Legacy) {
+                    Request.Builder()
+                        .url(url("/api/v1/agents/cancel", mapOf("id" to id)))
+                        .post("".toRequestBody(jsonMedia))
+                        .header("Content-Type", "application/json")
+                        .build()
+                } else {
+                    val payload = "{\"reason\":${json.encodeToString(reason)}}"
+                    Request.Builder()
+                        .url(url("/api/v1/tasks/$id/cancel"))
+                        .post(payload.toRequestBody(jsonMedia))
+                        .header("Content-Type", "application/json")
+                        .build()
+                }
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("cancel task ${resp.code}: $body")
+                }
+            }
+        }
 
     suspend fun getJson(path: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {

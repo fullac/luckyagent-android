@@ -1,6 +1,11 @@
 package com.luckyagent.android.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,9 +13,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -22,6 +27,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.HealthAndSafety
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -44,7 +50,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.UUID
 import com.luckyagent.android.data.api.SocketState
@@ -52,8 +60,14 @@ import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.UpdatePhase
+import android.Manifest
+import android.app.Activity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.DetailDisclosure
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -61,21 +75,28 @@ import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
+import com.luckyagent.android.ui.theme.CloverError
 
 @Composable
-fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
+fun SettingsScreen(
+    state: AppUiState,
+    vm: AppViewModel,
+    onBack: (() -> Unit)? = null,
+    onScan: () -> Unit = {},
+    onPickQrImage: () -> Unit = {},
+) {
     val s = state.settings
     val useTwoColumns = LocalConfiguration.current.screenWidthDp >= 1000
     Column(
         Modifier
             .fillMaxSize()
-            .background(CloverBg)
             .verticalScroll(rememberScrollState()),
     ) {
         ScreenHeader(
             eyebrow = "Connection",
-            title = "Settings",
-            subtitle = "Phone talks only to host lh serve (HTTP + WS)",
+            title = "You",
+            subtitle = "LuckyAgent on this device",
+            onBack = onBack,
         )
 
         if (useTwoColumns) {
@@ -84,10 +105,18 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(Modifier.weight(1.25f)) {
-                    SettingsEndpointCard(s, vm)
+                    SettingsSectionTitle("连接")
+                    SettingsEndpointCard(s, vm, onScan, onPickQrImage)
+                    Spacer(Modifier.height(12.dp))
+                    SettingsSessionCard(s, vm)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SettingsSectionTitle("状态与外观")
                     SettingsLiveCard(state, vm)
+                    SettingsAppearanceCard(state, vm)
+                    SettingsSectionTitle("通知与版本")
+                    SettingsNotificationsCard(state, vm)
+                    SettingsUpdateCard(state, vm)
                     SettingsAboutCard()
                 }
             }
@@ -96,8 +125,15 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 Modifier.padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                SettingsEndpointCard(s, vm)
+                SettingsSectionTitle("连接")
+                SettingsEndpointCard(s, vm, onScan, onPickQrImage)
+                SettingsSessionCard(s, vm)
+                SettingsSectionTitle("状态与外观")
                 SettingsLiveCard(state, vm)
+                SettingsAppearanceCard(state, vm)
+                SettingsSectionTitle("通知与版本")
+                SettingsNotificationsCard(state, vm)
+                SettingsUpdateCard(state, vm)
                 SettingsAboutCard()
             }
         }
@@ -106,7 +142,275 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
 }
 
 @Composable
-private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
+private fun SettingsSectionTitle(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        color = CloverText3,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+    )
+}
+
+@Composable
+private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
+    val s = state.settings
+    val context = LocalContext.current
+    val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> if (uri != null) vm.setChatBackground(uri) }
+    val avatarPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> if (uri != null) vm.setAvatar(uri) }
+    val background = s.chatBackgroundFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    val avatar = s.avatarFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    CloverCard {
+        Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("只保存在这台手机上，不会上传。背景铺在每个页面后面。输入区只留中间那条，长按发送键会在四周展开 Lucky 指令。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        state.snackbarMessage?.let { message ->
+            Text(message, color = if (message.contains("没能")) CloverError else CloverText, style = MaterialTheme.typography.bodyMedium)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            AppearancePreview(background, avatar)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(if (background != null) "聊天背景已设置" else "聊天背景使用默认浅色", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+                Text(if (avatar != null) "右上角使用自定义头像" else "右上角使用默认图标", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    backgroundPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                enabled = !state.appearanceBusy,
+            ) { Text(if (state.appearanceBusy) "处理中" else "选择背景") }
+            if (background != null) TextButton(onClick = { vm.setChatBackground(null) }) { Text("恢复默认") }
+        }
+        if (background != null) {
+            Text("遮罩 ${s.chatBackgroundDim}", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+            androidx.compose.material3.Slider(
+                value = s.chatBackgroundDim.toFloat(),
+                onValueChange = { vm.setChatBackgroundDim(it.toInt()) },
+                valueRange = 0f..70f,
+            )
+        }
+        Text("组件透明度", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text("0 全透明，100 不透明。拖动后立刻生效。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        OpacitySlider("输入条", s.composerOpacity) { value -> vm.updateSettings { it.copy(composerOpacity = value) } }
+        OpacitySlider("消息气泡", s.bubbleOpacity) { value -> vm.updateSettings { it.copy(bubbleOpacity = value) } }
+        OpacitySlider("顶栏", s.chromeOpacity) { value -> vm.updateSettings { it.copy(chromeOpacity = value) } }
+        OpacitySlider("卡片", s.cardOpacity) { value -> vm.updateSettings { it.copy(cardOpacity = value) } }
+        OpacitySlider("侧栏", s.drawerOpacity) { value -> vm.updateSettings { it.copy(drawerOpacity = value) } }
+        Text("阅读字体", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "使用 Android 内置的 Noto CJK 字体，不联网下载。衬线体更适合长文本阅读。",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (s.fontFamily == "serif") {
+                Button(onClick = {}) { Text("典雅衬线") }
+            } else {
+                OutlinedButton(onClick = { vm.updateSettings { it.copy(fontFamily = "serif") } }) {
+                    Text("典雅衬线")
+                }
+            }
+            if (s.fontFamily == "sans") {
+                Button(onClick = {}) { Text("现代无衬线") }
+            } else {
+                OutlinedButton(onClick = { vm.updateSettings { it.copy(fontFamily = "sans") } }) {
+                    Text("现代无衬线")
+                }
+            }
+        }
+        Text("字号 ${(s.fontScale * 100).toInt()}%", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+        androidx.compose.material3.Slider(
+            value = s.fontScale,
+            onValueChange = { value -> vm.updateSettings { it.copy(fontScale = value) } },
+            valueRange = 0.85f..1.35f,
+            steps = 0,
+        )
+        Text(
+            "字号会同步应用到聊天正文、Markdown、代码说明和侧栏。",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    avatarPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                enabled = !state.appearanceBusy,
+            ) { Text(if (state.appearanceBusy) "处理中" else "选择头像") }
+            if (avatar != null) TextButton(onClick = { vm.setAvatar(null) }) { Text("恢复默认") }
+        }
+    }
+}
+
+@Composable
+private fun OpacitySlider(label: String, value: Int, onChange: (Int) -> Unit) {
+    Text("$label $value", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+    androidx.compose.material3.Slider(
+        value = value.toFloat(),
+        onValueChange = { onChange(it.toInt().coerceIn(0, 100)) },
+        valueRange = 0f..100f,
+    )
+}
+
+@Composable
+private fun AppearancePreview(background: java.io.File?, avatar: java.io.File?) {
+    val context = LocalContext.current
+    Box(
+        Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)).background(CloverBg),
+        contentAlignment = Alignment.TopEnd,
+    ) {
+        if (background != null) {
+            coil.compose.AsyncImage(
+                model = coil.request.ImageRequest.Builder(context).data(background).memoryCacheKey(background.absolutePath + background.lastModified()).build(),
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(Modifier.padding(6.dp).size(22.dp).clip(CircleShape).background(CloverBg)) {
+            if (avatar != null) {
+                coil.compose.AsyncImage(
+                    model = coil.request.ImageRequest.Builder(context).data(avatar).memoryCacheKey(avatar.absolutePath + avatar.lastModified()).build(),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
+    val context = LocalContext.current
+    val permissionMissing = android.os.Build.VERSION.SDK_INT >= 33 &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+    CloverCard {
+        Text("通知", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        NotificationToggle(
+            title = "对话完成",
+            body = "一轮对话出最终结果时通知。正在看这个会话的聊天页时不发。",
+            checked = state.settings.notifyOnChatCompleted,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnChatCompleted = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "定时消息",
+            body = "定时任务写进会话，或上次运行状态变化时通知。",
+            checked = state.settings.notifyOnCron,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnCron = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "子代理进度",
+            body = "子任务状态、进度或子任务数量变化时通知。正在看该任务时不发。",
+            checked = state.settings.notifyOnSubagent,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnSubagent = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "后台任务",
+            body = "后台任务和自主任务有进度变化时通知。正在看后台页时不发。",
+            checked = state.settings.notifyOnBackground,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnBackground = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        if (permissionMissing) {
+            Text("Android notification permission is off.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            TextButton(
+                onClick = {
+                    if (context is Activity) ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
+                },
+            ) { Text("Allow notifications") }
+        }
+    }
+}
+
+@Composable
+private fun NotificationToggle(
+    title: String,
+    body: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(body, color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = checked, onCheckedChange = onChecked)
+    }
+}
+
+private fun requestNoticePermission(context: android.content.Context, enabled: Boolean) {
+    if (enabled && android.os.Build.VERSION.SDK_INT >= 33 && context is Activity) {
+        ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
+    }
+}
+
+@Composable
+private fun SettingsUpdateCard(state: AppUiState, vm: AppViewModel) {
+    val update = state.update
+    CloverCard {
+        Text("App updates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Current version ${update.currentVersion}", color = CloverText2, style = MaterialTheme.typography.bodyMedium)
+        val status = when (update.phase) {
+            UpdatePhase.Idle -> "Check GitHub Releases for a newer APK."
+            UpdatePhase.Checking -> "Checking GitHub Releases…"
+            UpdatePhase.UpToDate -> "You are on the latest release."
+            UpdatePhase.Available -> "Update available: ${update.latest?.release?.tagName.orEmpty()}"
+            UpdatePhase.Downloading -> "Downloading APK…"
+            UpdatePhase.ReadyToInstall -> "APK downloaded. Tap Install to continue."
+            UpdatePhase.Error -> update.error ?: "Update check failed."
+        }
+        Text(status, color = if (update.phase == UpdatePhase.Error) MaterialTheme.colorScheme.error else CloverText2, style = MaterialTheme.typography.bodySmall)
+        if (update.phase == UpdatePhase.Downloading) {
+            androidx.compose.material3.LinearProgressIndicator(progress = { (update.downloadProgress ?: 0).coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth())
+            Text("${update.downloadProgress ?: 0}%", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+        }
+        update.installBlockReason?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        update.latest?.release?.body?.trim()?.takeIf { it.isNotBlank() }?.let { body ->
+            Text(body.replace(Regex("\\s+"), " ").take(180), color = CloverText3, style = MaterialTheme.typography.bodySmall, maxLines = 3)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (update.phase) {
+                UpdatePhase.Available -> {
+                    Button(onClick = vm::downloadUpdate, enabled = com.luckyagent.android.BuildConfig.BUILD_TYPE == "release") { Text("Download APK") }
+                    TextButton(onClick = vm::openReleasePage) { Text("Open Release") }
+                }
+                UpdatePhase.Downloading -> TextButton(onClick = vm::cancelUpdateDownload) { Text("Cancel") }
+                UpdatePhase.Checking -> OutlinedButton(onClick = {}, enabled = false) { Text("Checking…") }
+                UpdatePhase.ReadyToInstall -> Button(onClick = vm::installUpdate, enabled = update.installBlockReason == null) { Text("Install") }
+                else -> Button(onClick = vm::checkForUpdates) { Text("Check for updates") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsEndpointCard(
+    s: ClientSettings,
+    vm: AppViewModel,
+    onScan: () -> Unit,
+    onPickQrImage: () -> Unit,
+) {
     var editing by remember { mutableStateOf<RuntimeEndpoint?>(null) }
     var deleting by remember { mutableStateOf<RuntimeEndpoint?>(null) }
     CloverCard {
@@ -115,6 +419,16 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
                 Text("Runtime endpoints", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text("Manage hosts and switch the active runtime", color = CloverText2, style = MaterialTheme.typography.bodySmall)
             }
+            OutlinedButton(
+                onClick = {
+                    onScan()
+                },
+            ) {
+                Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("扫码")
+            }
+            TextButton(onClick = onPickQrImage) { Text("相册") }
             OutlinedButton(
                 onClick = {
                     editing = RuntimeEndpoint(id = UUID.randomUUID().toString(), name = "", apiBase = "")
@@ -126,7 +440,7 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             }
         }
         Text(
-            "Each endpoint keeps its own API URL, key and optional WebSocket URL. Keys are stored encrypted on this device.",
+            "扫电脑上 lh qr 打出的码，会写入局域网地址和临时 key。这把 key 默认 24 小时，API 重启后立即失效。",
             color = CloverText2,
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -141,7 +455,7 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(endpoint.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    Text(endpoint.apiBase, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 1)
+                    DetailDisclosure("完整地址", endpoint.apiBase, previewLines = 2)
                     if (active) Text("ACTIVE", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
                 }
                 if (!active) {
@@ -157,7 +471,6 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
                 }
             }
         }
-        SettingsField("Session ID", s.sessionId, { v -> vm.updateSettings { it.copy(sessionId = v) } })
     }
     editing?.let { endpoint ->
         RuntimeEndpointDialog(
@@ -176,6 +489,31 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun SettingsSessionCard(s: ClientSettings, vm: AppViewModel) {
+    val context = LocalContext.current
+    CloverCard {
+        Text("Session", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Messages are loaded from this session on the active runtime.",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Box(Modifier.weight(1f)) {
+                SettingsField("Session ID", s.sessionId, { v -> vm.updateSettings { it.copy(sessionId = v) } })
+            }
+            TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("luckyagent-session-id", s.sessionId))
+                },
+                enabled = s.sessionId.isNotBlank(),
+            ) { Text("复制") }
+        }
     }
 }
 
@@ -252,7 +590,7 @@ private fun SettingsField(label: String, value: String, onValueChange: (String) 
 @Composable
 private fun SettingsLiveCard(state: AppUiState, vm: AppViewModel) {
     CloverCard {
-        Text("Live checks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = vm::probeHealth) {
                 Icon(Icons.Outlined.HealthAndSafety, contentDescription = null)
@@ -271,8 +609,8 @@ private fun SettingsLiveCard(state: AppUiState, vm: AppViewModel) {
                 SocketState.Connecting, SocketState.Reconnecting -> "WS connecting"
                 else -> "WS idle"
             })
-            state.healthText?.let { MetaChip(it.take(48)) }
         }
+        state.healthText?.let { DetailDisclosure("Health 响应", it, json = true, previewLines = 1) }
         state.activityLine?.let { Text(it, color = CloverText2, style = MaterialTheme.typography.bodyMedium) }
     }
 }
@@ -288,8 +626,8 @@ private fun SettingsAboutCard() {
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            "Degraded on phone: gateway start/stop, skill install/enable, memory write, and full graph layout " +
-                "remain desktop-side when write APIs are not exposed.",
+            "Gateway start/stop is available from the Gateways page when the connected host exposes the control API. " +
+                "Other runtime settings remain managed by the host.",
             color = CloverText3,
             style = MaterialTheme.typography.bodySmall,
         )

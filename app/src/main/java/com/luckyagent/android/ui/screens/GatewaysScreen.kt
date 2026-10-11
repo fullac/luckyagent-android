@@ -1,63 +1,94 @@
 package com.luckyagent.android.ui.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.GatewayStatus
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.components.CardTitleRow
 import com.luckyagent.android.ui.components.CloverCard
-import com.luckyagent.android.ui.components.EmptyState
-import com.luckyagent.android.ui.components.ErrorLine
-import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.ScreenHeader
-import com.luckyagent.android.ui.theme.CloverBg
+import com.luckyagent.android.ui.components.StatusChip
+import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.theme.CloverError
-import com.luckyagent.android.ui.theme.CloverLeaf
-import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 
+private data class GatewayOption(
+    val name: String,
+    val label: String,
+    val description: String,
+    val configHint: String,
+    val needsToken: Boolean = false,
+)
+
+private val gatewayOptions = listOf(
+    GatewayOption(
+        name = "telegram",
+        label = "Telegram",
+        description = "Telegram bot",
+        configHint = "Token can be entered here or read from host config.",
+        needsToken = true,
+    ),
+    GatewayOption("qqofficial", "QQ Official", "QQ 官方机器人", "Uses msg_gateway.qqofficial.* on the host."),
+    GatewayOption("napcat", "NapCat", "OneBot v11 reverse WebSocket", "Uses msg_gateway.napcat.* on the host."),
+    GatewayOption("feishu", "Feishu", "飞书机器人", "Uses msg_gateway.feishu.* on the host."),
+    GatewayOption("weixin", "Weixin", "微信 iLink bot", "Uses msg_gateway.weixin.* on the host."),
+    GatewayOption("openclawweixin", "OpenClaw Weixin", "OpenClaw account", "Uses the host OpenClaw account state."),
+)
+
 @Composable
 fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(CloverBg),
-    ) {
+    var telegramDialogOpen by rememberSaveable { mutableStateOf(false) }
+    var telegramToken by rememberSaveable { mutableStateOf("") }
+    val statuses = state.gateways.associateBy { it.name.trim().lowercase() }
+    val known = gatewayOptions.map { it.name }.toSet()
+    val cards = gatewayOptions.map { option ->
+        option to (statuses[option.name] ?: GatewayStatus(name = option.name, platform = option.name))
+    } + state.gateways
+        .filter { it.name.trim().lowercase() !in known }
+        .map { GatewayOption(it.name, it.name, "Host gateway", "Configured on the host.") to it }
+
+    Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             eyebrow = "Channels",
             title = "Gateways",
-            subtitle = "Message gateway status from lh serve (read-only on phone)",
+            subtitle = "Start and stop channels on the connected lh serve host",
             actions = {
-                IconButton(onClick = vm::refreshGateways) {
+                IconButton(onClick = vm::refreshGateways, enabled = !state.gatewaysLoading && state.gatewayAction == null) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                 }
             },
@@ -67,72 +98,125 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
             Text("Loading gateways…", color = CloverText2, modifier = Modifier.padding(horizontal = 16.dp))
         }
         state.gatewaysError?.let { ErrorLine(it) }
-
+        state.gatewayActionError?.let { ErrorLine(it) }
         Text(
-            "Start/stop and token configuration stay on the desktop runtime. This page mirrors live status only.",
+            "Start uses the host configuration. Telegram can receive a token here; other channels show a clear host-config error when required values are missing.",
             color = CloverText3,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
 
-        when {
-            !state.gatewaysLoading && state.gateways.isEmpty() && state.gatewaysError == null -> {
-                EmptyState(
-                    title = "No gateways reported",
-                    body = "lh serve did not return gateway entries. Confirm msg-gateway is configured on the host.",
-                    modifier = Modifier.padding(16.dp),
-                )
-            }
-            else -> {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 420.dp),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    items(state.gateways, key = { it.name + it.platform.orEmpty() }) { gw ->
-                        GatewayCard(gw)
-                    }
+        if (cards.isEmpty()) {
+            EmptyGatewayState(vm)
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 420.dp),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(cards, key = { (option, _) -> option.name }) { (option, gateway) ->
+                    GatewayCard(
+                        option = option,
+                        gateway = gateway,
+                        actionInFlight = state.gatewayAction == gateway.name.trim().lowercase(),
+                        anyActionInFlight = state.gatewayAction != null || state.gatewaysLoading,
+                        onStart = {
+                            if (option.needsToken) {
+                                telegramDialogOpen = true
+                            } else {
+                                vm.startGateway(option.name)
+                            }
+                        },
+                        onStop = { vm.stopGateway(gateway.name.ifBlank { option.name }) },
+                    )
                 }
             }
         }
     }
+
+    if (telegramDialogOpen) {
+        AlertDialog(
+            onDismissRequest = {
+                if (state.gatewayAction == null) {
+                    telegramDialogOpen = false
+                    telegramToken = ""
+                }
+            },
+            title = { Text("Start Telegram") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Optional: enter a bot token to override the host config. It is sent only to the connected host and is not saved by the app.", style = MaterialTheme.typography.bodyMedium)
+                    OutlinedTextField(
+                        value = telegramToken,
+                        onValueChange = { telegramToken = it },
+                        label = { Text("Bot token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.startGateway("telegram", telegramToken.trim())
+                        telegramDialogOpen = false
+                        telegramToken = ""
+                    },
+                    enabled = state.gatewayAction == null,
+                ) { Text("Start") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        telegramDialogOpen = false
+                        telegramToken = ""
+                    },
+                    enabled = state.gatewayAction == null,
+                ) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 @Composable
-private fun GatewayCard(gw: GatewayStatus) {
+private fun EmptyGatewayState(vm: AppViewModel) {
+    Column(
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(Icons.Outlined.LinkOff, contentDescription = null, tint = CloverText3, modifier = Modifier.size(48.dp))
+        Text("No gateway entries", style = MaterialTheme.typography.titleMedium)
+        Text("Refresh after the host API is available.", color = CloverText3)
+        TextButton(onClick = vm::refreshGateways) { Text("Refresh") }
+    }
+}
+
+@Composable
+private fun GatewayCard(
+    option: GatewayOption,
+    gateway: GatewayStatus,
+    actionInFlight: Boolean,
+    anyActionInFlight: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+) {
     CloverCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(if (gw.running) CloverLeaf else CloverText3),
-            )
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    gw.name.ifBlank { gw.platform ?: "gateway" },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                val sub = listOfNotNull(
-                    gw.platform?.takeIf { it.isNotBlank() && it != gw.name },
-                    if (gw.connected == true) "connected" else null,
-                ).joinToString(" · ")
-                if (sub.isNotBlank()) {
-                    Text(sub, color = CloverText2, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-            MetaChip(if (gw.running) "running" else "stopped")
-        }
-        gw.stats?.let { stats ->
-            HorizontalDivider(color = CloverLine.copy(alpha = .75f))
+        CardTitleRow(
+            title = option.label,
+            subtitle = listOfNotNull(
+                option.description,
+                if (gateway.connected == true) "connected" else null,
+            ).joinToString(" · "),
+            trailing = { StatusChip(if (gateway.running) "running" else "stopped") },
+        )
+        Text(option.configHint, color = CloverText3, style = MaterialTheme.typography.bodySmall)
+        gateway.stats?.let { stats ->
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Stat("Sent", stats.messagesSent?.toString() ?: "—")
@@ -140,8 +224,25 @@ private fun GatewayCard(gw: GatewayStatus) {
                 Stat("Errors", stats.errors?.toString() ?: "—")
             }
         }
-        if (!gw.error.isNullOrBlank()) {
-            Text(gw.error, color = CloverError, style = MaterialTheme.typography.bodyMedium)
+        if (!gateway.error.isNullOrBlank()) {
+            Text(gateway.error, color = CloverError, style = MaterialTheme.typography.bodyMedium)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (actionInFlight) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+            if (gateway.running) {
+                OutlinedButton(onClick = onStop, enabled = !anyActionInFlight) {
+                    Text("Stop")
+                }
+            } else {
+                Button(onClick = onStart, enabled = !anyActionInFlight) {
+                    Text("Start")
+                }
+            }
+            if (actionInFlight) {
+                Text("Working…", color = CloverText2, style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
@@ -150,6 +251,6 @@ private fun GatewayCard(gw: GatewayStatus) {
 private fun Stat(label: String, value: String) {
     Column {
         Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
-        Text(value, style = MaterialTheme.typography.titleMedium)
+        Text(value, style = MaterialTheme.typography.titleSmall)
     }
 }

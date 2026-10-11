@@ -6,9 +6,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -21,37 +26,66 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.ui.theme.CloverBgSide
+import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
+import com.luckyagent.android.ui.theme.CloverWarning
 
 /**
  * Lightweight Markdown renderer: bold, italic, inline code, fenced code blocks,
- * headings, bullet lists, and links. No external dependency.
+ * headings, bullet and ordered lists, links, and GFM tables. Tables use a stateful row
+ * tokenizer (escaped/code/link pipes are safe), support alignment markers, and
+ * use content-based column widths inside a horizontally scrollable row. One-column
+ * tables are supported when written with explicit outer pipes. A table is held
+ * back while [streaming] until its delimiter row is complete. Malformed
+ * delimiter rows remain ordinary text; colspan and nested block Markdown in a
+ * cell are outside this lightweight renderer's scope.
  */
 @Composable
 fun MarkdownText(
     markdown: String,
     color: Color = CloverText,
     modifier: Modifier = Modifier,
+    imageHeaders: Map<String, String> = emptyMap(),
+    imageBaseUrl: String = "",
+    streaming: Boolean = false,
 ) {
-    val blocks = remember(markdown) { splitBlocks(markdown) }
+    val context = LocalContext.current
+    val blocks = remember(markdown, streaming) {
+        splitMarkdownBlocks(markdown, hideIncompleteTables = streaming)
+    }
     Column(modifier = modifier) {
         blocks.forEach { block ->
             when (block) {
+                is MdBlock.Mermaid -> {
+                    MermaidView(source = block.source)
+                }
+                is MdBlock.Html -> {
+                    HtmlBlock(source = block.source, color = color)
+                }
                 is MdBlock.Code -> {
                     SelectionContainer {
                         Text(
@@ -59,7 +93,6 @@ fun MarkdownText(
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 color = CloverText2,
-                                lineHeight = 18.sp,
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -72,6 +105,9 @@ fun MarkdownText(
                     }
                 }
                 is MdBlock.Image -> {
+                    val imageSource = remember(block.source, imageBaseUrl) {
+                        resolveImageSource(block.source, imageBaseUrl)
+                    }
                     val bitmap by produceState<android.graphics.Bitmap?>(null, block.source) {
                         value = withContext(Dispatchers.IO) { decodeMarkdownImage(block.source) }
                     }
@@ -84,11 +120,79 @@ fun MarkdownText(
                         )
                     } else if (!block.source.startsWith("data:image/")) {
                         coil.compose.AsyncImage(
-                            model = block.source,
+                            model = remember(imageSource, imageBaseUrl, imageHeaders) {
+                                ImageRequest.Builder(context)
+                                    .data(imageSource)
+                                    .apply {
+                                        if (sameOrigin(imageSource, imageBaseUrl)) {
+                                            imageHeaders.forEach { (name, value) -> addHeader(name, value) }
+                                        }
+                                    }
+                                    .build()
+                            },
                             contentDescription = block.alt,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                         )
                     }
+                }
+                is MdBlock.Table -> {
+                    // Keep columns aligned while sizing each one from its longest
+                    // visible cell. The bounds prevent a long URL from taking
+                    // over the bubble; the surrounding scroll handles overflow.
+                    val columnWidths = remember(block.rows) {
+                        List(block.alignments.size) { column ->
+                            val maxCharacters = block.rows.maxOfOrNull {
+                                it.getOrNull(column).orEmpty().length
+                            } ?: 0
+                            (maxCharacters * 8 + 16).coerceIn(64, 280).dp
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 4.dp),
+                    ) {
+                        block.rows.forEachIndexed { rowIndex, cells ->
+                            Row {
+                                cells.forEachIndexed { columnIndex, cell ->
+                                    Text(
+                                        text = inlineMarkdown(cell),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = color,
+                                            fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal,
+                                            textAlign = when (block.alignments.getOrNull(columnIndex)) {
+                                                TableAlignment.CENTER -> TextAlign.Center
+                                                TableAlignment.RIGHT -> TextAlign.End
+                                                else -> TextAlign.Start
+                                            },
+                                        ),
+                                        modifier = Modifier
+                                            .width(columnWidths.getOrElse(columnIndex) { 64.dp })
+                                            .border(1.dp, CloverLine)
+                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                MdBlock.IncompleteTable -> Unit
+                is MdBlock.Rule -> {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp)
+                            .height(1.dp)
+                            .background(CloverLine),
+                    )
+                }
+                is MdBlock.Math -> {
+                    LatexBlock(
+                        latex = block.latex,
+                        display = block.display,
+                        color = color,
+                    )
                 }
                 is MdBlock.Heading -> {
                     Text(
@@ -96,7 +200,10 @@ fun MarkdownText(
                         style = when (block.level) {
                             1 -> MaterialTheme.typography.titleLarge
                             2 -> MaterialTheme.typography.titleMedium
-                            else -> MaterialTheme.typography.titleSmall
+                            3 -> MaterialTheme.typography.titleSmall
+                            4 -> MaterialTheme.typography.bodyLarge
+                            5 -> MaterialTheme.typography.bodyMedium
+                            else -> MaterialTheme.typography.bodySmall
                         }.copy(color = color, fontWeight = FontWeight.SemiBold),
                         modifier = Modifier.padding(vertical = 4.dp),
                     )
@@ -104,7 +211,8 @@ fun MarkdownText(
                 is MdBlock.ListItem -> {
                     Text(
                         text = buildAnnotatedString {
-                            append("• ")
+                            append(block.marker)
+                            append(" ")
                             append(inlineMarkdown(block.text))
                         },
                         style = MaterialTheme.typography.bodyLarge.copy(color = color),
@@ -112,23 +220,15 @@ fun MarkdownText(
                     )
                 }
                 is MdBlock.Paragraph -> {
-                    Text(
-                        text = inlineMarkdown(block.text),
-                        style = MaterialTheme.typography.bodyLarge.copy(color = color),
+                    RichMarkdownText(
+                        text = block.text,
+                        color = color,
                         modifier = Modifier.padding(vertical = 2.dp),
                     )
                 }
             }
         }
     }
-}
-
-private sealed class MdBlock {
-    data class Paragraph(val text: String) : MdBlock()
-    data class Heading(val level: Int, val text: String) : MdBlock()
-    data class ListItem(val text: String) : MdBlock()
-    data class Code(val body: String) : MdBlock()
-    data class Image(val alt: String, val source: String) : MdBlock()
 }
 
 private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runCatching {
@@ -142,107 +242,321 @@ private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runC
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
 }.getOrNull()
 
-private fun splitBlocks(src: String): List<MdBlock> {
-    val out = mutableListOf<MdBlock>()
-    val lines = src.replace("\r\n", "\n").split('\n')
-    var i = 0
-    val para = StringBuilder()
-    fun flushPara() {
-        val t = para.toString().trimEnd()
-        if (t.isNotBlank()) out += MdBlock.Paragraph(t)
-        para.clear()
-    }
-    while (i < lines.size) {
-        val line = lines[i]
-        val image = Regex("""^!\[([^]]*)\]\((.+)\)$""").matchEntire(line.trim())
-        if (image != null) {
-            flushPara()
-            out += MdBlock.Image(image.groupValues[1], image.groupValues[2])
-            i++
-            continue
-        }
-        if (line.trimStart().startsWith("```")) {
-            flushPara()
-            i++
-            val code = StringBuilder()
-            while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
-                if (code.isNotEmpty()) code.append('\n')
-                code.append(lines[i])
-                i++
-            }
-            if (i < lines.size) i++ // closing fence
-            out += MdBlock.Code(code.toString())
-            continue
-        }
-        val heading = Regex("""^(#{1,3})\s+(.*)$""").matchEntire(line.trimEnd())
-        if (heading != null) {
-            flushPara()
-            out += MdBlock.Heading(heading.groupValues[1].length, heading.groupValues[2])
-            i++
-            continue
-        }
-        val list = Regex("""^\s*[-*]\s+(.*)$""").matchEntire(line)
-        if (list != null) {
-            flushPara()
-            out += MdBlock.ListItem(list.groupValues[1])
-            i++
-            continue
-        }
-        if (line.isBlank()) {
-            flushPara()
-            i++
-            continue
-        }
-        if (para.isNotEmpty()) para.append('\n')
-        para.append(line)
-        i++
-    }
-    flushPara()
-    return out
+private fun resolveImageSource(source: String, baseUrl: String): String {
+    if (source.startsWith("http://") || source.startsWith("https://") || source.startsWith("data:")) return source
+    if (baseUrl.isBlank()) return source
+    return baseUrl.trimEnd('/') + "/" + source.trimStart('/')
 }
 
-private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+private fun sameOrigin(source: String, baseUrl: String): Boolean {
+    val imageUri = runCatching { android.net.Uri.parse(source) }.getOrNull() ?: return false
+    val baseUri = runCatching { android.net.Uri.parse(baseUrl) }.getOrNull() ?: return false
+    return imageUri.scheme == baseUri.scheme &&
+        imageUri.host.equals(baseUri.host, ignoreCase = true) &&
+        (imageUri.port.takeIf { it >= 0 } ?: defaultPort(imageUri.scheme)) ==
+        (baseUri.port.takeIf { it >= 0 } ?: defaultPort(baseUri.scheme))
+}
+
+private fun defaultPort(scheme: String?): Int = if (scheme.equals("https", true)) 443 else 80
+
+private const val HTML_COLOR_MARKER = "\u0002color:"
+private const val HTML_COLOR_END_MARKER = "\u0002/color\u0003"
+private const val HTML_COLOR_MARKER_END = "\u0003"
+
+@Composable
+private fun htmlColorPalette(): Map<String, Color> = mapOf(
+    "accent" to MaterialTheme.colorScheme.primary,
+    "muted" to MaterialTheme.colorScheme.onSurfaceVariant,
+    "success" to CloverAccent,
+    "warning" to CloverWarning,
+    "error" to MaterialTheme.colorScheme.error,
+)
+
+@Composable
+private fun RichMarkdownText(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color),
+) {
+    val rendered = remember(text) { renderHtmlInline(text) }
+    val pieces = remember(rendered) { splitInlineMath(rendered) }
+    val htmlColors = htmlColorPalette()
+    if (pieces.none { it.math }) {
+        LinkedText(text = inlineMarkdown(rendered, htmlColors), style = style, color = color, modifier = modifier)
+        return
+    }
+    Column(modifier) {
+        pieces.chunkedByText().forEach { row ->
+            if (row.size == 1 && row[0].math && row[0].displayFence) {
+                LatexBlock(latex = row[0].value, display = true, color = color)
+            } else {
+                InlineMathText(
+                    runs = row.map { piece ->
+                        if (piece.math) {
+                            InlineMathRun.Math(piece.value, piece.displaySize)
+                        } else {
+                            InlineMathRun.Text(inlineMarkdown(piece.value, htmlColors))
+                        }
+                    },
+                    style = style,
+                    color = color,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+private data class InlinePiece(
+    val value: String,
+    val math: Boolean = false,
+    val displayFence: Boolean = false,
+    val displaySize: Boolean = false,
+)
+
+private fun splitInlineMath(text: String): List<InlinePiece> {
+    val pieces = mutableListOf<InlinePiece>()
+    var last = 0
+    for (match in inlinePattern.findAll(text)) {
+        if (match.range.first > last) pieces += InlinePiece(text.substring(last, match.range.first))
+        val token = match.value
+        if (token.startsWith("$")) {
+            val displayFence = token.startsWith("$$")
+            val latex = (if (displayFence) token.removeSurrounding("$$") else token.removeSurrounding("$"))
+                .trim()
+                .replace("\\$", "$")
+            pieces += InlinePiece(
+                value = latex,
+                math = true,
+                displayFence = displayFence,
+                displaySize = displayFence || latex.contains("\\displaystyle") || latex.contains("\\dfrac"),
+            )
+        } else {
+            pieces += InlinePiece(token)
+        }
+        last = match.range.last + 1
+    }
+    if (last < text.length) pieces += InlinePiece(text.substring(last))
+    return pieces
+}
+
+private fun List<InlinePiece>.chunkedByText(): List<List<InlinePiece>> {
+    val rows = mutableListOf<MutableList<InlinePiece>>()
+    var current = mutableListOf<InlinePiece>()
+    forEach { piece ->
+        if (!piece.math && piece.value.contains('\n')) {
+            val parts = piece.value.split('\n')
+            parts.forEachIndexed { index, part ->
+                if (part.isNotEmpty()) current += piece.copy(value = part)
+                if (index < parts.lastIndex) {
+                    if (current.isNotEmpty()) rows += current
+                    current = mutableListOf()
+                }
+            }
+        } else {
+            current += piece
+        }
+    }
+    if (current.isNotEmpty()) rows += current
+    return rows
+}
+
+@Composable
+private fun LinkedText(
+    text: AnnotatedString,
+    style: androidx.compose.ui.text.TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    if (text.getStringAnnotations("url", 0, text.length).isEmpty()) {
+        Text(text = text, style = style, color = color, modifier = modifier)
+        return
+    }
+    val handler = LocalUriHandler.current
+    ClickableText(
+        text = text,
+        style = style.copy(color = color),
+        modifier = modifier,
+        onClick = { offset ->
+            text.getStringAnnotations("url", offset, offset).firstOrNull()?.let {
+                runCatching { handler.openUri(it.item) }
+            }
+        },
+    )
+}
+
+@Composable
+private fun LatexBlock(latex: String, display: Boolean, color: Color) {
+    LatexView(latex = latex, display = display, color = color, modifier = Modifier.fillMaxWidth())
+}
+
+private val inlinePattern = Regex(
+    """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[\s\S]+?\$\$)|(\$(?:\\\$|[^$\n])+\$)|(\[[^\]]+\]\([^)]+\))"""
+)
+
+private val htmlColorMarkerPattern = Regex(
+    "${Regex.escape(HTML_COLOR_MARKER)}([a-z]+)${Regex.escape(HTML_COLOR_MARKER_END)}|" +
+        Regex.escape(HTML_COLOR_END_MARKER),
+)
+
+private fun inlineMarkdown(
+    text: String,
+    htmlColors: Map<String, Color> = emptyMap(),
+): AnnotatedString = buildAnnotatedString {
+    val colorStack = ArrayDeque<Color>()
+    var cursor = 0
+    for (marker in htmlColorMarkerPattern.findAll(text)) {
+        if (marker.range.first > cursor) {
+            appendMarkdownSegment(text.substring(cursor, marker.range.first), colorStack.lastOrNull())
+        }
+        val name = marker.groupValues.getOrNull(1).orEmpty()
+        if (name.isNotEmpty()) {
+            htmlColors[name]?.let(colorStack::addLast)
+        } else if (colorStack.isNotEmpty()) {
+            colorStack.removeLast()
+        }
+        cursor = marker.range.last + 1
+    }
+    if (cursor < text.length) appendMarkdownSegment(text.substring(cursor), colorStack.lastOrNull())
+}
+
+private fun AnnotatedString.Builder.appendMarkdownSegment(text: String, color: Color?) {
     // patterns: **bold**, *italic*, `code`, [label](url)
     val pattern = Regex(
-        """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\[[^\]]+\]\([^)]+\))"""
+        """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[^$]+\$\$)|(\$[^$]+\$)|(\[[^\]]+\]\([^)]+\))"""
     )
+    fun styled(style: SpanStyle, body: AnnotatedString.Builder.() -> Unit) {
+        if (color == null) withStyle(style, body) else withStyle(SpanStyle(color = color).merge(style), body)
+    }
     var last = 0
     for (m in pattern.findAll(text)) {
-        if (m.range.first > last) append(text.substring(last, m.range.first))
+        if (m.range.first > last) {
+            if (color == null) append(text.substring(last, m.range.first))
+            else withStyle(SpanStyle(color = color)) { append(text.substring(last, m.range.first)) }
+        }
         val token = m.value
         when {
             token.startsWith("**") && token.endsWith("**") -> {
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                    append(token.removeSurrounding("**"))
-                }
+                styled(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.removeSurrounding("**")) }
             }
             token.startsWith("`") && token.endsWith("`") -> {
-                withStyle(
+                styled(
                     SpanStyle(
                         fontFamily = FontFamily.Monospace,
                         background = Color(0x143F8A37),
                     ),
                 ) { append(token.removeSurrounding("`")) }
             }
+            token.startsWith("$") -> styled(SpanStyle()) { append(renderLatex(token.trim('$'))) }
             token.startsWith("*") && token.endsWith("*") -> {
-                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                    append(token.removeSurrounding("*"))
-                }
+                styled(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.removeSurrounding("*")) }
             }
             token.startsWith("[") -> {
                 val lm = Regex("""\[([^\]]+)\]\(([^)]+)\)""").matchEntire(token)
-                if (lm != null) {
+                val href = lm?.groupValues?.get(2)
+                if (lm != null && href != null && (href.startsWith("http://") || href.startsWith("https://"))) {
+                    pushStringAnnotation("url", href)
                     withStyle(
                         SpanStyle(
                             color = Color(0xFF3F8A37),
                             textDecoration = TextDecoration.Underline,
                         ),
                     ) { append(lm.groupValues[1]) }
-                } else append(token)
+                    pop()
+                } else if (lm != null) {
+                    if (color == null) append(lm.groupValues[1])
+                    else withStyle(SpanStyle(color = color)) { append(lm.groupValues[1]) }
+                } else appendStyledText(token, color)
             }
-            else -> append(token)
+            else -> appendStyledText(token, color)
         }
         last = m.range.last + 1
     }
-    if (last < text.length) append(text.substring(last))
+    if (last < text.length) appendStyledText(text.substring(last), color)
+}
+
+private fun AnnotatedString.Builder.appendStyledText(text: String, color: Color?) {
+    if (color == null) append(text) else withStyle(SpanStyle(color = color)) { append(text) }
+}
+
+
+/**
+ * Renders the allowed inline HTML as Markdown markers the existing painter
+ * already understands. A fragment that fails [parseHtml] is returned unchanged.
+ */
+internal fun renderHtmlInline(text: String): String {
+    if ('<' !in text) return text
+    val nodes = parseHtml(text) ?: return text
+    return nodes.joinToString("") { renderNode(it) }
+}
+
+private fun renderNode(node: HtmlNode): String = when (node) {
+    is HtmlNode.Text -> node.value
+    is HtmlNode.Element -> {
+        val inner = node.children.joinToString("") { renderNode(it) }
+        when (node.tag) {
+            "b", "strong" -> "**$inner**"
+            "i", "em" -> "*$inner*"
+            "code" -> "`$inner`"
+            "br" -> " "
+            "p" -> inner
+            "a" -> if (node.href != null) "[$inner](${node.href})" else inner
+            "span" -> node.color?.let { color ->
+                "$HTML_COLOR_MARKER${color.name.lowercase()}$HTML_COLOR_MARKER_END$inner$HTML_COLOR_END_MARKER"
+            } ?: inner
+            else -> inner
+        }
+    }
+}
+
+@Composable
+private fun HtmlBlock(source: String, color: Color) {
+    val nodes = remember(source) { parseHtml(source) }
+    if (nodes == null) {
+        Text(text = source, color = color, style = MaterialTheme.typography.bodyLarge)
+        return
+    }
+    val htmlColors = htmlColorPalette()
+    Column {
+        nodes.forEach { node -> HtmlNodeView(node, color, htmlColors) }
+    }
+}
+
+@Composable
+private fun HtmlNodeView(node: HtmlNode, color: Color, htmlColors: Map<String, Color>) {
+    when (node) {
+        is HtmlNode.Text -> if (node.value.isNotBlank()) {
+            RichMarkdownText(text = node.value, color = color)
+        }
+        is HtmlNode.Element -> when (node.tag) {
+            "details" -> DetailsView(node, color, htmlColors)
+            "br" -> Spacer(Modifier.height(8.dp))
+            else -> RichMarkdownText(text = renderNode(node), color = color)
+        }
+    }
+}
+
+@Composable
+private fun DetailsView(node: HtmlNode.Element, color: Color, htmlColors: Map<String, Color>) {
+    val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" }
+        ?.let { (it as HtmlNode.Element).children.joinToString("") { child -> renderNode(child) } }
+        ?: "详情"
+    val body = node.children.filterNot { it is HtmlNode.Element && it.tag == "summary" }
+    var open by rememberSaveable(node) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        TextButton(onClick = { open = !open }) {
+            androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = if (open) "▾ " else "▸ ", color = color)
+                LinkedText(
+                    text = inlineMarkdown(summary, htmlColors),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = color,
+                )
+            }
+        }
+        if (open) {
+            body.forEach { HtmlNodeView(it, color, htmlColors) }
+        }
+    }
 }

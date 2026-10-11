@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,11 +16,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Refresh
@@ -30,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +52,9 @@ import com.luckyagent.android.data.api.TaskEvent
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.BlackboardEntry
+import com.luckyagent.android.data.api.AgentMessage
+import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
@@ -67,6 +74,10 @@ import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -168,6 +179,10 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
         },
     )
 
+    if (tasks.isNotEmpty()) {
+        TaskOverviewCard(tasks)
+    }
+
     when {
         state.tasksLoading && state.tasks.isEmpty() -> {
             Text("Loading tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
@@ -198,8 +213,38 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(tasks, key = { it.id }) { task ->
-                    TaskSummaryCard(task, onClick = { vm.selectTask(task.id) })
+                val attention = tasks.filter { it.status.taskNeedsAttention() }
+                val running = tasks.filter { it.status.taskIsActive() && !it.status.taskNeedsAttention() }
+                val recent = tasks.filter { !it.status.taskNeedsAttention() && !it.status.taskIsActive() }
+                if (attention.isNotEmpty()) {
+                    item { TaskSectionHeader("Needs your attention", "Blocked or failed tasks") }
+                    items(attention, key = { it.id }) { task ->
+                        TaskSummaryCard(
+                            task,
+                            onClick = { vm.selectTask(task.id) },
+                            onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                        )
+                    }
+                }
+                if (running.isNotEmpty()) {
+                    item { TaskSectionHeader("In progress", "Work happening now") }
+                    items(running, key = { it.id }) { task ->
+                        TaskSummaryCard(
+                            task,
+                            onClick = { vm.selectTask(task.id) },
+                            onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                        )
+                    }
+                }
+                if (recent.isNotEmpty()) {
+                    item { TaskSectionHeader("Recent", "Finished and cancelled tasks") }
+                    items(recent, key = { it.id }) { task ->
+                        TaskSummaryCard(
+                            task,
+                            onClick = { vm.selectTask(task.id) },
+                            onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                        )
+                    }
                 }
             }
         }
@@ -207,17 +252,73 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
 }
 
 @Composable
-private fun TaskSummaryCard(task: TaskSummary, onClick: () -> Unit) {
+private fun TaskOverviewCard(tasks: List<TaskSummary>) {
+    val attention = tasks.count { it.status.taskNeedsAttention() }
+    val active = tasks.count { it.status.taskIsActive() }
+    val finished = tasks.count { it.status.equals("completed", ignoreCase = true) }
+    CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text("Your run at a glance", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            OverviewMetric("Needs you", attention.toString(), if (attention > 0) CloverError else CloverText2)
+            OverviewMetric("Running", active.toString(), CloverAccent)
+            OverviewMetric("Completed", finished.toString(), CloverLeaf)
+        }
+    }
+}
+
+@Composable
+private fun OverviewMetric(label: String, value: String, color: androidx.compose.ui.graphics.Color) {
+    Column {
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = color)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+    }
+}
+
+@Composable
+private fun TaskSectionHeader(title: String, subtitle: String) {
+    Column(Modifier.padding(top = 8.dp, bottom = 2.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+    }
+}
+
+@Composable
+private fun TaskSummaryCard(
+    task: TaskSummary,
+    onClick: () -> Unit,
+    onOpenSession: (() -> Unit)? = null,
+) {
     CloverCard(onClick = onClick) {
         CardTitleRow(
             title = task.description,
             subtitle = task.id,
-            trailing = { StatusChip(task.status.ifBlank { "unknown" }) },
+            trailing = { StatusChip(friendlyTaskStatus(task.status)) },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            MetaChip(task.mode.ifBlank { "single" })
-            MetaChip(task.source.ifBlank { "task" })
+            MetaChip(friendlyTaskMode(task.mode))
+            MetaChip(friendlyTaskSource(task.source))
+            task.role?.takeIf { it.isNotBlank() }?.let { MetaChip(friendlyTaskRole(it)) }
             if (task.origin == TaskOrigin.Legacy) MetaChip("legacy")
+        }
+        Text(
+            task.status.taskReadableAction(task),
+            style = MaterialTheme.typography.bodySmall,
+            color = CloverText2,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        onOpenSession?.let { open ->
+            TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Open agent chat")
+            }
+        }
+        if (onOpenSession == null) {
+            Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
         LinearProgressIndicator(
             progress = { task.progress.coerceIn(0.0, 1.0).toFloat() },
@@ -226,8 +327,8 @@ private fun TaskSummaryCard(task: TaskSummary, onClick: () -> Unit) {
         )
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             TaskMetric("Progress", "${(task.progress * 100).toInt()}%")
-            if (task.childCount > 0) TaskMetric("Agents", task.childCount.toString())
-            if (task.completedChildren > 0) TaskMetric("Done", task.completedChildren.toString())
+            if (task.childCount > 0) TaskMetric("Steps", task.childCount.toString())
+            if (task.completedChildren > 0) TaskMetric("Done", task.completedChildren.toString(), CloverLeaf)
             if (task.failedChildren > 0) TaskMetric("Failed", task.failedChildren.toString(), CloverError)
             Spacer(Modifier.weight(1f))
             Text(formatTaskTime(task.lastActivityAt), style = MaterialTheme.typography.labelSmall, color = CloverText3)
@@ -257,13 +358,32 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                         Text(summary.description, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         Text(summary.id, style = MaterialTheme.typography.labelSmall, color = CloverText3)
                     }
-                    StatusChip(summary.status.ifBlank { "unknown" })
+                    StatusChip(friendlyTaskStatus(summary.status))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MetaChip(summary.mode)
-                    MetaChip(summary.source)
-                    MetaChip(if (detail.origin == TaskOrigin.Legacy) "legacy" else "unified")
+                    MetaChip(friendlyTaskMode(summary.mode))
+                    MetaChip(friendlyTaskSource(summary.source))
+                    summary.role?.takeIf { it.isNotBlank() }?.let { MetaChip(friendlyTaskRole(it)) }
                 }
+                summary.executionSession()?.let { sessionId ->
+                    TextButton(
+                        onClick = { vm.openSession(sessionId) },
+                        contentPadding = PaddingValues(horizontal = 0.dp),
+                    ) {
+                        Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open agent chat")
+                    }
+                }
+                if (summary.executionSession() == null) {
+                    Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                }
+                Text(
+                    summary.status.taskReadableAction(summary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CloverText2,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
                 LinearProgressIndicator(
                     progress = { summary.progress.coerceIn(0.0, 1.0).toFloat() },
                     modifier = Modifier.fillMaxWidth(),
@@ -271,8 +391,8 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     TaskMetric("Progress", "${(summary.progress * 100).toInt()}%")
-                    TaskMetric("Running", summary.runningChildren.toString())
-                    TaskMetric("Done", summary.completedChildren.toString())
+                    TaskMetric("In progress", summary.runningChildren.toString(), CloverAccent)
+                    TaskMetric("Done", summary.completedChildren.toString(), CloverLeaf)
                     TaskMetric("Failed", summary.failedChildren.toString(), CloverError)
                 }
                 if (!summary.status.isTerminalTaskStatus()) {
@@ -293,14 +413,28 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
         summary.error?.takeIf { it.isNotBlank() }?.let { error ->
             item { DetailPayload("Blocker", error, CloverError) }
         }
+        if (detail.plannerTrace != null || summary.metadata["planner_trace"] != null || summary.metadata["planner"] != null) {
+            item { PlannerDecisionCard(summary, detail.plannerTrace) }
+        }
+        if (detail.blackboard.isNotEmpty()) {
+            item { BlackboardCard(detail.blackboard) }
+        }
+        if (detail.messages.isNotEmpty()) {
+            item { AgentMessagesCard(detail.messages) }
+        }
         if (root.children.isNotEmpty()) {
-            item { Text("Agents", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+            item { TaskFlowStrip(root.children, summary.mode, vm::openTaskSession) }
+            item {
+                TaskSectionHeader("Steps", "State, progress and output for each step")
+            }
             items(root.children, key = { it.summary.id }) { child ->
-                TaskNodeCard(child)
+                TaskNodeCard(child, onOpenSession = vm::openTaskSession)
             }
         }
         if (detail.events.isNotEmpty()) {
-            item { Text("Timeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+            item {
+                TaskSectionHeader("What happened", "A readable activity timeline")
+            }
             items(detail.events, key = { event -> "${event.type}-${event.time}-${event.childId}" }) { event ->
                 TaskEventCard(event)
             }
@@ -316,7 +450,215 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
 }
 
 @Composable
-private fun TaskNodeCard(node: TaskNode) {
+private fun BlackboardCard(entries: List<BlackboardEntry>) {
+    var expanded by remember(entries.firstOrNull()?.taskId) { mutableStateOf(false) }
+    CloverCard {
+        Text("Shared progress", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Notes shared by the agents working on this task",
+            style = MaterialTheme.typography.labelSmall,
+            color = CloverText3,
+        )
+        (if (expanded) entries else entries.takeLast(12)).forEach { entry ->
+            Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(entry.key, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    entry.author?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                    }
+                }
+                DetailPayload("Shared note", entry.value)
+            }
+        }
+        if (entries.size > 12) TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "Show recent notes" else "Show all ${entries.size} notes")
+        }
+    }
+}
+
+@Composable
+private fun AgentMessagesCard(messages: List<AgentMessage>) {
+    var expanded by remember(messages.firstOrNull()?.correlation) { mutableStateOf(false) }
+    CloverCard {
+        Text("Agent collaboration", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Messages exchanged while this task was running",
+            style = MaterialTheme.typography.labelSmall,
+            color = CloverText3,
+        )
+        (if (expanded) messages else messages.takeLast(12)).forEach { message ->
+            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        buildString {
+                            append(friendlyAgentMessageType(message.type))
+                            message.payload["round"]?.let { append(" · Round ${jsonLabel(it)}") }
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(formatTaskTime(message.timestamp), style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                }
+                Text(
+                    listOfNotNull(
+                        message.from.takeIf { it.isNotBlank() }?.let { "from $it" },
+                        message.to.takeIf { it.isNotBlank() }?.let { "to $it" },
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+                agentMessageSummary(message)?.let {
+                    DetailPayload("Message", it)
+                }
+                if (message.correlation.isNotBlank()) Text(
+                    "Thread: ${message.correlation}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+            }
+        }
+        if (messages.size > 12) TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "Show recent messages" else "Show all ${messages.size} messages")
+        }
+    }
+}
+
+private fun agentMessageSummary(message: AgentMessage): String? {
+    val preferred = listOf("error", "output", "position", "vote", "content", "message", "summary", "state")
+    for (key in preferred) {
+        val value = message.payload[key]?.let(::jsonLabel)?.trim()
+        if (!value.isNullOrBlank()) return "$key: $value"
+    }
+    return message.payload.takeIf { it.isNotEmpty() }?.entries
+        ?.joinToString(", ") { "${it.key}=${it.value}" }
+}
+
+private fun friendlyAgentMessageType(type: String): String = when (type.lowercase()) {
+    "task_progress" -> "Progress update"
+    "task_result" -> "Step result"
+    "task_assign" -> "Task assigned"
+    "task_cancel" -> "Task cancelled"
+    "debate_turn" -> "Debate turn"
+    "debate_vote" -> "Debate vote"
+    "error" -> "Agent error"
+    else -> type.ifBlank { "Agent message" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+@Composable
+private fun TaskFlowStrip(children: List<TaskNode>, mode: String, onOpenSession: (TaskSummary) -> Unit) {
+    val sequential = mode.equals("pipeline", ignoreCase = true)
+    CloverCard {
+        Text(friendlyTaskMode(mode), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            when (mode.lowercase()) {
+                "parallel" -> "These agents work independently, then their results are combined."
+                "pipeline" -> "Each step passes its output to the next."
+                "debate" -> "Participants exchange positions and votes. See their rounds in Agent collaboration."
+                else -> "Tap a linked agent to open its conversation."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = CloverText3,
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            itemsIndexed(children, key = { _, node -> "flow-${node.summary.id}" }) { index, node ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(
+                        modifier = Modifier.width(126.dp).clickable(
+                            enabled = node.summary.executionSession() != null,
+                            onClick = { onOpenSession(node.summary) },
+                        ),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(taskStatusColor(node.summary.status)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                (index + 1).toString(),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        Text(
+                            node.summary.metadata["agent_id"] ?: node.summary.description,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            friendlyTaskStatus(node.summary.status),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CloverText3,
+                        )
+                    }
+                    if (index < children.lastIndex && sequential) {
+                        Text("→", color = CloverText3, modifier = Modifier.padding(horizontal = 4.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun jsonLabel(value: kotlinx.serialization.json.JsonElement): String =
+    (value as? JsonPrimitive)?.content ?: value.toString()
+
+@Composable
+private fun PlannerDecisionCard(summary: TaskSummary, plannerTrace: kotlinx.serialization.json.JsonElement?) {
+    var expanded by remember(summary.id) { mutableStateOf(false) }
+    val trace = remember(summary.id, plannerTrace, summary.metadata["planner_trace"]) {
+        when {
+            plannerTrace is JsonObject -> plannerTrace
+            else -> runCatching { Json.parseToJsonElement(summary.metadata["planner_trace"].orEmpty()) as? JsonObject }.getOrNull()
+        }
+    }
+    val chosen = trace?.get("mode")?.let(::jsonLabel) ?: summary.metadata["planned_mode"] ?: summary.mode
+    CloverCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Scheduling decision", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("Selected: ${friendlyTaskMode(chosen)}", style = MaterialTheme.typography.bodySmall, color = CloverText2)
+            }
+            IconButton(onClick = { expanded = !expanded }) {
+                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = "Scheduling details")
+            }
+        }
+        if (expanded) {
+            trace?.get("decision_basis")?.let { Text(jsonLabel(it), style = MaterialTheme.typography.bodySmall, color = CloverText2) }
+            (trace?.get("candidates") as? JsonArray)?.forEach { raw ->
+                val candidate = raw as? JsonObject ?: return@forEach
+                val candidateMode = candidate["mode"]?.let(::jsonLabel).orEmpty()
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${if (candidateMode == chosen) "✓ " else ""}${friendlyTaskMode(candidateMode)}",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (candidateMode == chosen) CloverAccent else CloverText2,
+                    )
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Weight ${candidate["decision_weight"]?.let(::jsonLabel).orEmpty()}", style = MaterialTheme.typography.labelSmall)
+                        Text("Q ${candidate["mdp_q_value"]?.let(::jsonLabel).orEmpty()}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                    }
+                }
+            }
+            val mdp = trace?.get("mdp") as? JsonObject
+            (mdp?.get("state") as? JsonObject)?.let { state ->
+                DetailPayload("Decision inputs", state.entries.joinToString("\n") { "${it.key.replace('_', ' ')}: ${jsonLabel(it.value)}" })
+            }
+            summary.metadata["planner_trace"]?.let { DetailPayload("Full planner trace", it) }
+                ?: DetailPayload("Planner", summary.metadata.filterKeys { it.startsWith("planner") || it.startsWith("mdp") }.entries.joinToString("\n"))
+        }
+    }
+}
+
+@Composable
+private fun TaskNodeCard(node: TaskNode, onOpenSession: (TaskSummary) -> Unit) {
     var expanded by remember(node.summary.id) { mutableStateOf(false) }
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -325,7 +667,11 @@ private fun TaskNodeCard(node: TaskNode) {
             Column(Modifier.weight(1f)) {
                 Text(node.summary.description, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    listOfNotNull(node.summary.source, node.summary.status).joinToString(" · "),
+                    listOfNotNull(
+                        friendlyTaskSource(node.summary.source),
+                        friendlyTaskStatus(node.summary.status),
+                        node.summary.progress.takeIf { it > 0.0 }?.let { "${(it * 100).toInt()}%" },
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
                 )
@@ -336,29 +682,69 @@ private fun TaskNodeCard(node: TaskNode) {
                 }
             }
         }
+        if (node.summary.progress > 0.0 || node.summary.status.taskIsActive()) {
+            LinearProgressIndicator(
+                progress = { node.summary.progress.coerceIn(0.0, 1.0).toFloat() },
+                modifier = Modifier.fillMaxWidth(),
+                color = if (node.summary.status.taskNeedsAttention()) CloverError else CloverAccent,
+            )
+        }
+        if (node.children.isNotEmpty()) {
+            Text(
+                "${node.children.size} ${if (node.children.size == 1) "substep" else "substeps"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+            )
+        }
+        node.summary.executionSession()?.let { sessionId ->
+            TextButton(
+                onClick = { onOpenSession(node.summary) },
+                contentPadding = PaddingValues(horizontal = 0.dp),
+            ) {
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Open agent chat")
+            }
+        }
         node.summary.result?.takeIf { it.isNotBlank() }?.let { DetailPayload("Output", it) }
         node.summary.error?.takeIf { it.isNotBlank() }?.let { DetailPayload("Error", it, CloverError) }
         if (expanded) {
-            node.children.forEach { child -> TaskNodeCard(child) }
+            Column(Modifier.padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                node.children.forEach { child -> TaskNodeCard(child, onOpenSession) }
+            }
         }
     }
 }
 
 @Composable
 private fun TaskEventCard(event: TaskEvent) {
+    var expanded by remember(event.type, event.time, event.childId) { mutableStateOf(false) }
+    val hasDetails = event.evidence.isNotEmpty() || event.files.isNotEmpty() || event.tests.isNotEmpty() || !event.error.isNullOrBlank()
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(event.status ?: event.type)
             Spacer(Modifier.width(8.dp))
-            Text(event.type, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(friendlyEventType(event.type), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             Text(formatTaskTime(event.time), style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            if (hasDetails) {
+                IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = if (expanded) "Hide details" else "Show details",
+                    )
+                }
+            }
         }
-        event.childId?.let { Text("child: $it", style = MaterialTheme.typography.labelSmall, color = CloverText3) }
-        event.message?.takeIf { it.isNotBlank() }?.let { Text(it, color = CloverText2) }
-        event.error?.takeIf { it.isNotBlank() }?.let { Text(it, color = CloverError) }
-        if (event.evidence.isNotEmpty()) DetailPayload("Evidence", event.evidence.joinToString("\n"))
-        if (event.files.isNotEmpty()) DetailPayload("Files", event.files.joinToString("\n"))
-        if (event.tests.isNotEmpty()) DetailPayload("Tests", event.tests.joinToString("\n"))
+        event.childId?.let { Text("Step ${it.takeLast(8)}", style = MaterialTheme.typography.labelSmall, color = CloverText3) }
+        event.message?.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = CloverText2, maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis)
+        }
+        if (expanded) {
+            event.error?.takeIf { it.isNotBlank() }?.let { Text(it, color = CloverError) }
+            if (event.evidence.isNotEmpty()) DetailPayload("Evidence", event.evidence.joinToString("\n"))
+            if (event.files.isNotEmpty()) DetailPayload("Files", event.files.joinToString("\n"))
+            if (event.tests.isNotEmpty()) DetailPayload("Tests", event.tests.joinToString("\n"))
+        }
     }
 }
 
@@ -382,16 +768,86 @@ private fun TaskMetric(label: String, value: String, color: androidx.compose.ui.
     }
 }
 
-@Composable
-private fun StatusDot(status: String) {
+private fun String.taskNeedsAttention(): Boolean = when (lowercase()) {
+    "blocked", "failed", "timeout", "error" -> true
+    else -> false
+}
+
+private fun String.taskIsActive(): Boolean = when (lowercase()) {
+    "pending", "queued", "running", "in_progress", "in-progress" -> true
+    else -> false
+}
+
+private fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
+    "pending", "queued" -> "Queued"
+    "running", "in_progress", "in-progress" -> "In progress"
+    "blocked", "waiting" -> "Needs attention"
+    "completed", "done" -> "Completed"
+    "failed", "error" -> "Failed"
+    "timeout" -> "Timed out"
+    "cancelled", "canceled" -> "Cancelled"
+    else -> status.ifBlank { "Unknown" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+private fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
+    "single" -> "Single step"
+    "parallel" -> "Parallel"
+    "pipeline" -> "Step by step"
+    "debate" -> "Review rounds"
+    "auto" -> "Auto planned"
+    "autonomy_queue" -> "Background"
+    else -> mode.ifBlank { "Task" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+private fun friendlyTaskSource(source: String): String = when (source.lowercase()) {
+    "tool" -> "Assistant"
+    "gateway" -> "Gateway"
+    "autonomy" -> "Background"
+    "legacy" -> "Older task"
+    else -> source.ifBlank { "Task" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+private fun friendlyTaskRole(role: String): String = when (role.lowercase()) {
+    "orchestrator" -> "Coordinator"
+    "subagent" -> "Subagent"
+    "worker-task" -> "Worker"
+    else -> role.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+private fun String.taskReadableAction(task: TaskSummary): String = when {
+    taskNeedsAttention() -> task.error?.takeIf { it.isNotBlank() } ?: "This task needs your attention"
+    taskIsActive() && task.childCount > 0 -> "${task.completedChildren} of ${task.childCount} steps complete"
+    taskIsActive() -> "Working on this task now"
+    equals("completed", ignoreCase = true) -> task.result?.takeIf { it.isNotBlank() }?.lineSequence()?.firstOrNull() ?: "Task finished successfully"
+    equals("cancelled", ignoreCase = true) -> "Task was cancelled"
+    else -> "Open to review the task details"
+}
+
+private fun taskStatusColor(status: String): androidx.compose.ui.graphics.Color {
     val normalized = status.lowercase()
-    val color = when {
-        normalized == "completed" -> CloverLeaf
-        normalized == "failed" || normalized == "timeout" -> CloverError
-        normalized == "cancelled" -> CloverText3
+    return when {
+        normalized == "completed" || normalized == "done" -> CloverLeaf
+        normalized == "failed" || normalized == "timeout" || normalized == "error" || normalized == "blocked" -> CloverError
+        normalized == "cancelled" || normalized == "canceled" -> CloverText3
         else -> CloverAccent
     }
-    Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+}
+
+private fun friendlyEventType(type: String): String = when (type.lowercase()) {
+    "task.created" -> "Task created"
+    "task.planned" -> "Plan ready"
+    "task.started" -> "Work started"
+    "task.child_created" -> "Step added"
+    "task.progress" -> "Progress updated"
+    "task.tool_used" -> "Tool used"
+    "task.completed" -> "Task completed"
+    "task.failed" -> "Task failed"
+    else -> type.ifBlank { "Activity" }.replace('.', ' ').replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+@Composable
+private fun StatusDot(status: String) {
+    Box(Modifier.size(10.dp).clip(CircleShape).background(taskStatusColor(status)))
 }
 
 private fun formatTaskTime(raw: String?): String {

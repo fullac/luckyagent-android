@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.ui.layout.ContentScale
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,6 +50,7 @@ import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -110,8 +113,8 @@ private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 
 /** Chat and Settings are pinned top/bottom; the rest are grouped by what the user is checking. */
 private val navGroups = listOf(
-    "运行" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
-    "能力" to listOf(AppDestination.Skills, AppDestination.Memory, AppDestination.Gateways).map(::nav),
+    "运行与自动化" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
+    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Memory, AppDestination.Gateways).map(::nav),
 )
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
@@ -381,14 +384,19 @@ private fun NavigationDrawerContent(
             .fillMaxHeight()
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
+        // Keep the brand quiet and useful: the connection state sits in its own
+        // compact surface so it reads as status instead of competing with nav.
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.size(36.dp).clip(RoundedCornerShape(12.dp)).background(CloverAccent),
+                Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(CloverAccent),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -400,20 +408,49 @@ private fun NavigationDrawerContent(
             }
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text("LuckyAgent", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(if (live) CloverLeaf else CloverError),
-                    )
+                Text(
+                    "本地客户端",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = .48f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f)),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (live) CloverLeaf else CloverError),
+                )
+                Column(Modifier.weight(1f)) {
                     Text(
                         if (state.settings.apiBase.isBlank()) "未设置服务地址"
                         else com.luckyagent.android.ui.components.socketStateLabel(state.socketState),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CloverText3,
-                        modifier = Modifier.padding(start = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
                     )
+                    if (state.settings.apiBase.isNotBlank()) {
+                        Text(
+                            state.settings.apiBase,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CloverText3,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
@@ -421,7 +458,7 @@ private fun NavigationDrawerContent(
             Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 14.dp),
         ) {
             DrawerNavItem(nav(AppDestination.Chat), state, onSelect)
             navGroups.forEach { (groupLabel, groupItems) ->
@@ -429,13 +466,17 @@ private fun NavigationDrawerContent(
                     groupLabel,
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
-                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp),
                 )
                 groupItems.forEach { DrawerNavItem(it, state, onSelect) }
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
-        Column(Modifier.padding(12.dp)) {
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f),
+        )
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             DrawerNavItem(nav(AppDestination.Settings), state, onSelect)
         }
     }
@@ -450,17 +491,32 @@ private fun DrawerNavItem(
     val badge = badgeColor(item.dest, state)
     NavigationDrawerItem(
         label = { Text(item.label) },
-        icon = { Icon(item.icon, contentDescription = null) },
+        icon = {
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (state.destination == item.dest) CloverLeaf.copy(alpha = .28f) else Color.Transparent),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(item.icon, contentDescription = null)
+            }
+        },
         badge = badge?.let { color -> { Box(Modifier.size(8.dp).clip(CircleShape).background(color)) } },
         selected = state.destination == item.dest,
         onClick = { onSelect(item.dest) },
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = NavigationDrawerItemDefaults.colors(
-            selectedContainerColor = CloverLeaf.copy(alpha = .22f),
+            selectedContainerColor = CloverLeaf.copy(alpha = .18f),
             unselectedContainerColor = Color.Transparent,
             selectedIconColor = MaterialTheme.colorScheme.primary,
             unselectedIconColor = CloverText2,
+            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
-        modifier = Modifier.height(48.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .padding(vertical = 2.dp),
     )
 }

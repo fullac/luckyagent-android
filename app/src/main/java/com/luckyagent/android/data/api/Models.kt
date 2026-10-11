@@ -22,6 +22,7 @@ data class SessionsResponse(
 data class RuntimeSession(
     val id: String,
     val title: String? = null,
+    @SerialName("agent_role") val agentRole: String? = null,
     val pinned: Boolean = false,
     val project: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
@@ -37,6 +38,8 @@ data class RuntimeSession(
 data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
+    @SerialName("agent_role") val agentRole: String? = null,
+    @SerialName("agent_system_prompt") val agentSystemPrompt: String? = null,
     val pinned: Boolean = false,
     val project: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
@@ -597,11 +600,22 @@ data class GatewayStatus(
     val error: String? = null,
 )
 
+/** Optional credentials sent when a gateway is started from a remote client. */
+@Serializable
+data class GatewayStartRequest(
+    val token: String? = null,
+)
+
 @Serializable
 data class GatewaysResponse(
     val gateways: List<GatewayStatus> = emptyList(),
     val items: List<GatewayStatus> = emptyList(),
     val count: Int? = null,
+)
+
+@Serializable
+data class GatewayErrorResponse(
+    val error: String = "",
 )
 
 @Serializable

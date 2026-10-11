@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.HourglassEmpty
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.AutonomyTaskDetail
 import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.AutonomyWorker
+import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.BackgroundFilter
@@ -112,7 +114,7 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
         if (detail == null) {
             BackgroundListContent(state, tasks, vm)
         } else {
-            BackgroundDetailContent(state, detail.task)
+            BackgroundDetailContent(state, detail.task, vm)
         }
     }
 }
@@ -122,7 +124,7 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
     state.backgroundError?.let { ErrorLine(it) }
 
     BackgroundOverview(state, onOpenSettings = { vm.navigate(com.luckyagent.android.ui.AppDestination.Settings) })
-    BackgroundWorkers(state)
+    BackgroundWorkers(state, vm)
     BackgroundHeartbeat(state)
 
     val filters = listOf(
@@ -195,7 +197,11 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
                 modifier = Modifier.fillMaxSize(),
             ) {
                 items(tasks, key = { it.id }) { task ->
-                    BackgroundTaskCard(task, onClick = { vm.selectBackgroundTask(task.id) })
+                    BackgroundTaskCard(
+                        task,
+                        onClick = { vm.selectBackgroundTask(task.id) },
+                        onOpenSession = task.executionSession()?.let { { vm.openBackgroundSession(it) } },
+                    )
                 }
             }
         }
@@ -238,19 +244,19 @@ private fun BackgroundOverview(state: AppUiState, onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun BackgroundWorkers(state: AppUiState) {
+private fun BackgroundWorkers(state: AppUiState, vm: AppViewModel) {
     val workers = state.backgroundDashboard?.workers.orEmpty()
     if (workers.isEmpty()) return
     CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
         Text("Workers", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         workers.forEach { worker ->
-            BackgroundWorkerRow(worker)
+            BackgroundWorkerRow(worker, onOpenSession = vm::openBackgroundSession)
         }
     }
 }
 
 @Composable
-private fun BackgroundWorkerRow(worker: AutonomyWorker) {
+private fun BackgroundWorkerRow(worker: AutonomyWorker, onOpenSession: (String?) -> Unit) {
     Row(verticalAlignment = Alignment.Top) {
         BackgroundStatusDot(worker.state)
         Spacer(Modifier.width(8.dp))
@@ -269,6 +275,11 @@ private fun BackgroundWorkerRow(worker: AutonomyWorker) {
         Column(horizontalAlignment = Alignment.End) {
             MetaChip(worker.state.ifBlank { "unknown" })
             Text("${worker.taskCount} tasks", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
+    }
+    worker.sessionId?.takeIf { it.isNotBlank() }?.let { sessionId ->
+        TextButton(onClick = { onOpenSession(sessionId) }) {
+            Text("Open worker conversation")
         }
     }
 }
@@ -300,7 +311,11 @@ private fun BackgroundHeartbeat(state: AppUiState) {
 }
 
 @Composable
-private fun BackgroundTaskCard(task: AutonomyTaskSummary, onClick: () -> Unit) {
+private fun BackgroundTaskCard(
+    task: AutonomyTaskSummary,
+    onClick: () -> Unit,
+    onOpenSession: (() -> Unit)? = null,
+) {
     CloverCard(onClick = onClick) {
         CardTitleRow(
             title = task.title.ifBlank { task.id },
@@ -320,11 +335,18 @@ private fun BackgroundTaskCard(task: AutonomyTaskSummary, onClick: () -> Unit) {
             Text(formatBackgroundTime(task.lastActivityAt), style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
         task.blockReason?.takeIf { it.isNotBlank() }?.let { Text(it, color = CloverError, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        onOpenSession?.let { open ->
+            TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Open agent chat")
+            }
+        }
     }
 }
 
 @Composable
-private fun BackgroundDetailContent(state: AppUiState, task: AutonomyTaskDetail) {
+private fun BackgroundDetailContent(state: AppUiState, task: AutonomyTaskDetail, vm: AppViewModel) {
     LazyColumn(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -390,6 +412,16 @@ private fun BackgroundDetailContent(state: AppUiState, task: AutonomyTaskDetail)
         item {
             CloverCard {
                 BackgroundDetailPayload("Session", task.sessionId ?: "—")
+                task.executionSession()?.let { sessionId ->
+                    TextButton(
+                        onClick = { vm.openBackgroundSession(sessionId) },
+                        contentPadding = PaddingValues(horizontal = 0.dp),
+                    ) {
+                        Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open agent chat")
+                    }
+                }
                 BackgroundDetailPayload("Last activity", formatBackgroundTime(task.lastActivityAt))
                 BackgroundDetailPayload("Checkpoint", if (task.checkpointPresent) "Saved · ${formatBackgroundTime(task.checkpointAt)}" else "No checkpoint")
                 task.verification?.takeIf { it.isNotBlank() }?.let { BackgroundDetailPayload("Verification", it) }

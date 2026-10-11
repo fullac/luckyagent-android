@@ -7,6 +7,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
 import com.luckyagent.android.ui.LuckyAgentAppRoot
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.AppViewModelFactory
@@ -25,7 +27,11 @@ class MainActivity : ComponentActivity() {
         appViewModel = ViewModelProvider(this, AppViewModelFactory(app.container))[AppViewModel::class.java]
         handleIntent(intent)
         setContent {
-            CloverTheme {
+            val uiState by appViewModel.ui.collectAsStateWithLifecycle()
+            CloverTheme(
+                fontScale = uiState.settings.fontScale,
+                fontFamily = uiState.settings.fontFamily,
+            ) {
                 LuckyAgentAppRoot(vm = appViewModel)
             }
         }
@@ -50,12 +56,27 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: android.content.Intent?) {
         val destination = intent?.getStringExtra(EXTRA_DESTINATION).orEmpty()
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID).orEmpty()
-        if (sessionId.isNotBlank()) appViewModel.openSessionFromNotification(sessionId)
-        if (destination.isNotBlank()) appViewModel.openDestinationFromNotification(destination)
+        val taskId = intent?.getStringExtra(EXTRA_TASK_ID).orEmpty()
+        when {
+            // A linked execution session is the most precise destination. Do
+            // not let the notification's fallback section replace it.
+            sessionId.isNotBlank() -> appViewModel.openSessionFromNotification(sessionId)
+            taskId.isNotBlank() -> {
+                if (destination == "background") {
+                    appViewModel.openDestinationFromNotification("background")
+                    appViewModel.selectBackgroundTask(taskId)
+                } else {
+                    appViewModel.openDestinationFromNotification("tasks")
+                    appViewModel.selectTask(taskId)
+                }
+            }
+            destination.isNotBlank() -> appViewModel.openDestinationFromNotification(destination)
+        }
     }
 
     companion object {
         const val EXTRA_SESSION_ID = "session_id"
         const val EXTRA_DESTINATION = "destination"
+        const val EXTRA_TASK_ID = "task_id"
     }
 }

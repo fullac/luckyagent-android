@@ -40,6 +40,7 @@ data class AutonomyPoolStats(
 data class AutonomyWorker(
     val id: String = "",
     val state: String = "",
+    @SerialName("session_id") val sessionId: String? = null,
     @SerialName("current_task_id") val currentTaskId: String? = null,
     @SerialName("current_task_title") val currentTaskTitle: String? = null,
     @SerialName("task_count") val taskCount: Long = 0,
@@ -66,6 +67,10 @@ data class AutonomyTaskSummary(
     @SerialName("assigned_to") val assignedTo: String? = null,
     val tags: List<String> = emptyList(),
     @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
+    @SerialName("parent_session_id") val parentSessionId: String? = null,
+    val role: String? = null,
+    val metadata: Map<String, String> = emptyMap(),
     val attempts: Int = 0,
     val retries: Int = 0,
     val continuations: Int = 0,
@@ -103,6 +108,9 @@ data class AutonomyTaskDetail(
     @SerialName("assigned_to") val assignedTo: String? = null,
     val tags: List<String> = emptyList(),
     @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
+    @SerialName("parent_session_id") val parentSessionId: String? = null,
+    val role: String? = null,
     val attempts: Int = 0,
     val retries: Int = 0,
     val continuations: Int = 0,
@@ -130,3 +138,20 @@ data class AutonomyTaskDetailResponse(
     val task: AutonomyTaskDetail = AutonomyTaskDetail(),
     val worker: AutonomyWorker? = null,
 )
+
+/** Prefer the dedicated execution conversation and keep old queue payloads working. */
+fun AutonomyTaskSummary.executionSession(): String? = sequenceOf(
+    executionSessionId,
+    metadata["execution_session_id"],
+    sessionId,
+    metadata["session_id"],
+    metadata["owner_session_id"],
+).mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()
+
+fun AutonomyTaskDetail.executionSession(): String? = sequenceOf(
+    executionSessionId,
+    metadata["execution_session_id"],
+    sessionId,
+    metadata["session_id"],
+    metadata["owner_session_id"],
+).mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()

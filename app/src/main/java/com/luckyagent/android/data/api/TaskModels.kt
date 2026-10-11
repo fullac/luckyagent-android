@@ -2,6 +2,7 @@ package com.luckyagent.android.data.api
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 data class TaskListResponse(
@@ -13,6 +14,12 @@ data class TaskListResponse(
 data class TaskRecord(
     val id: String = "",
     @SerialName("parent_id") val parentId: String? = null,
+    /** Session that owns the task. Newer runtimes may expose this explicitly. */
+    @SerialName("session_id") val sessionId: String? = null,
+    /** Session created for this agent/subagent execution, when available. */
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
+    @SerialName("parent_session_id") val parentSessionId: String? = null,
+    val role: String? = null,
     val source: String = "",
     val mode: String = "",
     val status: String = "",
@@ -21,8 +28,19 @@ data class TaskRecord(
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("started_at") val startedAt: String? = null,
     @SerialName("completed_at") val completedAt: String? = null,
+    val runtime: TaskRuntimeRef? = null,
     val budget: TaskBudget? = null,
     val outcome: TaskOutcome? = null,
+    val metadata: Map<String, String> = emptyMap(),
+)
+
+/** Runtime ownership details returned by newer task APIs. */
+@Serializable
+data class TaskRuntimeRef(
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
+    @SerialName("agent_id") val agentId: String? = null,
+    @SerialName("profile_id") val profileId: String? = null,
     val metadata: Map<String, String> = emptyMap(),
 )
 
@@ -81,6 +99,7 @@ data class TaskTreeNode(
     val task: TaskRecord = TaskRecord(),
     val observation: TaskObservation = TaskObservation(),
     val children: List<TaskTreeNode> = emptyList(),
+    val result: String? = null,
 )
 
 @Serializable
@@ -95,6 +114,10 @@ data class TaskEvent(
     val type: String = "",
     @SerialName("task_id") val taskId: String = "",
     @SerialName("parent_id") val parentId: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
+    @SerialName("parent_session_id") val parentSessionId: String? = null,
+    val role: String? = null,
     val time: String? = null,
     val message: String? = null,
     val status: String? = null,
@@ -124,6 +147,8 @@ data class LegacyTasksResponse(
 @Serializable
 data class LegacyCollabTask(
     val id: String = "",
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
     val mode: String = "",
     val description: String = "",
     val input: String = "",
@@ -140,6 +165,9 @@ data class LegacyCollabTask(
 data class LegacySubTask(
     val id: String = "",
     @SerialName("parent_id") val parentId: String? = null,
+    @SerialName("execution_session_id") val executionSessionId: String? = null,
+    @SerialName("parent_session_id") val parentSessionId: String? = null,
+    val role: String? = null,
     @SerialName("agent_id") val agentId: String? = null,
     val description: String = "",
     val input: String = "",
@@ -159,6 +187,10 @@ enum class TaskOrigin {
 data class TaskSummary(
     val id: String,
     val parentId: String? = null,
+    val sessionId: String? = null,
+    val executionSessionId: String? = null,
+    val parentSessionId: String? = null,
+    val role: String? = null,
     val source: String,
     val mode: String,
     val status: String,
@@ -188,6 +220,9 @@ data class TaskDetail(
     val root: TaskNode,
     val events: List<TaskEvent> = emptyList(),
     val result: String? = null,
+    val blackboard: List<BlackboardEntry> = emptyList(),
+    val messages: List<AgentMessage> = emptyList(),
+    val plannerTrace: JsonElement? = null,
     val origin: TaskOrigin = TaskOrigin.Unified,
 )
 
@@ -205,6 +240,22 @@ fun TaskRecord.toTaskSummary(
     return TaskSummary(
         id = id,
         parentId = parentId,
+        sessionId = taskSessionId(
+            sessionId,
+            executionSessionId,
+            metadata,
+            runtime?.sessionId,
+            runtime?.executionSessionId,
+            runtime?.metadata.orEmpty(),
+        ),
+        executionSessionId = executionSessionId
+            ?: runtime?.executionSessionId
+            ?: metadata["execution_session_id"]
+            ?: metadata["executionSessionId"]
+            ?: runtime?.metadata?.get("execution_session_id")
+            ?: runtime?.metadata?.get("executionSessionId"),
+        parentSessionId = parentSessionId ?: metadata["parent_session_id"],
+        role = role ?: metadata["role"],
         source = source.ifBlank { "task" },
         mode = mode.ifBlank { "single" },
         status = status.ifBlank { obs.status },
@@ -226,9 +277,50 @@ fun TaskRecord.toTaskSummary(
     )
 }
 
+/**
+ * Returns the best session link a task payload can provide. Older servers put
+ * this relation in metadata, while newer servers expose it as a top-level
+ * field. Keep both forms readable so the task screen can offer one stable
+ * "Open agent chat" action during rolling upgrades.
+ */
+private fun taskSessionId(
+    sessionId: String?,
+    executionSessionId: String?,
+    metadata: Map<String, String>,
+    runtimeSessionId: String? = null,
+    runtimeExecutionSessionId: String? = null,
+    runtimeMetadata: Map<String, String> = emptyMap(),
+): String? = sequenceOf(
+    executionSessionId,
+    runtimeExecutionSessionId,
+    metadata["execution_session_id"],
+    metadata["executionSessionId"],
+    runtimeMetadata["execution_session_id"],
+    runtimeMetadata["executionSessionId"],
+    sessionId,
+    runtimeSessionId,
+    metadata["session_id"],
+    metadata["owner_session_id"],
+    runtimeMetadata["session_id"],
+    runtimeMetadata["owner_session_id"],
+).mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }.firstOrNull()
+
+/** Session deep link to use for a task. */
+fun TaskSummary.executionSession(): String? = sequenceOf(
+    // An explicit execution link must win over the owner/parent session. A
+    // few rolling-upgrade payloads contain both fields, and opening the
+    // owner session would hide the sub-agent transcript.
+    executionSessionId,
+    metadata["execution_session_id"],
+    metadata["executionSessionId"],
+    sessionId,
+    metadata["session_id"],
+    metadata["owner_session_id"],
+).mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()
+
 fun TaskTreeNode.toTaskNode(result: String? = null): TaskNode =
     TaskNode(
-        summary = task.toTaskSummary(observation, children.size, result),
+        summary = task.toTaskSummary(observation, children.size, result ?: this.result),
         children = children.map { it.toTaskNode() },
     )
 
@@ -263,6 +355,10 @@ fun LegacyCollabTask.toTaskNode(): TaskNode {
             failedChildren = failed,
             childCount = children.size,
             metadata = metadata,
+            sessionId = taskSessionId(sessionId, executionSessionId, metadata),
+            executionSessionId = executionSessionId ?: metadata["execution_session_id"],
+            parentSessionId = metadata["parent_session_id"],
+            role = metadata["role"],
             origin = TaskOrigin.Legacy,
         ),
         children = children,
@@ -286,7 +382,15 @@ private fun LegacySubTask.toTaskNode(): TaskNode =
             completedAt = completedAt,
             lastActivityAt = completedAt ?: startedAt,
             progress = statusProgress(state),
-            metadata = agentId?.let { mapOf("agent_id" to it) } ?: emptyMap(),
+            metadata = buildMap {
+                agentId?.let { put("agent_id", it) }
+                executionSessionId?.let { put("execution_session_id", it) }
+                parentSessionId?.let { put("parent_session_id", it) }
+            },
+            sessionId = executionSessionId,
+            executionSessionId = executionSessionId,
+            parentSessionId = parentSessionId,
+            role = role,
             origin = TaskOrigin.Legacy,
         ),
     )

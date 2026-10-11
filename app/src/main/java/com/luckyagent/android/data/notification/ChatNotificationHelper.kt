@@ -71,6 +71,7 @@ class ChatNotificationHelper(private val context: Context) {
             destination = if (kind == RuntimeNoticeKind.Background) "background" else "tasks",
             ongoing = !terminal,
             remember = false,
+            taskId = taskId,
         )
     }
 
@@ -88,6 +89,7 @@ class ChatNotificationHelper(private val context: Context) {
         destination: String,
         ongoing: Boolean,
         remember: Boolean,
+        taskId: String? = null,
     ) {
         if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         if (remember && dedupeKey.isNotBlank() && delivered.getBoolean(dedupeKey, false)) return
@@ -95,6 +97,9 @@ class ChatNotificationHelper(private val context: Context) {
         val intent = Intent(context, MainActivity::class.java).apply {
             if (sessionId.isNotBlank()) putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
             putExtra(MainActivity.EXTRA_DESTINATION, destination)
+            // Keep task notifications actionable even when the runtime has not
+            // exposed an execution session link yet.
+            taskId?.takeIf { it.isNotBlank() && sessionId.isBlank() }?.let { putExtra(MainActivity.EXTRA_TASK_ID, it) }
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         val pending = PendingIntent.getActivity(

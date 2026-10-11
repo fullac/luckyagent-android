@@ -65,11 +65,13 @@ private val DarkColors = darkColorScheme(
 @Composable
 fun CloverTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    fontScale: Float = 1f,
+    fontFamily: String = "serif",
     content: @Composable () -> Unit,
 ) {
     MaterialTheme(
         colorScheme = if (darkTheme) DarkColors else LightColors,
-        typography = CloverTypography,
+        typography = cloverTypography(fontScale, cloverFontFamily(fontFamily)),
         shapes = CloverShapes,
         content = content,
     )

@@ -181,6 +181,40 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
         OpacitySlider("顶栏", s.chromeOpacity) { value -> vm.updateSettings { it.copy(chromeOpacity = value) } }
         OpacitySlider("卡片", s.cardOpacity) { value -> vm.updateSettings { it.copy(cardOpacity = value) } }
         OpacitySlider("侧栏", s.drawerOpacity) { value -> vm.updateSettings { it.copy(drawerOpacity = value) } }
+        Text("阅读字体", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "使用 Android 内置的 Noto CJK 字体，不联网下载。衬线体更适合长文本阅读。",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (s.fontFamily == "serif") {
+                Button(onClick = {}) { Text("典雅衬线") }
+            } else {
+                OutlinedButton(onClick = { vm.updateSettings { it.copy(fontFamily = "serif") } }) {
+                    Text("典雅衬线")
+                }
+            }
+            if (s.fontFamily == "sans") {
+                Button(onClick = {}) { Text("现代无衬线") }
+            } else {
+                OutlinedButton(onClick = { vm.updateSettings { it.copy(fontFamily = "sans") } }) {
+                    Text("现代无衬线")
+                }
+            }
+        }
+        Text("字号 ${(s.fontScale * 100).toInt()}%", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+        androidx.compose.material3.Slider(
+            value = s.fontScale,
+            onValueChange = { value -> vm.updateSettings { it.copy(fontScale = value) } },
+            valueRange = 0.85f..1.35f,
+            steps = 0,
+        )
+        Text(
+            "字号会同步应用到聊天正文、Markdown、代码说明和侧栏。",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
@@ -568,8 +602,8 @@ private fun SettingsAboutCard() {
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            "Degraded on phone: gateway start/stop, skill install/enable, memory write, and full graph layout " +
-                "remain desktop-side when write APIs are not exposed.",
+            "Gateway start/stop is available from the Gateways page when the connected host exposes the control API. " +
+                "Other runtime settings remain managed by the host.",
             color = CloverText3,
             style = MaterialTheme.typography.bodySmall,
         )

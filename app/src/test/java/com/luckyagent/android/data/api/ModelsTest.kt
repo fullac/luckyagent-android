@@ -1,11 +1,20 @@
 package com.luckyagent.android.data.api
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelsTest {
+    @Test
+    fun gatewayStartRequestCarriesOptionalToken() {
+        val json = Json { explicitNulls = false }
+        val request = json.decodeFromString<GatewayStartRequest>("{\"token\":\"tg-token\"}")
+
+        assertEquals("tg-token", request.token)
+    }
+
     @Test
     fun modelsAreGroupedByNormalizedKind() {
         val models = listOf(
@@ -28,6 +37,32 @@ class ModelsTest {
         assertEquals("压缩", modelKindLabel("compact"))
         assertEquals("对话", modelKindLabel("chat"))
         assertEquals("custom", modelKindLabel("custom"))
+    }
+
+    @Test
+    fun taskExecutionSessionWinsOverOwnerSession() {
+        val task = TaskSummary(
+            id = "task-1",
+            sessionId = "parent-session",
+            executionSessionId = "subagent-session",
+            source = "http",
+            mode = "parallel",
+            status = "running",
+            description = "child work",
+        )
+
+        assertEquals("subagent-session", task.executionSession())
+    }
+
+    @Test
+    fun metadataExecutionSessionWinsOverLegacyOwnerLink() {
+        val record = TaskRecord(
+            id = "task-2",
+            sessionId = "owner-session",
+            metadata = mapOf("execution_session_id" to "metadata-execution"),
+        )
+
+        assertEquals("metadata-execution", record.toTaskSummary().executionSession())
     }
 
     @Test

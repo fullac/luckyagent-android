@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -309,6 +311,87 @@ class LuckyAgentApi(
                 }
             }
         }
+
+    suspend fun getModelEffort(): Result<ModelEffortResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/models/effort")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("model effort ${resp.code}: $body")
+                json.decodeFromString(ModelEffortResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun setModelEffort(effort: String): Result<ModelEffortResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(effort.isNotBlank()) { "effort required" }
+            val payload = json.encodeToString(ModelEffortRequest(effort.trim().lowercase()))
+            val request = Request.Builder().url(url("/api/v1/models/effort"))
+                .put(payload.toRequestBody(jsonMedia)).header("Content-Type", "application/json").build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("model effort ${resp.code}: $body")
+                json.decodeFromString(ModelEffortResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun getRuntimeConfig(): Result<RuntimeConfigSnapshot> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/config")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("config ${resp.code}: $body")
+                RuntimeConfigSnapshot(json.parseToJsonElement(body).jsonObject, resp.header("ETag"))
+            }
+        }
+    }
+
+    suspend fun getRuntimeConfigSchema(): Result<RuntimeConfigSchema> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/config/schema")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("config schema ${resp.code}: $body")
+                json.decodeFromString(RuntimeConfigSchema.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun patchRuntimeConfig(
+        patch: JsonObject,
+        clearSecrets: List<String> = emptyList(),
+        ifMatch: String? = null,
+        dryRun: Boolean = false,
+    ): Result<RuntimeConfigPatchResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = json.encodeToString(RuntimeConfigPatchEnvelope(patch, clearSecrets, ifMatch, dryRun))
+            val request = Request.Builder().url(url("/api/v1/config"))
+                .patch(payload.toRequestBody(jsonMedia)).header("Content-Type", "application/json").build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("config patch ${resp.code}: $body")
+                json.decodeFromString(RuntimeConfigPatchResponse.serializer(), body)
+            }
+        }
+    }
+
+    /** Compatibility path for runtimes that only expose full PUT updates. */
+    suspend fun putRuntimeConfig(config: JsonObject, ifMatch: String? = null): Result<RuntimeConfigSnapshot> = withContext(Dispatchers.IO) {
+        runCatching {
+            val requestBuilder = Request.Builder().url(url("/api/v1/config"))
+                .put(config.toString().toRequestBody(jsonMedia)).header("Content-Type", "application/json")
+            if (!ifMatch.isNullOrBlank()) requestBuilder.header("If-Match", ifMatch)
+            client.newCall(requestBuilder.build()).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("config update ${resp.code}: $body")
+                RuntimeConfigSnapshot(json.parseToJsonElement(body).jsonObject, resp.header("ETag"))
+            }
+        }
+    }
+
+    suspend fun reloadRuntimeConfig(): Result<String> = getJson("/api/v1/config/reload", method = "POST")
 
     suspend fun listSessions(query: String = ""): Result<List<RuntimeSession>> = withContext(Dispatchers.IO) {
         runCatching {
@@ -848,9 +931,10 @@ class LuckyAgentApi(
             }
         }
 
-    suspend fun getJson(path: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun getJson(path: String, method: String = "GET"): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val request = Request.Builder().url(url(path)).get().build()
+            val builder = Request.Builder().url(url(path))
+            val request = if (method.equals("POST", true)) builder.post("".toRequestBody(jsonMedia)).build() else builder.get().build()
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("${resp.code}: $body")

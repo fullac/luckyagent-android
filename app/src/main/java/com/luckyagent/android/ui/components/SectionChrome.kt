@@ -138,7 +138,7 @@ fun CloverCard(
 ) {
     val shape = MaterialTheme.shapes.medium
     val color = MaterialTheme.colorScheme.surface.copy(alpha = LocalSurfaceOpacity.current.card)
-    val border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
+    val border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .35f))
     val body: @Composable () -> Unit = {
         Column(
             Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -195,7 +195,7 @@ fun CardTitleRow(
 fun MetaChip(text: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.60f),
         shape = RoundedCornerShape(999.dp),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,

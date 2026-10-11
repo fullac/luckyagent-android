@@ -19,14 +19,14 @@ private val CloverShapes = Shapes(
 private val LightColors = lightColorScheme(
     primary = CloverAccent,
     onPrimary = Color.White,
-    primaryContainer = CloverLeaf,
+    primaryContainer = CloverAccentSoft,
     onPrimaryContainer = CloverLeafInk,
-    secondary = CloverLeaf,
-    onSecondary = CloverLeafInk,
-    secondaryContainer = Color(0xFFE8F0DE),
+    secondary = CloverAccent,
+    onSecondary = Color.White,
+    secondaryContainer = CloverAccentSoft,
     onSecondaryContainer = CloverAccent,
     tertiary = CloverAccent,
-    tertiaryContainer = Color(0xFFE8F0DE),
+    tertiaryContainer = CloverAccentSoft,
     onTertiaryContainer = CloverAccent,
     outlineVariant = CloverLine,
     background = CloverBg,
@@ -42,14 +42,14 @@ private val LightColors = lightColorScheme(
 private val DarkColors = darkColorScheme(
     primary = CloverDarkAccent,
     onPrimary = CloverLeafInk,
-    primaryContainer = CloverAccent,
+    primaryContainer = CloverDarkAccentSoft,
     onPrimaryContainer = Color.White,
     secondary = CloverAccent,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFF30422E),
+    secondaryContainer = CloverDarkAccentSoft,
     onSecondaryContainer = CloverDarkAccent,
     tertiary = CloverDarkAccent,
-    tertiaryContainer = Color(0xFF30422E),
+    tertiaryContainer = CloverDarkAccentSoft,
     onTertiaryContainer = CloverDarkAccent,
     outlineVariant = CloverDarkLine,
     background = CloverDarkBg,
@@ -59,14 +59,14 @@ private val DarkColors = darkColorScheme(
     surfaceVariant = CloverDarkSurface2,
     onSurfaceVariant = CloverDarkText2,
     outline = CloverDarkLine,
-    error = Color(0xFFFFB4AB),
+    error = CloverDarkError,
 )
 
 @Composable
 fun CloverTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     fontScale: Float = 1f,
-    fontFamily: String = "serif",
+    fontFamily: String = "sans",
     content: @Composable () -> Unit,
 ) {
     MaterialTheme(

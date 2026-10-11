@@ -48,7 +48,7 @@ data class ClientSettings(
     /** App text scale, persisted locally and applied to the Material typography. */
     val fontScale: Float = 1.0f,
     /** `serif` uses the Android Noto Serif CJK fallback; `sans` uses Noto Sans CJK. */
-    val fontFamily: String = "serif",
+    val fontFamily: String = "sans",
 )
 
 /**
@@ -107,10 +107,10 @@ class SettingsRepository(context: Context) {
             cardOpacity = prefs.getInt(KEY_CARD_OPACITY, 82).coerceIn(0, 100),
             drawerOpacity = prefs.getInt(KEY_DRAWER_OPACITY, 90).coerceIn(0, 100),
             fontScale = prefs.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.35f),
-            fontFamily = prefs.getString(KEY_FONT_FAMILY, "serif")
+            fontFamily = prefs.getString(KEY_FONT_FAMILY, "sans")
                 ?.lowercase()
                 ?.takeIf { it == "serif" || it == "sans" }
-                ?: "serif",
+                ?: "sans",
         )
     }
 

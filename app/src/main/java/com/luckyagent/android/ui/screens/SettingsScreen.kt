@@ -99,6 +99,8 @@ fun SettingsScreen(
             onBack = onBack,
         )
 
+        RuntimeSettingsPanel(state, vm)
+
         if (useTwoColumns) {
             Row(
                 Modifier.padding(horizontal = 16.dp),

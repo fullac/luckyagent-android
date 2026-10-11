@@ -29,8 +29,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -62,6 +60,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -136,7 +136,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -405,7 +404,11 @@ fun ChatScreen(
     }
 
     var sessionPaneExpanded by rememberSaveable { mutableStateOf(true) }
-    var showSessionPage by rememberSaveable { mutableStateOf(false) }
+    // Compact layouts use one continuous two-page surface. Start on chat so a
+    // cold launch never opens the session list, while a horizontal drag can
+    // move to it without a threshold-based edge detector.
+    val compactPagerState = rememberPagerState(initialPage = 1, pageCount = { 2 })
+    val compactPagerScope = rememberCoroutineScope()
     val sessionPaneWidth = 304.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
@@ -453,15 +456,19 @@ fun ChatScreen(
                 state = state,
                 onClose = {
                     if (usePermanentSessionPane) sessionPaneExpanded = false
-                    else showSessionPage = false
+                    else compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
                 },
                 onSelect = { id ->
                     vm.selectSession(id)
-                    if (!usePermanentSessionPane) showSessionPage = false
+                    if (!usePermanentSessionPane) {
+                        compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+                    }
                 },
                 onCreate = {
                     vm.createSession()
-                    if (!usePermanentSessionPane) showSessionPage = false
+                    if (!usePermanentSessionPane) {
+                        compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+                    }
                 },
                 onQueryChange = vm::updateSessionQuery,
                 onRename = { session ->
@@ -527,48 +534,61 @@ fun ChatScreen(
                     modifier = Modifier.weight(1f),
                 )
             }
-        } else if (showSessionPage) {
-            BackHandler { showSessionPage = false }
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
-            ) {
-                sessionDrawer(true)
-            }
         } else {
-            ChatConversation(
-                state = state,
-                vm = vm,
-                showSessionMenu = true,
-                onOpenSessions = { showSessionPage = true },
-                onNewSession = vm::createSession,
-                onOpenSettings = onOpenSettings,
-                showAttachmentOptions = showAttachmentOptions,
-                onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
-                onCameraCapture = {
-                    showAttachmentOptions = false
-                    requestCameraCapture()
-                },
-                onVoiceCapture = {
-                    showAttachmentOptions = false
-                    requestVoiceCapture()
-                },
-                onVisualPick = {
-                    showAttachmentOptions = false
-                    visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                },
-                onFilePick = {
-                    showAttachmentOptions = false
-                    filePicker.launch(arrayOf("*/*"))
-                },
-                isRecordingVoice = isRecordingVoice,
-                recordingElapsedSec = recordingElapsedSec,
-                captureHint = captureHint,
-                onStopVoice = { stopVoiceCapture(cancel = false) },
-                onCancelVoice = { stopVoiceCapture(cancel = true) },
-            )
+            BackHandler(enabled = compactPagerState.currentPage == 0) {
+                compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+            }
+            HorizontalPager(
+                state = compactPagerState,
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 1,
+                pageSpacing = 0.dp,
+            ) { page ->
+                if (page == 0) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
+                            .windowInsetsPadding(WindowInsets.safeDrawing),
+                    ) {
+                        sessionDrawer(true)
+                    }
+                } else {
+                    ChatConversation(
+                        state = state,
+                        vm = vm,
+                        showSessionMenu = true,
+                        onOpenSessions = {
+                            compactPagerScope.launch { compactPagerState.animateScrollToPage(0) }
+                        },
+                        onNewSession = vm::createSession,
+                        onOpenSettings = onOpenSettings,
+                        showAttachmentOptions = showAttachmentOptions,
+                        onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                        onCameraCapture = {
+                            showAttachmentOptions = false
+                            requestCameraCapture()
+                        },
+                        onVoiceCapture = {
+                            showAttachmentOptions = false
+                            requestVoiceCapture()
+                        },
+                        onVisualPick = {
+                            showAttachmentOptions = false
+                            visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                        },
+                        onFilePick = {
+                            showAttachmentOptions = false
+                            filePicker.launch(arrayOf("*/*"))
+                        },
+                        isRecordingVoice = isRecordingVoice,
+                        recordingElapsedSec = recordingElapsedSec,
+                        captureHint = captureHint,
+                        onStopVoice = { stopVoiceCapture(cancel = false) },
+                        onCancelVoice = { stopVoiceCapture(cancel = true) },
+                    )
+                }
+            }
         }
     }
 
@@ -729,38 +749,12 @@ private fun ChatConversation(
         else mapOf("X-API-Key" to state.settings.apiKey)
     }
     LaunchedEffect(showModelSheet) {
-        if (showModelSheet) vm.loadModels()
+        if (showModelSheet) {
+            vm.loadModels()
+            vm.loadModelEffort()
+        }
     }
-    Box(
-        Modifier
-            .fillMaxSize()
-            // Compact navigation follows the reference app: a right swipe
-            // opens the full session page, a left swipe opens Settings.
-            .pointerInput(Unit) {
-                var startX = 0f
-                var distance = 0f
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        startX = offset.x
-                        distance = 0f
-                    },
-                    onDrag = { change, dragAmount ->
-                        if (kotlin.math.abs(dragAmount.x) >= kotlin.math.abs(dragAmount.y)) {
-                            change.consume()
-                            distance += dragAmount.x
-                        }
-                    },
-                    onDragEnd = {
-                        when {
-                            startX < 72f && distance > 120f -> onOpenSessions()
-                            startX > size.width - 72f && distance < -120f -> onOpenSettings()
-                        }
-                        distance = 0f
-                    },
-                    onDragCancel = { distance = 0f },
-                )
-            },
-    ) {
+    Box(Modifier.fillMaxSize()) {
     Column(
         modifier
             .fillMaxSize()
@@ -1004,6 +998,8 @@ private fun ChatConversation(
                 state = state,
                 onDismiss = { showModelSheet = false },
                 onRetry = { vm.loadModels(force = true) },
+                onRetryEffort = { vm.loadModelEffort(force = true) },
+                onSetEffort = vm::setModelEffort,
                 onSelect = {
                     vm.switchModel(it)
                     showModelSheet = false
@@ -1047,6 +1043,7 @@ private fun ChatTopBar(
     onReconnect: () -> Unit = {},
 ) {
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
+    val openNavigation = LocalOpenNavigationDrawer.current
     val hasWallpaper = state.settings.chatBackgroundFile.isNotBlank()
     Column(
         Modifier
@@ -1068,6 +1065,11 @@ private fun ChatTopBar(
             } else {
                 Spacer(Modifier.width(48.dp))
             }
+            openNavigation?.let { onOpen ->
+                TextButton(onClick = onOpen) {
+                    Text("功能", color = CloverText2)
+                }
+            }
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 ModelSwitchButton(
                     state = state,
@@ -1086,6 +1088,15 @@ private fun ChatTopBar(
                     expanded = moreExpanded,
                     onDismissRequest = { moreExpanded = false },
                 ) {
+                    openNavigation?.let { onOpen ->
+                        DropdownMenuItem(
+                            text = { Text("功能导航") },
+                            onClick = {
+                                moreExpanded = false
+                                onOpen()
+                            },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("设置") },
                         onClick = {
@@ -1101,7 +1112,7 @@ private fun ChatTopBar(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("刷新会话") },
+                        text = { Text("会话列表") },
                         onClick = {
                             moreExpanded = false
                             onMenu()
@@ -1178,7 +1189,6 @@ private fun BubbleRow(
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
     var deleteConfirm by remember(bubble.id) { mutableStateOf(false) }
-    val swipeThreshold = with(LocalDensity.current) { 88.dp.toPx() }
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
     Row(
@@ -1212,20 +1222,6 @@ private fun BubbleRow(
                     }
                     Column(
                         Modifier
-                            .pointerInput(bubble.id, swipeThreshold) {
-                                var distance = 0f
-                                detectHorizontalDragGestures(
-                                    onHorizontalDrag = { change, dragAmount ->
-                                        change.consume()
-                                        distance += dragAmount
-                                    },
-                                    onDragEnd = {
-                                        if (distance >= swipeThreshold) onQuote(bubble)
-                                        distance = 0f
-                                    },
-                                    onDragCancel = { distance = 0f },
-                                )
-                            }
                             .pointerInput(bubble.id) {
                                 detectTapGestures(onLongPress = { menuExpanded = true })
                             },
@@ -2189,6 +2185,10 @@ private fun ComposerBar(
                     inner()
                 },
             )
+            ContextUsageButton(
+                state = state,
+                onClick = { showContextSheet = true },
+            )
             IconButton(
                 onClick = onVoiceCapture,
                 modifier = Modifier.size(42.dp),
@@ -2790,6 +2790,8 @@ private fun ModelSwitchSheet(
     state: AppUiState,
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
+    onRetryEffort: () -> Unit,
+    onSetEffort: (String) -> Unit,
     onSelect: (ModelRef) -> Unit,
 ) {
     val models = remember(state.models) {
@@ -2799,6 +2801,17 @@ private fun ModelSwitchSheet(
     }
     val active = state.activeModels["chat"]
         ?: models.firstOrNull { it.current }
+    var showEffortOptions by rememberSaveable { mutableStateOf(false) }
+    val effort = state.modelEffort
+    val effortSupported = effort?.supported == true
+    val effortOptions = effort?.options.orEmpty().filter { it.isNotBlank() }
+    val effortLabel = when {
+        state.modelEffortLoading && effort == null -> "Loading…"
+        effort == null -> "Unavailable"
+        effort != null && !effortSupported -> "Not supported"
+        effort?.effort.isNullOrBlank() || effort?.effort.equals("auto", ignoreCase = true) -> "Automatic"
+        else -> effort?.effort.orEmpty()
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = CloverBg,
@@ -2884,9 +2897,62 @@ private fun ModelSwitchSheet(
             ModelPickerLink(
                 icon = Icons.Outlined.Schedule,
                 title = "Effort",
-                subtitle = "Automatic",
-                onClick = {},
+                subtitle = effortLabel,
+                enabled = effortSupported && effortOptions.isNotEmpty() && !state.modelEffortSaving,
+                onClick = {
+                    if (effortSupported && effortOptions.isNotEmpty() && !state.modelEffortSaving) {
+                        showEffortOptions = !showEffortOptions
+                    }
+                },
             )
+            if (state.modelEffortLoading && effort != null) {
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    color = CloverAccent,
+                )
+            }
+            state.modelEffortError?.let { error ->
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = CloverError, modifier = Modifier.size(16.dp))
+                    Text(error, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = CloverError, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = onRetryEffort) { Text("Retry") }
+                }
+            }
+            if (showEffortOptions && effortSupported && effortOptions.isNotEmpty()) {
+                Surface(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = CloverSurface.copy(alpha = .72f),
+                    border = BorderStroke(1.dp, CloverLine.copy(alpha = .7f)),
+                ) {
+                    Column(Modifier.padding(vertical = 4.dp)) {
+                        effortOptions.forEach { option ->
+                            val selected = option.equals(effort?.effort, ignoreCase = true)
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !state.modelEffortSaving && !selected) {
+                                        onSetEffort(option)
+                                        showEffortOptions = false
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(option, style = MaterialTheme.typography.bodyMedium, color = CloverText)
+                                    if (selected) Text("当前选择", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
+                                }
+                                if (selected) Icon(Icons.Outlined.Check, contentDescription = null, tint = CloverAccent, modifier = Modifier.size(18.dp))
+                                if (state.modelEffortSaving && selected) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = CloverAccent)
+                            }
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(8.dp))
             ModelPickerLink(
                 icon = Icons.Outlined.MoreHoriz,
@@ -2970,10 +3036,12 @@ private fun ModelPickerLink(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     subtitle: String?,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Surface(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         color = CloverSurface.copy(alpha = .72f),
@@ -3736,6 +3804,7 @@ private fun SessionDrawer(
     onRefresh: () -> Unit,
     showClose: Boolean,
 ) {
+    val openNavigation = LocalOpenNavigationDrawer.current
     val query = state.sessionQuery.trim()
     val sessions = state.sessions
     var collapsedGroups by remember { mutableStateOf(setOf<String>()) }
@@ -3755,6 +3824,11 @@ private fun SessionDrawer(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            openNavigation?.let { onOpen ->
+                TextButton(onClick = onOpen) {
+                    Text("功能")
+                }
+            }
             IconButton(onClick = onCreate) {
                 Icon(Icons.Outlined.Add, contentDescription = "New session")
             }

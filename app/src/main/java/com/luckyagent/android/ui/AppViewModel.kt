@@ -25,6 +25,10 @@ import com.luckyagent.android.data.cache.olderHistoryOffset
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ModelRef
+import com.luckyagent.android.data.api.ModelEffortResponse
+import com.luckyagent.android.data.api.RuntimeConfigSchema
+import com.luckyagent.android.data.api.RuntimeConfigSnapshot
+import com.luckyagent.android.data.api.RuntimeConfigPatchResponse
 import com.luckyagent.android.data.api.modelKindLabel
 import com.luckyagent.android.data.api.MemoryGraphEdge
 import com.luckyagent.android.data.api.MemoryGraphNode
@@ -89,6 +93,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -287,6 +292,18 @@ data class AppUiState(
     val modelsLoading: Boolean = false,
     val modelsError: String? = null,
     val modelSwitchingKey: String? = null,
+    val modelEffort: ModelEffortResponse? = null,
+    val modelEffortLoading: Boolean = false,
+    val modelEffortSaving: Boolean = false,
+    val modelEffortError: String? = null,
+    val runtimeConfig: RuntimeConfigSnapshot? = null,
+    val runtimeConfigSchema: RuntimeConfigSchema? = null,
+    val runtimeConfigDraft: JsonObject? = null,
+    val runtimeConfigLoading: Boolean = false,
+    val runtimeConfigSaving: Boolean = false,
+    val runtimeConfigError: String? = null,
+    val runtimeConfigPreview: RuntimeConfigPatchResponse? = null,
+    val runtimeConfigEtag: String? = null,
     val contextInspect: ContextInspectResponse? = null,
     val contextInspectLoading: Boolean = false,
     val contextInspectError: String? = null,
@@ -354,6 +371,17 @@ class AppViewModel(
                         modelsLoaded = if (endpointChanged) false else current.modelsLoaded,
                         modelsLoading = if (endpointChanged) false else current.modelsLoading,
                         modelsError = if (endpointChanged) null else current.modelsError,
+                        modelEffort = if (endpointChanged) null else current.modelEffort,
+                        modelEffortLoading = if (endpointChanged) false else current.modelEffortLoading,
+                        modelEffortSaving = if (endpointChanged) false else current.modelEffortSaving,
+                        modelEffortError = if (endpointChanged) null else current.modelEffortError,
+                        runtimeConfig = if (endpointChanged) null else current.runtimeConfig,
+                        runtimeConfigSchema = if (endpointChanged) null else current.runtimeConfigSchema,
+                        runtimeConfigDraft = if (endpointChanged) null else current.runtimeConfigDraft,
+                        runtimeConfigEtag = if (endpointChanged) null else current.runtimeConfigEtag,
+                        runtimeConfigLoading = if (endpointChanged) false else current.runtimeConfigLoading,
+                        runtimeConfigSaving = if (endpointChanged) false else current.runtimeConfigSaving,
+                        runtimeConfigError = if (endpointChanged) null else current.runtimeConfigError,
                     )
                 }
                 if (endpointChanged) resetForEndpointChange(s)
@@ -1663,7 +1691,7 @@ class AppViewModel(
             AppDestination.Gateways -> refreshGateways()
             AppDestination.Trajectory -> refreshTrajectory()
             AppDestination.Chat -> Unit
-            AppDestination.Settings -> Unit
+            AppDestination.Settings -> loadRuntimeConfig()
         }
     }
 
@@ -1863,6 +1891,7 @@ class AppViewModel(
                         modelsError = null,
                     )
                 }
+                loadModelEffort(force = true)
             }.onFailure { error ->
                 _ui.update {
                     it.copy(
@@ -1872,6 +1901,116 @@ class AppViewModel(
                     )
                 }
             }
+        }
+    }
+
+    fun loadModelEffort(force: Boolean = false) {
+        val current = _ui.value
+        if (current.modelEffortLoading || (!force && current.modelEffort != null)) return
+        val endpointSnapshot = container.settingsRepository.snapshot()
+        _ui.update { it.copy(modelEffortLoading = true, modelEffortError = null) }
+        viewModelScope.launch {
+            container.api.getModelEffort().onSuccess { effort ->
+                val active = container.settingsRepository.snapshot()
+                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                    _ui.update { it.copy(modelEffort = effort, modelEffortLoading = false, modelEffortError = null) }
+                }
+            }.onFailure { error ->
+                val active = container.settingsRepository.snapshot()
+                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                    _ui.update { it.copy(modelEffortLoading = false, modelEffortError = error.message ?: "读取思维强度失败") }
+                }
+            }
+        }
+    }
+
+    fun setModelEffort(value: String) {
+        val effort = value.trim().lowercase()
+        if (effort.isBlank() || _ui.value.modelEffortSaving) return
+        val current = _ui.value.modelEffort
+        if (current != null && !current.options.contains(effort) && effort != "auto") return
+        val endpointSnapshot = container.settingsRepository.snapshot()
+        _ui.update { it.copy(modelEffortSaving = true, modelEffortError = null) }
+        viewModelScope.launch {
+            container.api.setModelEffort(effort).onSuccess { next ->
+                val active = container.settingsRepository.snapshot()
+                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                    _ui.update { it.copy(modelEffort = next, modelEffortSaving = false, modelEffortError = null, snackbarMessage = "思维强度已更新") }
+                }
+            }.onFailure { error ->
+                val active = container.settingsRepository.snapshot()
+                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                    _ui.update { it.copy(modelEffortSaving = false, modelEffortError = error.message ?: "保存思维强度失败") }
+                }
+            }
+        }
+    }
+
+    fun loadRuntimeConfig(force: Boolean = false) {
+        val current = _ui.value
+        if (current.runtimeConfigLoading || (!force && current.runtimeConfig != null && current.runtimeConfigSchema != null)) return
+        val endpointSnapshot = container.settingsRepository.snapshot()
+        _ui.update { it.copy(runtimeConfigLoading = true, runtimeConfigError = null) }
+        viewModelScope.launch {
+            coroutineScope {
+                val config = async { container.api.getRuntimeConfig() }
+                val schema = async { container.api.getRuntimeConfigSchema() }
+                val c = config.await(); val s = schema.await()
+                val activeEndpoint = container.settingsRepository.snapshot()
+                if (activeEndpoint.apiBase != endpointSnapshot.apiBase || activeEndpoint.apiKey != endpointSnapshot.apiKey || activeEndpoint.useBearer != endpointSnapshot.useBearer) return@coroutineScope
+                if (c.isSuccess && s.isSuccess) {
+                    val snapshot = c.getOrThrow()
+                    _ui.update { it.copy(runtimeConfig = snapshot, runtimeConfigEtag = snapshot.etag, runtimeConfigSchema = s.getOrThrow(), runtimeConfigDraft = snapshot.config, runtimeConfigLoading = false, runtimeConfigError = null) }
+                } else {
+                    _ui.update { it.copy(runtimeConfigLoading = false, runtimeConfigError = c.exceptionOrNull()?.message ?: s.exceptionOrNull()?.message ?: "加载配置失败") }
+                }
+            }
+        }
+    }
+
+    fun updateRuntimeConfigDraft(path: String, value: JsonElement?) {
+        val root = (_ui.value.runtimeConfigDraft ?: JsonObject(emptyMap())).toMutableMap()
+        val parts = path.split('.').filter { it.isNotBlank() }
+        if (parts.isEmpty()) return
+        var obj = root
+        parts.dropLast(1).forEach { part ->
+            val next = (obj[part] as? JsonObject)?.toMutableMap() ?: mutableMapOf()
+            obj[part] = JsonObject(next); obj = next
+        }
+        if (value == null) obj.remove(parts.last()) else obj[parts.last()] = value
+        _ui.update { it.copy(runtimeConfigDraft = JsonObject(root), runtimeConfigPreview = null) }
+    }
+
+    fun previewRuntimeConfig() = submitRuntimeConfig(dryRun = true)
+
+    fun saveRuntimeConfig(clearSecrets: List<String> = emptyList()) = submitRuntimeConfig(dryRun = false, clearSecrets = clearSecrets)
+
+    private fun submitRuntimeConfig(dryRun: Boolean, clearSecrets: List<String> = emptyList()) {
+        val patch = _ui.value.runtimeConfigDraft ?: return
+        val endpointSnapshot = container.settingsRepository.snapshot()
+        val etagSnapshot = _ui.value.runtimeConfigEtag
+        _ui.update { it.copy(runtimeConfigSaving = true, runtimeConfigError = null) }
+        viewModelScope.launch {
+            container.api.patchRuntimeConfig(patch, clearSecrets, etagSnapshot, dryRun).onSuccess { result ->
+                val activeEndpoint = container.settingsRepository.snapshot()
+                if (activeEndpoint.apiBase != endpointSnapshot.apiBase || activeEndpoint.apiKey != endpointSnapshot.apiKey || activeEndpoint.useBearer != endpointSnapshot.useBearer) return@onSuccess
+                _ui.update { state ->
+                    if (dryRun) state.copy(runtimeConfigPreview = result, runtimeConfigSaving = false)
+                    else state.copy(runtimeConfig = result.config?.let { RuntimeConfigSnapshot(it, result.version) } ?: state.runtimeConfig, runtimeConfigEtag = result.version.ifBlank { state.runtimeConfigEtag }, runtimeConfigDraft = result.config ?: state.runtimeConfigDraft, runtimeConfigPreview = result, runtimeConfigSaving = false, runtimeConfigError = null, snackbarMessage = "配置已保存")
+                }
+            }.onFailure { error ->
+                val activeEndpoint = container.settingsRepository.snapshot()
+                if (activeEndpoint.apiBase == endpointSnapshot.apiBase && activeEndpoint.apiKey == endpointSnapshot.apiKey && activeEndpoint.useBearer == endpointSnapshot.useBearer) {
+                    _ui.update { it.copy(runtimeConfigSaving = false, runtimeConfigError = error.message ?: "保存配置失败（可能已被其他客户端修改）") }
+                }
+            }
+        }
+    }
+
+    fun reloadRuntimeConfig() {
+        viewModelScope.launch {
+            container.api.reloadRuntimeConfig().onSuccess { loadRuntimeConfig(force = true) }
+                .onFailure { error -> _ui.update { it.copy(runtimeConfigError = error.message ?: "重载配置失败") } }
         }
     }
 

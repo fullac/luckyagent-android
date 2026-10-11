@@ -98,15 +98,15 @@ private data class NavSpec(
 )
 
 private val navItems = listOf(
-    NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
-    NavSpec(AppDestination.Tasks, "Tasks", Icons.Outlined.Assignment),
-    NavSpec(AppDestination.Background, "Background", Icons.Outlined.Autorenew),
-    NavSpec(AppDestination.Cron, "Cron", Icons.Outlined.Schedule),
-    NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
-    NavSpec(AppDestination.Skills, "Skills", Icons.Outlined.Extension),
-    NavSpec(AppDestination.Memory, "Memory", Icons.Outlined.AccountTree),
-    NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
-    NavSpec(AppDestination.Settings, "Settings", Icons.Outlined.Settings),
+    NavSpec(AppDestination.Chat, "聊天", Icons.Outlined.ChatBubbleOutline),
+    NavSpec(AppDestination.Tasks, "任务", Icons.Outlined.Assignment),
+    NavSpec(AppDestination.Background, "后台任务", Icons.Outlined.Autorenew),
+    NavSpec(AppDestination.Cron, "定时任务 Cron", Icons.Outlined.Schedule),
+    NavSpec(AppDestination.Trajectory, "执行轨迹", Icons.Outlined.Timeline),
+    NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
+    NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
+    NavSpec(AppDestination.Gateways, "网关", Icons.Outlined.Hub),
+    NavSpec(AppDestination.Settings, "设置", Icons.Outlined.Settings),
 )
 
 private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
@@ -303,7 +303,7 @@ private fun AppScaffold(
                                         Icon(item.icon, contentDescription = item.label)
                                     }
                                 },
-                                label = { Text(item.label, maxLines = 1) },
+                                label = { Text(if (item.dest == AppDestination.Cron) "Cron" else item.label, maxLines = 1) },
                             )
                         }
                     }
@@ -478,9 +478,10 @@ private fun NavigationDrawerContent(
                 groupItems.forEach { DrawerNavItem(it, state, onSelect) }
             }
         }
-        // Settings is deliberately outside the drawer. On compact layouts the
-        // chat page opens it with a horizontal page gesture; on expanded
-        // layouts it remains available through the rail.
+        HorizontalDivider(Modifier.padding(horizontal = 20.dp))
+        Box(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
+            DrawerNavItem(nav(AppDestination.Settings), state, onSelect)
+        }
     }
 }
 
@@ -498,7 +499,7 @@ private fun DrawerNavItem(
                 Modifier
                     .size(32.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (state.destination == item.dest) CloverLeaf.copy(alpha = .28f) else Color.Transparent),
+                    .background(if (state.destination == item.dest) CloverAccent.copy(alpha = .12f) else Color.Transparent),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(item.icon, contentDescription = null)
@@ -509,7 +510,7 @@ private fun DrawerNavItem(
         onClick = { onSelect(item.dest) },
         shape = RoundedCornerShape(14.dp),
         colors = NavigationDrawerItemDefaults.colors(
-            selectedContainerColor = CloverLeaf.copy(alpha = .18f),
+            selectedContainerColor = CloverAccent.copy(alpha = .10f),
             unselectedContainerColor = Color.Transparent,
             selectedIconColor = MaterialTheme.colorScheme.primary,
             unselectedIconColor = CloverText2,

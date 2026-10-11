@@ -78,7 +78,13 @@ import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverError
 
 @Composable
-fun SettingsScreen(state: AppUiState, vm: AppViewModel, onScan: () -> Unit = {}, onPickQrImage: () -> Unit = {}) {
+fun SettingsScreen(
+    state: AppUiState,
+    vm: AppViewModel,
+    onBack: (() -> Unit)? = null,
+    onScan: () -> Unit = {},
+    onPickQrImage: () -> Unit = {},
+) {
     val s = state.settings
     val useTwoColumns = LocalConfiguration.current.screenWidthDp >= 1000
     Column(
@@ -88,8 +94,9 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel, onScan: () -> Unit = {},
     ) {
         ScreenHeader(
             eyebrow = "Connection",
-            title = "Settings",
-            subtitle = "Phone talks only to host lh serve (HTTP + WS)",
+            title = "You",
+            subtitle = "LuckyAgent on this device",
+            onBack = onBack,
         )
 
         if (useTwoColumns) {
@@ -98,13 +105,16 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel, onScan: () -> Unit = {},
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(Modifier.weight(1.25f)) {
+                    SettingsSectionTitle("连接")
                     SettingsEndpointCard(s, vm, onScan, onPickQrImage)
                     Spacer(Modifier.height(12.dp))
                     SettingsSessionCard(s, vm)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SettingsSectionTitle("状态与外观")
                     SettingsLiveCard(state, vm)
                     SettingsAppearanceCard(state, vm)
+                    SettingsSectionTitle("通知与版本")
                     SettingsNotificationsCard(state, vm)
                     SettingsUpdateCard(state, vm)
                     SettingsAboutCard()
@@ -115,10 +125,13 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel, onScan: () -> Unit = {},
                 Modifier.padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                SettingsSectionTitle("连接")
                 SettingsEndpointCard(s, vm, onScan, onPickQrImage)
                 SettingsSessionCard(s, vm)
+                SettingsSectionTitle("状态与外观")
                 SettingsLiveCard(state, vm)
                 SettingsAppearanceCard(state, vm)
+                SettingsSectionTitle("通知与版本")
                 SettingsNotificationsCard(state, vm)
                 SettingsUpdateCard(state, vm)
                 SettingsAboutCard()
@@ -126,6 +139,17 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel, onScan: () -> Unit = {},
         }
         Spacer(Modifier.height(24.dp))
     }
+}
+
+@Composable
+private fun SettingsSectionTitle(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        color = CloverText3,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+    )
 }
 
 @Composable

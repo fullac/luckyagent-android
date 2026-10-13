@@ -164,6 +164,9 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.executionSession
+import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
 import com.luckyagent.android.data.api.isSecureCredentialForm
@@ -235,6 +238,27 @@ internal sealed interface ChatTimelineItem {
     data class Message(val bubble: ChatBubble, override val key: String) : ChatTimelineItem
 
     data class Process(val steps: List<ChatBubble>, override val key: String) : ChatTimelineItem
+}
+
+internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): String? {
+    val collabModes = setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue")
+    val matched = tasks.filter { task ->
+        task.mode.lowercase() in collabModes && (task.childCount > 0 || task.mode.lowercase() in setOf("parallel", "pipeline", "debate"))
+    }
+    val task = matched.firstOrNull { !it.status.isTerminalTaskStatus() } ?: matched.firstOrNull() ?: return null
+    val done = task.status.isTerminalTaskStatus()
+    val mode = task.mode.lowercase()
+    val total = task.childCount.coerceAtLeast(1)
+    val completed = task.completedChildren.coerceIn(0, total)
+    val round = ((task.progress * total).toInt()).coerceIn(1, total)
+    val body = when (mode) {
+        "parallel" -> "并行 · $completed/$total"
+        "pipeline" -> if (done) "流水线 · $completed/$total" else "流水线 · 第 ${completed.coerceAtLeast(1)} 步"
+        "debate" -> if (done) "辩论 · $completed 轮" else "辩论 · 第 $round 轮"
+        "autonomy_queue" -> "黑板 · $total 人"
+        else -> "协作 · $completed/$total"
+    }
+    return if (done) "$body · 完成" else body
 }
 
 internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
@@ -908,6 +932,12 @@ private fun ChatConversation(
                                     selectedThinkingSteps = item.steps
                                     showThinkingSheet = true
                                 },
+                                collabLabel = collabFoldLabel(
+                                    state.tasks.filter {
+                                        it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
+                                    },
+                                    state.isResponding,
+                                ),
                             )
                         }
                     }
@@ -1729,6 +1759,7 @@ private fun ApprovalCard(
 private fun ProcessTimeline(
     steps: List<ChatBubble>,
     isResponding: Boolean,
+    collabLabel: String? = null,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
@@ -1751,6 +1782,7 @@ private fun ProcessTimeline(
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
+                    collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"

@@ -1039,6 +1039,16 @@ private fun ChatConversation(
         if (showThinkingSheet) {
             ThinkingSheet(
                 steps = selectedThinkingSteps,
+                collabLabel = collabFoldLabel(
+                    state.tasks.filter {
+                        it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
+                    },
+                    state.isResponding,
+                ),
+                collabTasks = state.tasks.filter {
+                    it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
+                },
+                onOpenTask = { vm.selectTask(it); vm.navigate(com.luckyagent.android.ui.AppDestination.Tasks) },
                 imageHeaders = imageHeaders,
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
@@ -1806,6 +1816,9 @@ private fun ProcessTimeline(
 @Composable
 private fun ThinkingSheet(
     steps: List<ChatBubble>,
+    collabLabel: String? = null,
+    collabTasks: List<TaskSummary> = emptyList(),
+    onOpenTask: (String) -> Unit = {},
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDismiss: () -> Unit,
@@ -1828,7 +1841,7 @@ private fun ThinkingSheet(
                 Text("🧠", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "思考了 ${steps.size} 步",
+                    collabLabel ?: "思考了 ${steps.size} 步",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -1838,6 +1851,23 @@ private fun ThinkingSheet(
                 }
             }
             Spacer(Modifier.height(8.dp))
+            collabTasks.filter { it.childCount > 0 || it.mode.lowercase() in setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue") }.forEach { task ->
+                Surface(
+                    onClick = { onOpenTask(task.id) },
+                    color = CloverSurface2,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(task.description.ifBlank { task.id }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${task.mode} · ${task.completedChildren}/${task.childCount.coerceAtLeast(0)} · ${task.status}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CloverText3,
+                        )
+                    }
+                }
+            }
             steps.forEach { step ->
                 when {
                     step.role == "compact" -> CompactProgressRow(step.content)

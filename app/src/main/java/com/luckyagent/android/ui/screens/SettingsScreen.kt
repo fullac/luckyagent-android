@@ -2,6 +2,7 @@ package com.luckyagent.android.ui.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
@@ -43,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -87,6 +89,8 @@ fun SettingsScreen(
 ) {
     val s = state.settings
     val useTwoColumns = LocalConfiguration.current.screenWidthDp >= 1000
+    var showDetails by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showDetails) { showDetails = false }
     Column(
         Modifier
             .fillMaxSize()
@@ -100,6 +104,14 @@ fun SettingsScreen(
         )
 
         RuntimeSettingsPanel(state, vm)
+
+        if (!showDetails) {
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                SettingsConnectionSummary(s, state.socketState, onOpen = { showDetails = true })
+            }
+            Spacer(Modifier.height(24.dp))
+            return@Column
+        }
 
         if (useTwoColumns) {
             Row(
@@ -140,6 +152,40 @@ fun SettingsScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun SettingsConnectionSummary(
+    settings: ClientSettings,
+    socket: SocketState,
+    onOpen: () -> Unit,
+) {
+    val endpoint = settings.runtimeEndpoints.firstOrNull { it.id == settings.activeRuntimeEndpointId }
+        ?: settings.runtimeEndpoints.firstOrNull()
+    val host = endpoint?.name?.ifBlank { null } ?: "Default"
+    val url = endpoint?.apiBase?.ifBlank { null } ?: settings.apiBase.ifBlank { "Not set" }
+    val auth = when {
+        settings.apiKey.isBlank() -> "No key"
+        settings.useBearer -> "Bearer"
+        else -> "X-API-Key"
+    }
+    val ws = when (socket) {
+        SocketState.Connected, SocketState.Running -> "WS connected"
+        SocketState.Connecting, SocketState.Reconnecting -> "WS connecting"
+        else -> "WS idle"
+    }
+    CloverCard {
+        Text("Connection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Detailed host, session, appearance, and notification settings stay closed until you open them.", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Text(host, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(url, color = CloverText2, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetaChip(settings.sessionId.ifBlank { "android-main" }.take(24))
+            MetaChip(auth)
+            MetaChip(ws)
+        }
+        Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("Open detailed settings") }
     }
 }
 

@@ -9,8 +9,8 @@ Source of truth for UX: `lucky-agent/UI/GUI`.
 | Sessions list / search | `SessionDrawerContent` |
 | WebSocket `/api/v1/ws` | `LuckyAgentWsClient` |
 | `fetchRuntime('/v1/sessions')` | `LuckyAgentApi.listSessions` |
-| Settings (server addr, models…) | `SettingsScreen`（移动端先做连接项） |
-| Memory graph | `MemoryScreen`（先列表） |
+| Settings (server addr, models…) | `SettingsScreen` overview by default; hosts/tokens/session open via **Open connection details** |
+| Memory graph | `MemoryScreen` + force-directed graph panel |
 | Skills / Gateways / Trajectory | 同名 Screen，JSON 只读骨架 |
 | clover CSS tokens | `ui/theme/Color.kt` + `res/values/colors.xml` |
 

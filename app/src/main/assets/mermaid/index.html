@@ -6,7 +6,8 @@
 <style>
   html, body { margin: 0; padding: 0; background: transparent; }
   #out { padding: 8px; }
-  #out svg { max-width: 100%; height: auto; }
+  #out svg { height: auto; }
+  #out.fit svg { max-width: 100%; }
 </style>
 </head>
 <body>
@@ -28,7 +29,9 @@
     });
     var id = "m" + Math.random().toString(36).slice(2);
     return mermaid.render(id, data.source).then(function (res) {
-      document.getElementById("out").innerHTML = res.svg;
+      var out = document.getElementById("out");
+      out.className = data.fit === false ? "" : "fit";
+      out.innerHTML = res.svg;
       var svg = document.querySelector("#out svg");
       var height = svg ? Math.ceil(svg.getBoundingClientRect().height) + 16 : 0;
       if (window.MermaidBridge) window.MermaidBridge.onRendered(height);

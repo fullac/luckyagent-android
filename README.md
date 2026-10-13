@@ -41,7 +41,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
   - Bearer vs `X-API-Key`
   - Health 探测、WS 重连、加密存储 Key
 - **Memory**
-  - recall 查询、tier stats、graph 摘要（节点/边数量占位，可视化下一迭代）
+  - recall 查询、tier stats、真实 wikilink 图谱、动态布局和召回路径回放
 - **Trajectory / Gateways / Skills**
   - 只读 JSON 面板（对齐 GUI 入口，便于联调）
 
@@ -49,7 +49,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 
 - 证书 pinning / 正式 release 签名密钥（CI 已支持可选 secrets 签名）
 - Trajectory 仍需真机检查长 JSON、复制和筛选交互
-- Memory graph 仍需真机检查窄屏缩放、节点详情和图例可读性
+- Memory graph 仍需真机检查窄屏缩放、节点拖拽、局部图谱和详情可读性
 - Session 时间戳、附件失败重试等本轮 UI 改动仍需真机回归
 
 ## UI 对照 GUI

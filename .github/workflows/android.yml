@@ -62,6 +62,9 @@ jobs:
           fi
           bash scripts/check-env.sh || true
 
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace --no-daemon
+
       - name: Assemble debug
         run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
@@ -75,6 +78,7 @@ jobs:
 
   build-release:
     name: Build release APK
+    needs: build-debug
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

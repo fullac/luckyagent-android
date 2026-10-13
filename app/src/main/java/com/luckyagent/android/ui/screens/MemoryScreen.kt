@@ -49,6 +49,7 @@ import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
+import com.luckyagent.android.ui.components.MemoryGraphPanel
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -134,9 +135,9 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatPill("Notes shown", nodes.size.toString())
                 StatPill("Links", state.memoryGraphEdges.size.toString())
-                StatPill("Isolated", state.memoryGraphSummary?.let { Regex("isolated=(\\d+)").find(it)?.groupValues?.get(1) } ?: "—")
-                StatPill("Unresolved", state.memoryGraphSummary?.let { Regex("unresolved=(\\d+)").find(it)?.groupValues?.get(1) } ?: "—")
-                StatPill("Vault total", state.memoryStats?.total?.toString() ?: "—")
+                StatPill("Isolated", state.memoryGraphSummary?.let { Regex("isolated=(\\d+)").find(it)?.groupValues?.get(1) } ?: "窶・)
+                StatPill("Unresolved", state.memoryGraphSummary?.let { Regex("unresolved=(\\d+)").find(it)?.groupValues?.get(1) } ?: "窶・)
+                StatPill("Vault total", state.memoryStats?.total?.toString() ?: "窶・)
             }
         }
         item(key = "trace-search") {
@@ -151,17 +152,17 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { vm.runMemoryTrace() }),
                         modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(CloverSurface2).padding(horizontal = 14.dp, vertical = 12.dp),
-                        decorationBox = { inner -> if (state.memoryTraceQuery.isEmpty()) Text("Trace a memory query…", color = CloverText3); inner() },
+                        decorationBox = { inner -> if (state.memoryTraceQuery.isEmpty()) Text("Trace a memory query窶ｦ", color = CloverText3); inner() },
                     )
                     Button(onClick = { vm.runMemoryTrace() }, enabled = !state.memoryTraceLoading && state.memoryTraceQuery.isNotBlank()) {
-                        Text(if (state.memoryTraceLoading) "Tracing…" else "Trace")
+                        Text(if (state.memoryTraceLoading) "Tracing窶ｦ" else "Trace")
                     }
                 }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     (1..3).forEach { depth -> FilterChip(selected = state.memoryTraceDepth == depth, onClick = { vm.setMemoryTraceDepth(depth) }, label = { Text("${depth} hop") }) }
                     OutlinedButton(onClick = { seenLiveAt = System.currentTimeMillis(); liveDialog = true }) {
                         val unseen = state.memoryLiveTraces.count { it.receivedAt > seenLiveAt }
-                        Text("Live ${state.memoryLiveTraces.size}" + if (unseen > 0) " · $unseen new" else "")
+                        Text("Live ${state.memoryLiveTraces.size}" + if (unseen > 0) " ﾂｷ $unseen new" else "")
                     }
                     if (trace != null) TextButton(onClick = { vm.selectMemoryTrace(null); selectedId = null }) { Text("Clear") }
                 }
@@ -171,21 +172,21 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
         if (trace != null) {
             item(key = "trace-controls") {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(onClick = { playhead = 0; playing = false }) { Text("⟲ Reset") }
-                    TextButton(onClick = { playhead = (playhead - 1).coerceAtLeast(0); playing = false }, enabled = playhead > 0) { Text("◀ Step") }
-                    Button(onClick = { if (playhead >= maxDepth) playhead = 0; playing = !playing }) { Text(if (playing) "Ⅱ Pause" else "▶ Play") }
-                    TextButton(onClick = { playhead = (playhead + 1).coerceAtMost(maxDepth); playing = false }, enabled = playhead < maxDepth) { Text("Step ▶") }
+                    TextButton(onClick = { playhead = 0; playing = false }) { Text("筺ｲ Reset") }
+                    TextButton(onClick = { playhead = (playhead - 1).coerceAtLeast(0); playing = false }, enabled = playhead > 0) { Text("笳 Step") }
+                    Button(onClick = { if (playhead >= maxDepth) playhead = 0; playing = !playing }) { Text(if (playing) "竇｡ Pause" else "笆ｶ Play") }
+                    TextButton(onClick = { playhead = (playhead + 1).coerceAtMost(maxDepth); playing = false }, enabled = playhead < maxDepth) { Text("Step 笆ｶ") }
                     TextButton(onClick = { playhead = maxDepth; playing = false }) { Text("Reveal all") }
                     listOf(1700, 950, 480).forEachIndexed { i, ms -> FilterChip(speed == ms, { speed = ms }, label = { Text(listOf("Slow", "Normal", "Fast")[i]) }) }
-                    Text("${if (playhead == 0) "Seeds" else "Depth $playhead"} of $maxDepth · ${revealedDepth.size} touched", color = CloverText3, style = MaterialTheme.typography.labelMedium)
+                    Text("${if (playhead == 0) "Seeds" else "Depth $playhead"} of $maxDepth ﾂｷ ${revealedDepth.size} touched", color = CloverText3, style = MaterialTheme.typography.labelMedium)
                 }
             }
             item(key = "trace-layers") {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TraceLayerRow("Seeds", trace.seeds.joinToString(" · ") { it.ref ?: it.id }, playhead == 0) { playhead = 0; playing = false }
+                    TraceLayerRow("Seeds", trace.seeds.joinToString(" ﾂｷ ") { it.ref ?: it.id }, playhead == 0) { playhead = 0; playing = false }
                     (1..maxDepth).forEach { depth ->
                         val hops = trace.hops.filter { it.depth == depth }
-                        TraceLayerRow("Depth $depth", hops.joinToString(" · ") { "${it.fromRef ?: it.fromId} → ${it.toRef ?: it.toId}" }.ifBlank { "(no new notes at this depth)" }, playhead == depth) { playhead = depth; playing = false }
+                        TraceLayerRow("Depth $depth", hops.joinToString(" ﾂｷ ") { "${it.fromRef ?: it.fromId} 竊・${it.toRef ?: it.toId}" }.ifBlank { "(no new notes at this depth)" }, playhead == depth) { playhead = depth; playing = false }
                     }
                 }
             }
@@ -207,12 +208,12 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 if (maxWidth >= 720.dp) {
                     Row(Modifier.fillMaxWidth().height(500.dp).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        GraphPanel(nodes, state.memoryGraphEdges, graphSearch, revealedDepth, revealedEdges, selectedId, onSelect = { selectedId = if (selectedId == it) null else it }, modifier = Modifier.weight(1.7f).fillMaxHeight(), loading = state.memoryLoading)
+                        MemoryGraphPanel(nodes, state.memoryGraphEdges, graphSearch, revealedDepth, revealedEdges, selectedId, onSelect = { selectedId = it }, modifier = Modifier.weight(1.7f).fillMaxHeight(), loading = state.memoryLoading, includeIsolated = state.memoryGraphIsolated, truncated = state.memoryGraphSummary?.contains("truncated") == true)
                         DetailPanel(selectedNode, traceInfo[selectedId], neighbors, onSelect = { selectedId = it }, modifier = Modifier.weight(1f).fillMaxHeight(), bounded = true)
                     }
                 } else {
                     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        GraphPanel(nodes, state.memoryGraphEdges, graphSearch, revealedDepth, revealedEdges, selectedId, onSelect = { selectedId = if (selectedId == it) null else it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(370.dp), loading = state.memoryLoading)
+                        MemoryGraphPanel(nodes, state.memoryGraphEdges, graphSearch, revealedDepth, revealedEdges, selectedId, onSelect = { selectedId = it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(400.dp), loading = state.memoryLoading, includeIsolated = state.memoryGraphIsolated, truncated = state.memoryGraphSummary?.contains("truncated") == true)
                         DetailPanel(selectedNode, traceInfo[selectedId], neighbors, onSelect = { selectedId = it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
                     }
                 }
@@ -230,7 +231,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
                     TextButton(onClick = { vm.selectMemoryTrace(item.trace); selectedId = null; liveDialog = false }) {
                         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
                             Text(item.trace.query.ifBlank { "(empty query)" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text("${item.trace.results.size} hits · depth ${item.trace.graphDepth} · ${relativeTime(item.receivedAt)}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                            Text("${item.trace.results.size} hits ﾂｷ depth ${item.trace.graphDepth} ﾂｷ ${relativeTime(item.receivedAt)}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                         }
                     }
                 }
@@ -257,7 +258,7 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
             positions[node.id]?.let { point ->
                 val radius = (6f + sqrt((node.degree ?: 0).toFloat()) * 3.4f).coerceAtMost(26f)
                 val title = node.title ?: node.id
-                PositionedNode(node, Offset(point.x, point.y), radius, if (title.length > 22) title.take(21) + "…" else title)
+                PositionedNode(node, Offset(point.x, point.y), radius, if (title.length > 22) title.take(21) + "窶ｦ" else title)
             }
         }
     }
@@ -293,9 +294,9 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
     LaunchedEffect(nodes, edges) { positions = withContext(Dispatchers.Default) { forceLayout(nodes, edges) } }
     Column(modifier.shadow(2.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(CloverSurface.copy(alpha = com.luckyagent.android.ui.components.LocalSurfaceOpacity.current.card))) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Knowledge topology · ${nodes.size} nodes / ${edges.size} links", style = MaterialTheme.typography.labelMedium, color = CloverText2, modifier = Modifier.weight(1f))
+            Text("Knowledge topology ﾂｷ ${nodes.size} nodes / ${edges.size} links", style = MaterialTheme.typography.labelMedium, color = CloverText2, modifier = Modifier.weight(1f))
             TextButton(onClick = { zoom = (zoom * 1.2f).coerceAtMost(4f) }) { Text("+") }
-            TextButton(onClick = { zoom = (zoom / 1.2f).coerceAtLeast(.35f) }) { Text("−") }
+            TextButton(onClick = { zoom = (zoom / 1.2f).coerceAtLeast(.35f) }) { Text("竏・) }
             TextButton(onClick = { zoom = 1f; pan = Offset.Zero }) { Text("Reset") }
         }
         val zoomState = rememberUpdatedState(zoom)
@@ -303,7 +304,7 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
         val onSelectState = rememberUpdatedState(onSelect)
         if (nodes.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text(if (loading) "Loading memory graph…" else "No graph nodes to display", color = CloverText3, style = MaterialTheme.typography.bodySmall)
+                Text(if (loading) "Loading memory graph窶ｦ" else "No graph nodes to display", color = CloverText3, style = MaterialTheme.typography.bodySmall)
             }
         } else Canvas(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) {
             detectTransformGestures { centroid, gesturePan, gestureZoom, _ ->
@@ -380,7 +381,7 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
             }
         }
         if (nodes.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (revealed.isEmpty()) listOf("1–2 links" to Color(0xFF74839B), "3–5" to CloverAccent, "6–11" to Color(0xFF55B8A0), "12+" to Color(0xFF6E9EFF)).forEach { LegendDot(it.first, it.second) }
+            if (revealed.isEmpty()) listOf("1窶・ links" to Color(0xFF74839B), "3窶・" to CloverAccent, "6窶・1" to Color(0xFF55B8A0), "12+" to Color(0xFF6E9EFF)).forEach { LegendDot(it.first, it.second) }
             else (0..3).forEach { LegendDot(if (it == 0) "seed" else "hop $it", traceColor(it)) }
             LegendDot("unresolved", CloverAccent, dashed = true)
         }
@@ -473,7 +474,7 @@ private fun DetailPanel(node: MemoryGraphNode?, traceNode: MemoryTraceNode?, nei
                     Text("${neighbor.degree ?: 0}", color = CloverText3)
                 } }
                 if (neighbors.size > 6) TextButton(onClick = { showAllNeighbors = !showAllNeighbors }) {
-                    Text(if (showAllNeighbors) "Show fewer" else "Show more · ${neighbors.size - 6} remaining")
+                    Text(if (showAllNeighbors) "Show fewer" else "Show more ﾂｷ ${neighbors.size - 6} remaining")
                 }
                 if (showAllNeighbors && neighbors.size > 40) Text("Showing first 40 of ${neighbors.size}", color = CloverText3, style = MaterialTheme.typography.labelSmall)
             }
@@ -499,7 +500,7 @@ private fun LazyListScope.memoryRecallItems(state: AppUiState, vm: AppViewModel)
 
 @Composable private fun RecallSearchBar(query: String, count: Int, vm: AppViewModel) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
+        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query窶ｦ", color = CloverText3); inner() })
         IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Search, contentDescription = "Recall") }
         Text("$count results", style = MaterialTheme.typography.titleSmall, color = CloverText2)
     }

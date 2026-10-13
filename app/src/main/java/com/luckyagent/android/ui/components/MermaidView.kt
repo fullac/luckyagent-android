@@ -96,6 +96,7 @@ internal fun MermaidView(source: String) {
             foreground = foreground,
             line = line,
             zoomable = false,
+            fit = true,
             modifier = Modifier.fillMaxWidth(),
             onRendered = { heightPx = it },
             onFailed = { failed = true },
@@ -118,6 +119,7 @@ internal fun MermaidView(source: String) {
                     foreground = foreground,
                     line = line,
                     zoomable = true,
+                    fit = false,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(12.dp),
@@ -146,6 +148,7 @@ private fun MermaidWebView(
     foreground: Int,
     line: Int,
     zoomable: Boolean,
+    fit: Boolean,
     modifier: Modifier,
     onRendered: (Int) -> Unit,
     onFailed: () -> Unit,
@@ -173,7 +176,7 @@ private fun MermaidWebView(
                 setTag(BRIDGE_KEY, bridge)
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
-                        view.render(source, background, foreground, line, bridge)
+                        view.render(source, background, foreground, line, fit, bridge)
                     }
 
                     override fun shouldInterceptRequest(
@@ -191,7 +194,7 @@ private fun MermaidWebView(
         update = { webView ->
             val bridge = webView.getTag(BRIDGE_KEY) as? MermaidBridge ?: return@AndroidView
             webView.evaluateJavascript("window.__ready === true") { ready ->
-                if (ready == "true") webView.render(source, background, foreground, line, bridge)
+                if (ready == "true") webView.render(source, background, foreground, line, fit, bridge)
             }
         },
         onRelease = { it.destroy() },
@@ -203,6 +206,7 @@ private fun WebView.render(
     background: Int,
     foreground: Int,
     line: Int,
+    fit: Boolean,
     bridge: MermaidBridge,
 ) {
     val payload = JSONObject()
@@ -210,6 +214,7 @@ private fun WebView.render(
         .put("background", hex(background))
         .put("foreground", hex(foreground))
         .put("line", hex(line))
+        .put("fit", fit)
         .toString()
     bridge.arm()
     evaluateJavascript("window.renderMermaid($payload)", null)

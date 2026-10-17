@@ -124,7 +124,8 @@ internal fun MarkdownImage(source: String, alt: String, headers: Map<String, Str
         resolved != null && !failed -> coil.compose.AsyncImage(
             model = remember(resolved, headers, baseUrl) {
                 ImageRequest.Builder(context).data(resolved).apply {
-                    if (sameHtmlOrigin(resolved, baseUrl)) headers.forEach { (name, value) -> addHeader(name, value) }
+                    // Never attach API credentials to arbitrary same-origin paths.
+                    if (isArtifactResourceUrl(resolved, baseUrl)) headers.forEach { (name, value) -> addHeader(name, value) }
                 }.build()
             },
             contentDescription = alt,

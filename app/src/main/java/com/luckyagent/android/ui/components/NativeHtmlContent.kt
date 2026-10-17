@@ -45,20 +45,26 @@ internal fun HtmlFlow(nodes: List<HtmlNode>, color: Color, headers: Map<String, 
         }
     }
     Column {
-        groups.forEachIndexed { index, group -> key(index) {
+        groups.forEachIndexed { index, group ->
             val node = group.singleOrNull() as? HtmlNode.Element
-            if (node != null && node.hasBlock()) HtmlElementView(node, color, headers, baseUrl, style)
-            else {
-                val palette = htmlColorPalette()
-                val text = remember(group, palette, baseUrl) {
-                    val annotated = htmlAnnotatedText(group, palette, baseUrl)
-                    val start = annotated.text.indexOfFirst { !it.isWhitespace() }.coerceAtLeast(0)
-                    val end = annotated.text.indexOfLast { !it.isWhitespace() } + 1
-                    annotated.subSequence(start.coerceAtMost(end), end)
+            val groupKey = if (node != null && node.tag == "details") {
+                val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" } as? HtmlNode.Element
+                "details:" + htmlLiteralText(summary?.children ?: emptyList()).trim()
+            } else index
+            key(groupKey) {
+                if (node != null && node.hasBlock()) HtmlElementView(node, color, headers, baseUrl, style)
+                else {
+                    val palette = htmlColorPalette()
+                    val text = remember(group, palette, baseUrl) {
+                        val annotated = htmlAnnotatedText(group, palette, baseUrl)
+                        val start = annotated.text.indexOfFirst { !it.isWhitespace() }.coerceAtLeast(0)
+                        val end = annotated.text.indexOfLast { !it.isWhitespace() } + 1
+                        annotated.subSequence(start.coerceAtMost(end), end)
+                    }
+                    if (text.isNotBlank()) RichAnnotatedText(text, style, color)
                 }
-                if (text.isNotBlank()) RichAnnotatedText(text, style, color)
             }
-        } }
+        }
     }
 }
 
@@ -90,13 +96,21 @@ private fun HtmlElementView(node: HtmlNode.Element, color: Color, headers: Map<S
         "pre" -> CodeText(htmlLiteralText(node.children))
         "details" -> {
             val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" } as? HtmlNode.Element
-            // Identity comes from the stable position in HtmlFlow, never the changing node body.
-            var expanded by rememberSaveable { mutableStateOf("open" in node.attributes) }
-            TextButton(onClick = { expanded = !expanded }) {
-                Text(if (expanded) "▾ " else "▸ ", color = foreground)
-                Text(htmlAnnotatedText(summary?.children ?: listOf(HtmlNode.Text("详情")), palette, baseUrl), color = foreground)
+            val summaryText = htmlLiteralText(summary?.children ?: emptyList()).trim().ifBlank { "详情" }
+            // Stable identity across streaming inserts/deletes in front of this block.
+            val detailsKey = buildString {
+                append(summaryText)
+                append('|')
+                append(node.attributes.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" })
             }
-            if (expanded) HtmlFlow(node.children.filterNot { it === summary }, foreground, headers, baseUrl, style)
+            key(detailsKey) {
+                var expanded by rememberSaveable(detailsKey) { mutableStateOf("open" in node.attributes) }
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "▾ " else "▸ ", color = foreground)
+                    Text(htmlAnnotatedText(summary?.children ?: listOf(HtmlNode.Text("详情")), palette, baseUrl), color = foreground)
+                }
+                if (expanded) HtmlFlow(node.children.filterNot { it === summary }, foreground, headers, baseUrl, style)
+            }
         }
         "ul", "ol" -> Column(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp)) {
             var number = node.attributes["start"]?.toIntOrNull() ?: 1

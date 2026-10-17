@@ -29,6 +29,10 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.SocketException
+import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(AndroidJUnit4::class)
 @SdkSuppress(minSdkVersion = 29)
@@ -110,6 +114,104 @@ class HtmlRenderingTest {
         compose.onNodeWithText("可见内容").assertIsDisplayed()
         compose.onNodeWithText("图片加载失败提示").assertIsDisplayed()
         screenshot("html-native-expanded")
+    }
+
+    @Test fun attachmentRelativeCssImagesAndScriptsLoadUnderThePreviewCsp() {
+        val source = """<html><head><link rel="stylesheet" href="assets/page.css"><script defer src="assets/page.js"></script></head><body><img id="icon" src="assets/icon.png"><img src="/artifact/uploads/private.png"></body></html>"""
+        HtmlTestServer { path ->
+            when (path) {
+                "workspace/reports/page.html" -> "text/html" to source.toByteArray()
+                "workspace/reports/assets/page.css" -> "text/css" to "body{background-color:rgb(1,2,3)}".toByteArray()
+                "workspace/reports/assets/page.js" -> "application/javascript" to "document.body.dataset.assetReady='yes'".toByteArray()
+                "workspace/reports/assets/icon.png" -> "image/png" to pixel
+                else -> null
+            }
+        }.use { server ->
+            compose.setContent { TestHost {
+                HtmlPreviewDialog(uri = server.base + "/api/v1/artifacts?path=workspace%2Freports%2Fpage.html",
+                    baseUrl = server.base, headers = mapOf("X-API-Key" to "sample"), onDismiss = {})
+            } }
+            compose.waitUntil(15000) {
+                webView() != null && javascript("document.body.dataset.assetReady") == "\"yes\"" &&
+                    javascript("document.getElementById('icon').naturalWidth") == "1"
+            }
+            assertEquals("\"rgb(1, 2, 3)\"", javascript("getComputedStyle(document.body).backgroundColor"))
+            assertFalse(server.paths.any { it.startsWith("uploads/") })
+            assertTrue(server.paths.contains("workspace/reports/assets/page.css"))
+            assertTrue(server.paths.contains("workspace/reports/assets/page.js"))
+        }
+    }
+
+    @Test fun remoteImagesRequireAClickAndNeverUseApiHeaders() {
+        HtmlTestServer { "image/png" to pixel }.use { server ->
+            var html by mutableStateOf("<img src='${server.base}/api/v1/artifacts?path=workspace%2Ftracking.png' alt='tracking'>")
+            compose.setContent { TestHost {
+                MarkdownText(html,
+                    imageBaseUrl = server.base, imageHeaders = mapOf("X-API-Key" to "sample", "Authorization" to "Bearer sample"))
+            } }
+            compose.waitUntil(5000) { compose.onAllNodesWithContentDescription("tracking").fetchSemanticsNodes().isNotEmpty() }
+            server.paths.clear()
+            server.headers.clear()
+            compose.runOnIdle { html = "<img src='${server.base}/tracking.png' alt='tracking'>" }
+            compose.onNodeWithText("tracking · 加载远程图片").assertIsDisplayed()
+            compose.waitForIdle()
+            Thread.sleep(300)
+            assertTrue(server.paths.isEmpty())
+            compose.onNodeWithText("tracking · 加载远程图片").performClick()
+            compose.waitUntil(5000) { server.paths.isNotEmpty() }
+            assertFalse(server.headers.any { it.contains("X-API-Key", true) || it.contains("Authorization", true) })
+        }
+    }
+
+    @Test fun nestedSameTitleDetailsKeepTheirStateWhenBlocksAreInsertedAndReordered() {
+        fun details(body: String) = "<details><summary>详情</summary><p>$body</p></details>"
+        var html by mutableStateOf("<div>" + details("first body") + details("second body") + "</div>")
+        compose.setContent { TestHost { MarkdownText(html) } }
+        compose.onAllNodesWithText("详情").onLast().performClick()
+        compose.onNodeWithText("second body").assertIsDisplayed()
+        compose.runOnIdle {
+            html = "<div>" + details("first body") + details("second body") + "</div><p>trailing block</p>"
+        }
+        compose.onNodeWithText("second body").assertIsDisplayed()
+        compose.runOnIdle {
+            html = "inserted markdown\n\n<div>" + details("new body") + details("second body continued") + details("first body") + "</div>"
+        }
+        compose.onNodeWithText("second body continued").assertIsDisplayed()
+        compose.onNodeWithText("first body").assertDoesNotExist()
+        compose.onNodeWithText("new body").assertDoesNotExist()
+    }
+
+    private val pixel get() = android.util.Base64.decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=",
+        android.util.Base64.DEFAULT,
+    )
+
+    private class HtmlTestServer(private val response: (String) -> Pair<String, ByteArray>?) : java.io.Closeable {
+        private val socket = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
+        val base = "http://127.0.0.1:${socket.localPort}"
+        val paths = CopyOnWriteArrayList<String>()
+        val headers = CopyOnWriteArrayList<String>()
+        private val thread = Thread {
+            try {
+                while (!socket.isClosed) socket.accept().use { client ->
+                    client.soTimeout = 3000
+                    val reader = client.getInputStream().bufferedReader()
+                    val request = reader.readLine() ?: return@use
+                    var header = reader.readLine()
+                    while (!header.isNullOrEmpty()) { headers += header; header = reader.readLine() }
+                    val uri = android.net.Uri.parse(request.split(' ')[1])
+                    val path = uri.getQueryParameter("path") ?: uri.path.orEmpty()
+                    paths += path
+                    val resource = response(path)
+                    val body = resource?.second ?: ByteArray(0)
+                    val status = if (resource == null) "404 Not Found" else "200 OK"
+                    val head = "HTTP/1.1 $status\r\nContent-Type: ${resource?.first ?: "text/plain"}\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n"
+                    client.getOutputStream().apply { write(head.toByteArray()); write(body); flush() }
+                }
+            } catch (_: SocketException) { }
+        }.apply { isDaemon = true; start() }
+
+        override fun close() { socket.close(); thread.join(1000) }
     }
 
     @Composable private fun TestHost(content: @Composable () -> Unit) {

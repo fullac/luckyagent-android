@@ -17,9 +17,12 @@ import androidx.compose.ui.unit.dp
 import com.luckyagent.android.ui.theme.CloverLine
 
 @Composable
-internal fun NativeHtmlContent(source: String, color: Color, headers: Map<String, String>, baseUrl: String) {
-    val nodes = remember(source) { parseHtml(source).orEmpty() }
-    HtmlFlow(nodes, color, headers, baseUrl, MaterialTheme.typography.bodyLarge.copy(color = color))
+internal fun NativeHtmlContent(
+    source: String, color: Color, headers: Map<String, String>, baseUrl: String,
+    prepared: List<HtmlNode>? = null, details: HtmlDetailsContext? = null,
+) {
+    val nodes = prepared ?: remember(source) { parseHtml(source).orEmpty() }
+    HtmlFlow(nodes, color, headers, baseUrl, MaterialTheme.typography.bodyLarge.copy(color = color), details)
 }
 
 private val blockTags = setOf("p", "div", "section", "article", "header", "footer", "main", "blockquote", "pre", "ul", "ol", "li",
@@ -30,8 +33,17 @@ private fun HtmlNode.hasBlock(): Boolean = this is HtmlNode.Element &&
 
 /** Consecutive inline nodes stay together, preserving nested spans and link ranges. */
 @Composable
-internal fun HtmlFlow(nodes: List<HtmlNode>, color: Color, headers: Map<String, String>, baseUrl: String, style: TextStyle) {
-    val groups = remember(nodes) {
+internal fun HtmlFlow(
+    nodes: List<HtmlNode>, color: Color, headers: Map<String, String>, baseUrl: String, style: TextStyle,
+    details: HtmlDetailsContext? = null,
+) {
+    if (details == null) {
+        val state = rememberSaveable(saver = HtmlDetailsState.Saver) { HtmlDetailsState() }
+        val context = remember(nodes, state) { HtmlDetailsContext(state, state.identities(nodes)) }
+        HtmlFlow(nodes, color, headers, baseUrl, style, context)
+        return
+    }
+    val groups = remember(nodes, details) {
         buildList<List<HtmlNode>> {
             var inline = mutableListOf<HtmlNode>()
             nodes.forEach { node ->
@@ -47,12 +59,9 @@ internal fun HtmlFlow(nodes: List<HtmlNode>, color: Color, headers: Map<String, 
     Column {
         groups.forEachIndexed { index, group ->
             val node = group.singleOrNull() as? HtmlNode.Element
-            val groupKey = if (node != null && node.tag == "details") {
-                val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" } as? HtmlNode.Element
-                "details:" + htmlLiteralText(summary?.children ?: emptyList()).trim()
-            } else index
+            val groupKey = node?.let { details.identities[it] } ?: index
             key(groupKey) {
-                if (node != null && node.hasBlock()) HtmlElementView(node, color, headers, baseUrl, style)
+                if (node != null && node.hasBlock()) HtmlElementView(node, color, headers, baseUrl, style, details)
                 else {
                     val palette = htmlColorPalette()
                     val text = remember(group, palette, baseUrl) {
@@ -69,7 +78,10 @@ internal fun HtmlFlow(nodes: List<HtmlNode>, color: Color, headers: Map<String, 
 }
 
 @Composable
-private fun HtmlElementView(node: HtmlNode.Element, color: Color, headers: Map<String, String>, baseUrl: String, parent: TextStyle) {
+private fun HtmlElementView(
+    node: HtmlNode.Element, color: Color, headers: Map<String, String>, baseUrl: String, parent: TextStyle,
+    details: HtmlDetailsContext,
+) {
     val palette = htmlColorPalette()
     val span = htmlSpanStyle(node, palette)
     val css = htmlCss(node)
@@ -96,20 +108,15 @@ private fun HtmlElementView(node: HtmlNode.Element, color: Color, headers: Map<S
         "pre" -> CodeText(htmlLiteralText(node.children))
         "details" -> {
             val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" } as? HtmlNode.Element
-            val summaryText = htmlLiteralText(summary?.children ?: emptyList()).trim().ifBlank { "详情" }
-            // Stable identity across streaming inserts/deletes in front of this block.
-            val detailsKey = buildString {
-                append(summaryText)
-                append('|')
-                append(node.attributes.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" })
-            }
+            val detailsKey = details.identities.getValue(node)
             key(detailsKey) {
-                var expanded by rememberSaveable(detailsKey) { mutableStateOf("open" in node.attributes) }
-                TextButton(onClick = { expanded = !expanded }) {
+                val initiallyOpen = "open" in node.attributes
+                val expanded = details.state.isExpanded(detailsKey, initiallyOpen)
+                TextButton(onClick = { details.state.toggle(detailsKey, initiallyOpen) }) {
                     Text(if (expanded) "▾ " else "▸ ", color = foreground)
                     Text(htmlAnnotatedText(summary?.children ?: listOf(HtmlNode.Text("详情")), palette, baseUrl), color = foreground)
                 }
-                if (expanded) HtmlFlow(node.children.filterNot { it === summary }, foreground, headers, baseUrl, style)
+                if (expanded) HtmlFlow(node.children.filterNot { it === summary }, foreground, headers, baseUrl, style, details)
             }
         }
         "ul", "ol" -> Column(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp)) {
@@ -117,11 +124,11 @@ private fun HtmlElementView(node: HtmlNode.Element, color: Color, headers: Map<S
             node.children.filterIsInstance<HtmlNode.Element>().forEachIndexed { index, child -> key(index) {
                 if (child.tag == "li") Row(Modifier.padding(vertical = 2.dp)) {
                     Text(if (node.tag == "ol") "${number++}. " else "• ", color = foreground, style = style)
-                    Box(Modifier.weight(1f)) { HtmlFlow(child.children, foreground, headers, baseUrl, style) }
-                } else HtmlElementView(child, foreground, headers, baseUrl, style)
+                    Box(Modifier.weight(1f)) { HtmlFlow(child.children, foreground, headers, baseUrl, style, details) }
+                } else HtmlElementView(child, foreground, headers, baseUrl, style, details)
             } }
         }
-        "table" -> HtmlTable(node, foreground, headers, baseUrl, style)
+        "table" -> HtmlTable(node, foreground, headers, baseUrl, style, details)
         else -> {
             val heading = when (node.tag) {
                 "h1" -> MaterialTheme.typography.titleLarge
@@ -133,23 +140,26 @@ private fun HtmlElementView(node: HtmlNode.Element, color: Color, headers: Map<S
                 .then(if (node.tag == "blockquote") Modifier.border(1.dp, CloverLine).padding(8.dp) else Modifier)
                 .then(if (span.background != Color.Unspecified) Modifier.background(span.background).padding(4.dp) else Modifier)
             Column(modifier) { HtmlFlow(node.children, foreground, headers, baseUrl,
-                if (heading != null) style.copy(fontSize = heading.fontSize, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) else style) }
+                if (heading != null) style.copy(fontSize = heading.fontSize, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) else style, details) }
         }
     }
 }
 
 @Composable
-private fun HtmlTable(node: HtmlNode.Element, color: Color, headers: Map<String, String>, baseUrl: String, style: TextStyle) {
+private fun HtmlTable(
+    node: HtmlNode.Element, color: Color, headers: Map<String, String>, baseUrl: String, style: TextStyle,
+    details: HtmlDetailsContext,
+) {
     fun rows(nodes: List<HtmlNode>): List<HtmlNode.Element> = nodes.filterIsInstance<HtmlNode.Element>().flatMap {
         when (it.tag) { "tr" -> listOf(it); "thead", "tbody", "tfoot" -> rows(it.children); else -> emptyList() }
     }
-    val rows = remember(node) { rows(node.children) }
+    val rows = remember(node, details) { rows(node.children) }
     Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp)) {
         rows.forEach { row -> Row {
             row.children.filterIsInstance<HtmlNode.Element>().filter { it.tag == "td" || it.tag == "th" }.forEach { cell ->
                 val colspan = (cell.attributes["colspan"]?.toIntOrNull() ?: 1).coerceIn(1, 8)
                 Box(Modifier.width((160 * colspan).dp).border(1.dp, CloverLine).padding(8.dp)) {
-                    HtmlElementView(cell, color, headers, baseUrl, style)
+                    HtmlElementView(cell, color, headers, baseUrl, style, details)
                 }
             }
         } }

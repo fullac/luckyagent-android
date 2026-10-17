@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -40,13 +41,23 @@ fun MarkdownText(
     streaming: Boolean = false,
 ) {
     val blocks = remember(markdown, streaming) { splitMarkdownBlocks(markdown, hideIncompleteTables = streaming) }
+    val htmlNodes = remember(blocks) {
+        blocks.map { block ->
+            if (block is MdBlock.Html && !requiresHtmlPage(block.source)) parseHtml(block.source).orEmpty()
+            else emptyList()
+        }
+    }
+    val detailsState = rememberSaveable(saver = HtmlDetailsState.Saver) { HtmlDetailsState() }
+    val detailsContext = remember(htmlNodes, detailsState) {
+        HtmlDetailsContext(detailsState, detailsState.identities(htmlNodes.flatten()))
+    }
     Column(modifier) {
         blocks.forEachIndexed { index, block -> key(index) {
             when (block) {
                 is MdBlock.Mermaid -> MermaidView(source = block.source)
                 is MdBlock.Html -> {
                     if (!requiresHtmlPage(block.source)) {
-                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl)
+                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)
                     }
                     if (block.showPreview || requiresHtmlPage(block.source)) {
                         HtmlPreviewCard(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
@@ -115,18 +126,33 @@ internal fun CodeText(source: String, modifier: Modifier = Modifier) {
 internal fun MarkdownImage(source: String, alt: String, headers: Map<String, String>, baseUrl: String) {
     val context = LocalContext.current
     val resolved = remember(source, baseUrl) { resolveHtmlUrl(source, baseUrl) }
+    val artifact = resolved != null && isArtifactResourceUrl(resolved, baseUrl)
+    var approved by remember(resolved) { mutableStateOf(false) }
+    var failed by remember(resolved, source, headers, baseUrl) { mutableStateOf(false) }
+    val loader = remember(resolved, headers, baseUrl) { HtmlResourceLoader(headers, baseUrl) }
+    DisposableEffect(loader) { onDispose { loader.close() } }
     val bitmap by produceState<android.graphics.Bitmap?>(null, source) {
         value = withContext(Dispatchers.IO) { if (source.startsWith("data:image/")) decodeMarkdownImage(source) else null }
     }
-    var failed by remember(source) { mutableStateOf(false) }
+    val artifactBytes by produceState<ByteArray?>(null, resolved, artifact, loader) {
+        value = null
+        if (artifact) {
+            try { value = withContext(Dispatchers.IO) { loader.fetch(resolved).bytes } }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { failed = true }
+        }
+    }
     when {
         bitmap != null -> Image(bitmap!!.asImageBitmap(), alt, Modifier.fillMaxWidth().padding(vertical = 6.dp))
+        resolved != null && !artifact && !approved -> TextButton(onClick = { approved = true }) {
+            Text(alt.takeIf { it.isNotBlank() }?.let { "$it · 加载远程图片" } ?: "加载远程图片")
+        }
+        artifact && artifactBytes == null && !failed -> CircularProgressIndicator(Modifier.padding(8.dp).size(24.dp))
         resolved != null && !failed -> coil.compose.AsyncImage(
-            model = remember(resolved, headers, baseUrl) {
-                ImageRequest.Builder(context).data(resolved).apply {
-                    // Never attach API credentials to arbitrary same-origin paths.
-                    if (isArtifactResourceUrl(resolved, baseUrl)) headers.forEach { (name, value) -> addHeader(name, value) }
-                }.build()
+            model = remember(resolved, artifactBytes) {
+                // Authenticated images use the same redirect policy as HTML previews.
+                // Coil only decodes their bytes; external images require a gesture and carry no API headers.
+                ImageRequest.Builder(context).data(if (artifact) artifactBytes else resolved).build()
             },
             contentDescription = alt,
             onError = { failed = true },

@@ -231,6 +231,7 @@ import androidx.compose.material3.Surface
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.quoteRoleLabel
+import kotlin.math.roundToInt
 
 internal sealed interface ChatTimelineItem {
     val key: String
@@ -250,7 +251,7 @@ internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): Str
     val mode = task.mode.lowercase()
     val total = task.childCount.coerceAtLeast(1)
     val completed = task.completedChildren.coerceIn(0, total)
-    val round = ((task.progress * total).toInt()).coerceIn(1, total)
+    val round = (task.progress * total).roundToInt().coerceIn(1, total)
     val body = when (mode) {
         "parallel" -> "并行 · $completed/$total"
         "pipeline" -> if (done) "流水线 · $completed/$total" else "流水线 · 第 ${completed.coerceAtLeast(1)} 步"

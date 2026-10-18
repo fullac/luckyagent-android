@@ -36,8 +36,6 @@ class ChatTimelineTest {
         assertEquals(steps, (timeline[2] as ChatTimelineItem.Process).steps)
         assertEquals(3, timeline.map { it.key }.toSet().size)
     }
-}
-
     @Test
     fun collabFoldLabelUsesModeAndFinishedState() {
         val running = TaskSummary(id = "p", source = "tool", mode = "parallel", status = "running", description = "split", childCount = 3, completedChildren = 2)
@@ -52,3 +50,4 @@ class ChatTimelineTest {
         assertEquals("并行 · 3/3 · 完成", collabFoldLabel(listOf(done), responding = false))
         assertEquals(null, collabFoldLabel(emptyList(), responding = true))
     }
+}

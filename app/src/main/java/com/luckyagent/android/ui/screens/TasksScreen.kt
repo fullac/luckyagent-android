@@ -546,12 +546,18 @@ internal fun friendlyAgentMessageType(type: String): String = when (type.lowerca
 }
 
 @Composable
-private fun TaskFlowStrip(children: List<TaskNode>, mode: String, onOpenSession: (TaskSummary) -> Unit) {
+internal fun TaskFlowStrip(
+    children: List<TaskNode>,
+    mode: String,
+    onOpenSession: ((TaskSummary) -> Unit)? = null,
+    onOpenTask: ((TaskSummary) -> Unit)? = null,
+    title: String? = null,
+) {
     val sequential = mode.equals("pipeline", ignoreCase = true)
     CloverCard {
-        Text(friendlyTaskMode(mode), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(title ?: friendlyTaskMode(mode), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Text(
-            when (mode.lowercase()) {
+            if (onOpenTask != null) "点击节点查看子代理任务详情" else when (mode.lowercase()) {
                 "parallel" -> "These agents work independently, then their results are combined."
                 "pipeline" -> "Each step passes its output to the next."
                 "debate" -> "Participants exchange positions and votes. See their rounds in Agent collaboration."
@@ -565,8 +571,8 @@ private fun TaskFlowStrip(children: List<TaskNode>, mode: String, onOpenSession:
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(
                         modifier = Modifier.width(126.dp).clickable(
-                            enabled = node.summary.executionSession() != null,
-                            onClick = { onOpenSession(node.summary) },
+                            enabled = onOpenTask != null || (onOpenSession != null && node.summary.executionSession() != null),
+                            onClick = { (onOpenTask ?: onOpenSession)?.invoke(node.summary) },
                         ),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {

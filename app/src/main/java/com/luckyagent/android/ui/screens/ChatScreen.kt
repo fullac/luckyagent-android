@@ -172,7 +172,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.TaskSummary
-import com.luckyagent.android.data.api.executionSession
+import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
@@ -257,7 +257,20 @@ internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): Str
     val matched = tasks.filter { task ->
         task.mode.lowercase() in collabModes && (task.childCount > 0 || task.mode.lowercase() in setOf("parallel", "pipeline", "debate"))
     }
-    val task = matched.firstOrNull { !it.status.isTerminalTaskStatus() } ?: matched.firstOrNull() ?: return null
+    val task = matched.firstOrNull { !it.status.isTerminalTaskStatus() } ?: matched.firstOrNull()
+    if (task == null) {
+        val delegates = tasks.filter { it.mode.equals("single", ignoreCase = true) && it.childCount == 0 }
+        if (delegates.isEmpty()) return null
+        val completed = delegates.count { it.status.equals("completed", ignoreCase = true) }
+        val failed = delegates.count { it.status.lowercase() in setOf("failed", "timeout") }
+        val suffix = when {
+            failed > 0 -> " · $failed 失败"
+            completed == delegates.size -> " · 完成"
+            delegates.all { it.status.isTerminalTaskStatus() } -> " · 已结束"
+            else -> ""
+        }
+        return "子代理 · $completed/${delegates.size}$suffix"
+    }
     val done = task.status.isTerminalTaskStatus()
     val mode = task.mode.lowercase()
     val total = task.childCount.coerceAtLeast(1)
@@ -793,8 +806,8 @@ private fun ChatConversation(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
-    var showThinkingSheet by rememberSaveable { mutableStateOf(false) }
-    var selectedThinkingSteps by remember { mutableStateOf<List<ChatBubble>>(emptyList()) }
+    var showThinkingSheet by rememberSaveable(state.settings.sessionId) { mutableStateOf(false) }
+    var selectedThinkingSteps by remember(state.settings.sessionId) { mutableStateOf<List<ChatBubble>>(emptyList()) }
     LaunchedEffect(state.snackbarMessage) {
         val msg = state.snackbarMessage ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(msg)
@@ -977,9 +990,7 @@ private fun ChatConversation(
                                     showThinkingSheet = true
                                 },
                                 collabLabel = collabFoldLabel(
-                                    state.tasks.filter {
-                                        it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
-                                    },
+                                    collabTasksForTurn(item.steps, state.tasks, state.settings.sessionId),
                                     state.isResponding,
                                 ),
                             )
@@ -1081,17 +1092,21 @@ private fun ChatConversation(
             )
         }
         if (showThinkingSheet) {
+            // Resolve the selected fold by its stable first step so a live sheet
+            // also receives newly created subagents while the turn is running.
+            val thinkingSteps = timeline.filterIsInstance<ChatTimelineItem.Process>()
+                .firstOrNull { it.steps.firstOrNull()?.id == selectedThinkingSteps.firstOrNull()?.id }
+                ?.steps ?: selectedThinkingSteps
+            val turnTasks = remember(thinkingSteps, state.tasks, state.settings.sessionId) {
+                collabTasksForTurn(thinkingSteps, state.tasks, state.settings.sessionId)
+            }
             ThinkingSheet(
-                steps = selectedThinkingSteps,
+                steps = thinkingSteps,
                 collabLabel = collabFoldLabel(
-                    state.tasks.filter {
-                        it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
-                    },
+                    turnTasks,
                     state.isResponding,
                 ),
-                collabTasks = state.tasks.filter {
-                    it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
-                },
+                collabTasks = turnTasks,
                 onOpenTask = { vm.selectTask(it); vm.navigate(com.luckyagent.android.ui.AppDestination.Tasks) },
                 imageHeaders = imageHeaders,
                 imageBaseUrl = state.settings.apiBase,
@@ -1887,6 +1902,17 @@ private fun ThinkingSheet(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Outlined.Close, contentDescription = "关闭")
                     }
+                }
+            }
+            val delegates = collabTasks.filter { it.mode.equals("single", ignoreCase = true) && it.childCount == 0 }
+            if (delegates.isNotEmpty()) {
+                item(key = "subagent-flow") {
+                    TaskFlowStrip(
+                        children = delegates.map { TaskNode(it) },
+                        mode = "single",
+                        title = collabFoldLabel(delegates, false),
+                        onOpenTask = { onOpenTask(it.id) },
+                    )
                 }
             }
             items(collabTasks.filter { it.childCount > 0 || it.mode.lowercase() in setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue") }) { task ->

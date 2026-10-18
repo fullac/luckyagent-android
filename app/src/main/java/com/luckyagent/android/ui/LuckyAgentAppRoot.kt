@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Schedule
@@ -76,6 +77,7 @@ import com.luckyagent.android.ui.screens.MemoryScreen
 import com.luckyagent.android.ui.screens.SettingsScreen
 import com.luckyagent.android.ui.screens.decodeQrUri
 import com.luckyagent.android.ui.screens.SkillsScreen
+import com.luckyagent.android.ui.screens.PluginsScreen
 import com.luckyagent.android.ui.screens.TasksScreen
 import com.luckyagent.android.ui.screens.TrajectoryScreen
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -104,6 +106,7 @@ private val navItems = listOf(
     NavSpec(AppDestination.Cron, "定时任务 Cron", Icons.Outlined.Schedule),
     NavSpec(AppDestination.Trajectory, "执行轨迹", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
+    NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
     NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
     NavSpec(AppDestination.Gateways, "网关", Icons.Outlined.Hub),
     NavSpec(AppDestination.Settings, "设置", Icons.Outlined.Settings),
@@ -114,7 +117,7 @@ private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 /** Chat and Settings are pinned top/bottom; the rest are grouped by what the user is checking. */
 private val navGroups = listOf(
     "运行与自动化" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
-    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Memory, AppDestination.Gateways).map(::nav),
+    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Plugins, AppDestination.Memory, AppDestination.Gateways).map(::nav),
 )
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
@@ -145,6 +148,11 @@ private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (
     }
     AppDestination.Settings -> when {
         state.healthOk == false -> CloverError
+        else -> null
+    }
+    AppDestination.Plugins -> when {
+        state.pluginManager.loadError != null || state.pluginManager.operationError != null -> CloverError
+        state.pluginManager.restartRequired || state.pluginManager.plugins.any { !it.error.isNullOrBlank() } -> CloverWarning
         else -> null
     }
     else -> null
@@ -323,6 +331,7 @@ private fun AppScaffold(
                             AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                             AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
                             AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
+                            AppDestination.Plugins -> PluginsScreen(state = state, vm = vm)
                             AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
                             AppDestination.Settings -> SettingsScreen(
                                 state = state,

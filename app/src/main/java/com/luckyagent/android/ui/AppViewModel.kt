@@ -3548,9 +3548,11 @@ class AppViewModel(
 
     private suspend fun loadTaskDetailNow(id: String, showLoading: Boolean) {
         if (showLoading) _ui.update { it.copy(taskDetailLoading = true, taskDetailError = null) }
+        // Historical tool references can outlive the recent-task polling window.
         val summary = _ui.value.tasks.firstOrNull { it.id == id }
+            ?: container.api.getTaskRecord(id).getOrNull()?.toTaskSummary()
         if (summary == null) {
-            _ui.update { it.copy(taskDetailLoading = false, taskDetailError = "Task not found") }
+            _ui.update { if (it.selectedTaskId != id) it else it.copy(taskDetailLoading = false, taskDetailError = "Task not found") }
             return
         }
         val detailResult = if (summary.origin == TaskOrigin.Legacy) {

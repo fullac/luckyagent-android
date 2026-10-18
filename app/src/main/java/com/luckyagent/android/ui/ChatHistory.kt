@@ -45,6 +45,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             toolName = name ?: "tool",
             toolOutput = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS).takeIf { it.isNotBlank() },
             toolDone = true,
+            stepId = toolCallId,
             attachments = messageAttachments,
         )
     } else if (role == "system" && compactLabel != null) {

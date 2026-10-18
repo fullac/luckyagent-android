@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -32,19 +34,19 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.activity.compose.BackHandler
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.NavigationRail
@@ -54,12 +56,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -73,9 +78,11 @@ import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
+import com.luckyagent.android.ui.screens.RuntimeConfigScreen
 import com.luckyagent.android.ui.screens.SettingsScreen
 import com.luckyagent.android.ui.screens.decodeQrUri
 import com.luckyagent.android.ui.screens.SkillsScreen
+import com.luckyagent.android.ui.screens.PluginsScreen
 import com.luckyagent.android.ui.screens.TasksScreen
 import com.luckyagent.android.ui.screens.TrajectoryScreen
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -87,7 +94,6 @@ import com.luckyagent.android.ui.theme.CloverWarning
 import kotlinx.coroutines.launch
 
 internal val AppNavRailWidth = 88.dp
-internal val AppNavDrawerWidth = 312.dp
 /** Minimum comfortable width reserved for primary chat/content when side panes are fixed. */
 internal val MinMainContentWidth = 420.dp
 
@@ -104,9 +110,11 @@ private val navItems = listOf(
     NavSpec(AppDestination.Cron, "定时任务 Cron", Icons.Outlined.Schedule),
     NavSpec(AppDestination.Trajectory, "执行轨迹", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
+    NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
     NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
     NavSpec(AppDestination.Gateways, "网关", Icons.Outlined.Hub),
-    NavSpec(AppDestination.Settings, "设置", Icons.Outlined.Settings),
+    NavSpec(AppDestination.RuntimeConfig, "config.json", Icons.Outlined.Code),
+    NavSpec(AppDestination.Settings, "基础设置", Icons.Outlined.Settings),
 )
 
 private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
@@ -114,7 +122,7 @@ private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 /** Chat and Settings are pinned top/bottom; the rest are grouped by what the user is checking. */
 private val navGroups = listOf(
     "运行与自动化" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
-    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Memory, AppDestination.Gateways).map(::nav),
+    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Plugins, AppDestination.Memory, AppDestination.Gateways, AppDestination.RuntimeConfig).map(::nav),
 )
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
@@ -147,22 +155,28 @@ private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (
         state.healthOk == false -> CloverError
         else -> null
     }
+    AppDestination.Plugins -> when {
+        state.pluginManager.loadError != null || state.pluginManager.operationError != null -> CloverError
+        state.pluginManager.restartRequired || state.pluginManager.plugins.any { !it.error.isNullOrBlank() } -> CloverWarning
+        else -> null
+    }
     else -> null
 }
 
 @Composable
 fun LuckyAgentAppRoot(vm: AppViewModel) {
     val state by vm.ui.collectAsStateWithLifecycle()
-    val drawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
+    val navigationPager = rememberPagerState(initialPage = 1, pageCount = { 2 })
     val scope = rememberCoroutineScope()
-    val openNavigation: () -> Unit = remember(drawerState, scope) {
-        { scope.launch { drawerState.open() }; Unit }
+    val openNavigation: () -> Unit = remember(navigationPager, scope) {
+        { scope.launch { navigationPager.animateScrollToPage(0) }; Unit }
     }
-    BackHandler(enabled = drawerState.isOpen) {
-        scope.launch { drawerState.close() }
+    val navigationOpen = state.destination != AppDestination.Chat && navigationPager.currentPage == 0
+    BackHandler(enabled = navigationOpen) {
+        scope.launch { navigationPager.animateScrollToPage(1) }
     }
     BackHandler(
-        enabled = !drawerState.isOpen && (
+        enabled = !navigationOpen && (
             state.destination != AppDestination.Chat ||
                 state.selectedTaskId != null ||
                 state.selectedBackgroundTaskId != null
@@ -171,41 +185,57 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
         vm.handleSystemBack()
     }
 
-    // Decide rail vs modal drawer from available width, not a bare configuration dp.
+    // Chat owns a continuous navigation/chat/sessions pager on compact layouts.
+    // Other destinations reuse the same full-page navigation beside their content.
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val useRail = maxWidth >= 700.dp && maxWidth >= (AppNavRailWidth + MinMainContentWidth)
 
         if (useRail) {
-            // NavigationRail is always visible; drawer open is a no-op on large layouts.
+            // NavigationRail is always visible on large layouts.
             AppScaffold(
                 state = state,
                 vm = vm,
                 useRail = true,
                 openNavigation = null,
             )
-        } else {
-            // Left-side app navigation (Material default / LTR). Do not force RTL just to flip the drawer.
-            ModalNavigationDrawer(
-                drawerState = drawerState,
-                gesturesEnabled = false,
-                drawerContent = {
-                    ModalDrawerSheet(
-                        modifier = Modifier
-                            .widthIn(max = AppNavDrawerWidth)
-                            .fillMaxHeight(),
-                        drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f),
-                    ) {
-                        NavigationDrawerContent(
-                            state = state,
-                            onSelect = {
-                                vm.navigate(it)
-                                scope.launch { drawerState.close() }
-                            },
-                        )
-                    }
+        } else if (state.destination == AppDestination.Chat) {
+            AppScaffold(
+                state = state,
+                vm = vm,
+                useRail = false,
+                openNavigation = openNavigation,
+                navigationContent = { onSelect, onClose ->
+                    NavigationPage(state = state, onSelect = onSelect, onClose = onClose)
                 },
+            )
+        } else {
+            val focusManager = LocalFocusManager.current
+            val keyboard = LocalSoftwareKeyboardController.current
+            LaunchedEffect(navigationPager.settledPage, state.destination) {
+                focusManager.clearFocus()
+                keyboard?.hide()
+            }
+            HorizontalPager(
+                state = navigationPager,
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 1,
+                // Feature pages own their drag gestures (blackboard, memory graph,
+                // horizontal lists). Open navigation with the header button; its
+                // full-page menu still supports swiping back to the feature page.
+                userScrollEnabled = navigationPager.settledPage == 0,
             ) {
-                CompositionLocalProvider(LocalOpenNavigationDrawer provides openNavigation) {
+                if (it == 0) {
+                    NavigationPage(
+                        state = state,
+                        onSelect = { destination ->
+                            scope.launch {
+                                navigationPager.scrollToPage(1)
+                                vm.navigate(destination)
+                            }
+                        },
+                        onClose = { scope.launch { navigationPager.animateScrollToPage(1) } },
+                    )
+                } else {
                     AppScaffold(
                         state = state,
                         vm = vm,
@@ -224,6 +254,7 @@ private fun AppScaffold(
     vm: AppViewModel,
     useRail: Boolean,
     openNavigation: (() -> Unit)?,
+    navigationContent: (@Composable (onSelect: (AppDestination) -> Unit, onClose: () -> Unit) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var scanningPairing by remember { mutableStateOf(false) }
@@ -316,6 +347,7 @@ private fun AppScaffold(
                                 vm = vm,
                                 railOccupied = useRail,
                                 onOpenSettings = { vm.navigate(AppDestination.Settings) },
+                                navigationContent = navigationContent,
                             )
                             AppDestination.Tasks -> TasksScreen(state = state, vm = vm)
                             AppDestination.Background -> BackgroundScreen(state = state, vm = vm)
@@ -323,7 +355,9 @@ private fun AppScaffold(
                             AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                             AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
                             AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
+                            AppDestination.Plugins -> PluginsScreen(state = state, vm = vm)
                             AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
+                            AppDestination.RuntimeConfig -> RuntimeConfigScreen(state = state, vm = vm)
                             AppDestination.Settings -> SettingsScreen(
                                 state = state,
                                 vm = vm,
@@ -380,14 +414,16 @@ private fun WallpaperLayer(settings: com.luckyagent.android.data.settings.Client
 }
 
 @Composable
-private fun NavigationDrawerContent(
+private fun NavigationPage(
     state: AppUiState,
     onSelect: (AppDestination) -> Unit,
+    onClose: () -> Unit,
 ) {
     val live = com.luckyagent.android.ui.components.socketStateLive(state.socketState)
     Column(
         Modifier
-            .fillMaxHeight()
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         // Keep the brand quiet and useful: the connection state sits in its own
@@ -420,6 +456,9 @@ private fun NavigationDrawerContent(
                     color = CloverText3,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.Close, contentDescription = "关闭功能导航")
             }
         }
         Surface(

@@ -57,6 +57,8 @@ import com.luckyagent.android.data.api.SessionToolTrace
 import com.luckyagent.android.data.api.GatewayStatus
 import com.luckyagent.android.data.api.SkillSummary
 import com.luckyagent.android.data.api.SkillsResponse
+import com.luckyagent.android.data.api.PluginChangeResponse
+import com.luckyagent.android.data.api.PluginInstallRequest
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.api.TaskDetail
 import com.luckyagent.android.data.api.TaskOrigin
@@ -104,7 +106,7 @@ import java.io.File
 import java.util.UUID
 
 enum class AppDestination {
-    Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Plugins, Settings, Memory
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
@@ -241,6 +243,7 @@ data class AppUiState(
     val skillsLoading: Boolean = false,
     val skillsError: String? = null,
     val skillsQuery: String = "",
+    val pluginManager: PluginManagerUiState = PluginManagerUiState(),
     val commands: List<RuntimeCommand> = emptyList(),
     val commandsError: String? = null,
     val commandExecuting: Boolean = false,
@@ -354,6 +357,8 @@ class AppViewModel(
     private var appInForeground = false
     private var updateDownloadJob: Job? = null
     private var attachmentNoticeJob: Job? = null
+    private var pluginsLoadJob: Job? = null
+    private var pluginsMutationJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -416,6 +421,10 @@ class AppViewModel(
 
     /** Drop the previous runtime's in-memory history before loading the new namespace. */
     private fun resetForEndpointChange(settings: com.luckyagent.android.data.settings.ClientSettings) {
+        pluginsLoadJob?.cancel()
+        pluginsMutationJob?.cancel()
+        _ui.update { it.copy(pluginManager = PluginManagerUiState()) }
+        if (_ui.value.destination == AppDestination.Plugins) refreshPlugins()
         val target = settings.sessionId.ifBlank { "android-main" }
         historyJob?.cancel()
         contextInspectJob?.cancel()
@@ -1688,6 +1697,7 @@ class AppViewModel(
             AppDestination.Cron -> refreshCron()
             AppDestination.Memory -> refreshMemory()
             AppDestination.Skills -> refreshSkills()
+            AppDestination.Plugins -> refreshPlugins()
             AppDestination.Gateways -> refreshGateways()
             AppDestination.Trajectory -> refreshTrajectory()
             AppDestination.Chat -> Unit
@@ -1815,6 +1825,7 @@ class AppViewModel(
             "tasks" -> navigate(AppDestination.Tasks)
             "background" -> navigate(AppDestination.Background)
             "cron" -> navigate(AppDestination.Cron)
+            "plugins" -> navigate(AppDestination.Plugins)
             "chat" -> navigate(AppDestination.Chat)
         }
     }
@@ -3954,6 +3965,94 @@ class AppViewModel(
                 .onFailure { e ->
                     _ui.update { it.copy(activityLine = "delete: ${e.message}") }
                 }
+        }
+    }
+
+    private fun pluginConnectionMatches(connection: ClientSettings): Boolean {
+        val current = container.settingsRepository.snapshot()
+        return current.apiBase == connection.apiBase && current.apiKey == connection.apiKey && current.useBearer == connection.useBearer
+    }
+
+    fun refreshPlugins() {
+        if (_ui.value.pluginManager.operation != null) return
+        pluginsLoadJob?.cancel()
+        val connection = container.settingsRepository.snapshot()
+        _ui.update { it.copy(pluginManager = it.pluginManager.copy(loading = true, loadError = null)) }
+        pluginsLoadJob = viewModelScope.launch {
+            val result = container.api.listPlugins()
+            if (!pluginConnectionMatches(connection)) return@launch
+            _ui.update { current ->
+                current.copy(pluginManager = result.fold(
+                    onSuccess = { current.pluginManager.copy(plugins = it.plugins, loaded = true, loading = false, loadError = null) },
+                    onFailure = { current.pluginManager.copy(loaded = true, loading = false, loadError = it.message ?: "读取插件失败") },
+                ))
+            }
+        }
+    }
+
+    fun installPlugin(source: String, ref: String, subdir: String, trust: Boolean) {
+        runPluginOperation("install") {
+            container.api.installPlugin(PluginInstallRequest(source.trim(), ref.trim(), subdir.trim(), trust))
+        }
+    }
+
+    fun setPluginEnabled(name: String, enabled: Boolean) {
+        runPluginOperation(if (enabled) "enable:$name" else "disable:$name") { container.api.setPluginEnabled(name, enabled) }
+    }
+
+    fun updatePlugin(name: String, trust: Boolean) {
+        runPluginOperation("update:$name") { container.api.updatePlugin(name, trust) }
+    }
+
+    fun removePlugin(name: String) {
+        runPluginOperation("remove:$name") { container.api.removePlugin(name) }
+    }
+
+    fun clearPluginOperationError() {
+        _ui.update { it.copy(pluginManager = it.pluginManager.copy(operationError = null)) }
+    }
+
+    private fun runPluginOperation(action: String, operation: suspend () -> Result<PluginChangeResponse>) {
+        if (_ui.value.pluginManager.operation != null) return
+        pluginsLoadJob?.cancel()
+        val connection = container.settingsRepository.snapshot()
+        _ui.update { it.copy(pluginManager = it.pluginManager.copy(operation = action, operationError = null, loading = false, message = null)) }
+        pluginsMutationJob = viewModelScope.launch {
+            val result = try {
+                operation()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+            if (!pluginConnectionMatches(connection)) return@launch
+            result.onSuccess { changed ->
+                _ui.update { current ->
+                    val previous = current.pluginManager
+                    val plugins = previous.plugins.filterNot { it.name == changed.name }.toMutableList()
+                    changed.plugin?.let(plugins::add)
+                    val label = when (changed.action) {
+                        "install" -> "已安装"
+                        "update" -> "已更新"
+                        "enable" -> "已设为启用"
+                        "disable" -> "已设为停用"
+                        "remove" -> "已卸载"
+                        else -> "已保存"
+                    }
+                    current.copy(pluginManager = previous.copy(
+                        plugins = plugins.sortedBy { it.name }, operation = null,
+                        message = "$label ${changed.name}。${changed.message}",
+                        restartRequired = previous.restartRequired || changed.runtimeRestartRequired,
+                        changeCount = previous.changeCount + 1,
+                    ))
+                }
+                refreshPlugins()
+            }.onFailure { error ->
+                _ui.update { it.copy(pluginManager = it.pluginManager.copy(operation = null, operationError = error.message ?: "插件操作失败")) }
+                // A lost response can arrive after the server saved the change.
+                // Refresh state without automatically repeating a mutation.
+                refreshPlugins()
+            }
         }
     }
 

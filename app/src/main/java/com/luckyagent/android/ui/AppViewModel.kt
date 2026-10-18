@@ -873,6 +873,8 @@ class AppViewModel(
         val item = outboundChatQueue.items(currentSessionId()).firstOrNull { it.id == itemId }
             ?: return
         if (item.status != OutboundQueueStatus.Failed) return
+        // A user retry may recover a connection stopped after a 401/403.
+        container.wsClient.connect(item.sessionId, force = true)
         outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, clearError = true)
         publishOutboundQueue(item.sessionId)
         dispatchNextOutbound(item.sessionId)
@@ -3159,6 +3161,7 @@ class AppViewModel(
     fun retryLuckySegment(id: String) {
         val segment = luckyPending[id] ?: return
         if (segment.sessionId != currentSessionId()) return
+        container.wsClient.connect(segment.sessionId, force = true)
         luckyPending[id] = segment.copy(error = null)
         publishLuckyPending("正在重新送进 Lucky 收集")
         deliverLuckySegment(luckyPending[id] ?: return)

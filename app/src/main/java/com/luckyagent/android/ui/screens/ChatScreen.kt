@@ -835,7 +835,7 @@ private fun ChatConversation(
             onNewSession = onNewSession,
             onOpenSettings = onOpenSettings,
             onOpenModel = { showModelSheet = true },
-            onReconnect = vm::connectSocket,
+            onReconnect = { vm.connectSocket(force = true) },
         )
 
         val listState = rememberLazyListState()

@@ -643,7 +643,7 @@ private fun SettingsLiveCard(state: AppUiState, vm: AppViewModel) {
                 Spacer(Modifier.width(6.dp))
                 Text("Health")
             }
-            OutlinedButton(onClick = vm::connectSocket) {
+            OutlinedButton(onClick = { vm.connectSocket(force = true) }) {
                 Icon(Icons.Outlined.Cable, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("Reconnect WS")

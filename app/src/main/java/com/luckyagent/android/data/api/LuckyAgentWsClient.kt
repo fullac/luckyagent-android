@@ -119,9 +119,12 @@ class LuckyAgentWsClient internal constructor(
     ): String {
         val config = snapshotConfig(sessionId)
         if (!force) {
-            val existing = connections.values.firstOrNull { connection ->
+            fun matches(connection: ManagedConnection) =
                 connection.config == config && !connection.userClosed.get()
-            }
+            // A forced retry may leave an older leased socket in the pool.
+            // Wait on the newly selected connection instead of that old socket.
+            val existing = currentConnectionId.get()?.let(connections::get)?.takeIf(::matches)
+                ?: connections.values.firstOrNull(::matches)
             if (existing != null) {
                 currentConnectionId.set(existing.id)
                 existing.touch()

@@ -57,6 +57,12 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
   - 点击节点查看状态，进入任务详情或执行对话；也可用节点列表选择，保留任务列表视图和筛选
 - **Memory**
   - recall 查询、tier stats、真实 wikilink 图谱、动态布局和召回路径回放
+- **Plugins**
+  - 抽屉与平板导航新增“插件”入口，位于“资源与连接”
+  - 服务端插件列表、搜索/状态筛选、版本及贡献组件详情
+  - 从 Git/服务端目录安装、启停、更新和卸载；安装/更新时显式选择执行信任
+  - 状态按服务端响应更新，变更需重启服务生效，旧版服务显示升级提示
+  - 接口与操作说明见 [插件管理](docs/PLUGIN-MANAGEMENT.md)
 - **Trajectory / Gateways / Skills**
   - 只读 JSON 面板（对齐 GUI 入口，便于联调）
 
@@ -77,6 +83,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 | Trajectory | `TrajectoryScreen` |
 | Gateways | `GatewaysScreen` |
 | Skills | `SkillsScreen` |
+| Plugins | `PluginsScreen` |
 | Settings | `SettingsScreen` |
 | config.json | `RuntimeConfigScreen` |
 | Memory graph | `MemoryScreen` |

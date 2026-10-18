@@ -9,7 +9,10 @@ import android.os.Environment
 import android.provider.OpenableColumns
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.data.settings.SettingsRepository
+import com.luckyagent.android.data.settings.ClientSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -24,6 +27,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import okio.BufferedSink
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resumeWithException
+
+private data class PluginConnectionSnapshot(val settings: ClientSettings)
 
 /** Streams picker content into OkHttp without holding a full attachment in RAM. */
 private class ContentResolverRequestBody(
@@ -74,7 +80,8 @@ class LuckyAgentApi(
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .addInterceptor { chain ->
-            val snap = settingsRepository.snapshot()
+            val snap = chain.request().tag(PluginConnectionSnapshot::class.java)?.settings
+                ?: settingsRepository.snapshot()
             val req = chain.request().newBuilder()
             val key = snap.apiKey.trim()
             if (key.isNotEmpty()) {
@@ -95,6 +102,77 @@ class LuckyAgentApi(
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
+    private val pluginClient = client.newBuilder()
+        .readTimeout(100, TimeUnit.SECONDS)
+        .callTimeout(110, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
+
+    suspend fun listPlugins(): Result<PluginListResponse> =
+        pluginRequest("/api/v1/plugins", "GET")
+
+    suspend fun installPlugin(request: PluginInstallRequest): Result<PluginChangeResponse> =
+        pluginRequest("/api/v1/plugins", "POST", json.encodeToString(request))
+
+    suspend fun setPluginEnabled(name: String, enabled: Boolean): Result<PluginChangeResponse> =
+        pluginRequest(pluginPath(name) + if (enabled) "/enable" else "/disable", "POST", "{}")
+
+    suspend fun updatePlugin(name: String, trust: Boolean): Result<PluginChangeResponse> =
+        pluginRequest(pluginPath(name) + "/update", "POST", json.encodeToString(PluginUpdateRequest(trust)))
+
+    suspend fun removePlugin(name: String): Result<PluginChangeResponse> =
+        pluginRequest(pluginPath(name), "DELETE")
+
+    private fun pluginPath(name: String): String {
+        require(name.length in 1..48 && Regex("[a-z0-9]+(?:-[a-z0-9]+)*").matches(name)) { "插件名称无效" }
+        return "/api/v1/plugins/$name"
+    }
+
+    private suspend inline fun <reified T> pluginRequest(path: String, method: String, payload: String? = null): Result<T> =
+        withContext(Dispatchers.IO) {
+            try {
+                // Bind both the URL and authentication to the same connection.
+                // Switching hosts while an operation runs must not mix credentials.
+                val connection = settingsRepository.snapshot()
+                val target = (connection.apiBase.trim().trimEnd('/') + path).toHttpUrlOrNull()
+                    ?: error("服务地址无效")
+                val request = Request.Builder().url(target)
+                    .tag(PluginConnectionSnapshot::class.java, PluginConnectionSnapshot(connection))
+                    .method(method, payload?.toRequestBody(jsonMedia))
+                    .build()
+                executePluginRequest(request).use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        if (response.code == 404 && method == "GET" && path == "/api/v1/plugins") {
+                            error("服务端尚不支持插件管理，请升级 LuckyAgent 服务后重试。")
+                        }
+                        error("插件操作失败（${response.code}）：${gatewayError(body)}")
+                    }
+                    Result.success(json.decodeFromString<T>(body))
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+        }
+
+    private suspend fun executePluginRequest(request: Request): okhttp3.Response =
+        suspendCancellableCoroutine { continuation ->
+            val call = pluginClient.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, error: java.io.IOException) {
+                    if (continuation.isActive) continuation.resumeWithException(error)
+                }
+
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    continuation.resume(response) { _, undelivered, _ -> undelivered.close() }
+                }
+            })
+        }
 
     suspend fun uploadAttachment(resolver: ContentResolver, uri: Uri, fileName: String): Result<MediaAttachment> =
         withContext(Dispatchers.IO) {

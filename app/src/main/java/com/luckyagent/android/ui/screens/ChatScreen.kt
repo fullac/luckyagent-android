@@ -181,7 +181,7 @@ import com.luckyagent.android.data.api.needsTextInput
 import com.luckyagent.android.data.api.FunctionalModelKinds
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.modelKindLabel
-import com.luckyagent.android.data.api.modelsByKind
+import com.luckyagent.android.data.api.modelSheetSections
 import com.luckyagent.android.data.api.ContextBucketUsage
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.ContextSection
@@ -2943,13 +2943,7 @@ private fun ModelSwitchSheet(
     onSetEffort: (String) -> Unit,
     onSelect: (ModelRef) -> Unit,
 ) {
-    val models = remember(state.models) {
-        state.models
-            .filter { it.kind.equals("chat", ignoreCase = true) }
-            .ifEmpty { state.models }
-    }
-    val active = state.activeModels["chat"]
-        ?: models.firstOrNull { it.current }
+    val sections = remember(state.models) { modelSheetSections(state.models) }
     var showEffortOptions by rememberSaveable { mutableStateOf(false) }
     val effort = state.modelEffort
     val effortSupported = effort?.supported == true
@@ -2978,7 +2972,7 @@ private fun ModelSwitchSheet(
             ) {
                 Spacer(Modifier.width(48.dp))
                 Text(
-                    "选择模型",
+                    "选择功能模型",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -3024,21 +3018,30 @@ private fun ModelSwitchSheet(
                     modifier = Modifier.padding(vertical = 12.dp),
                 )
             }
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = CloverSurface.copy(alpha = .72f),
-                border = BorderStroke(1.dp, CloverLine.copy(alpha = .7f)),
-            ) {
-                Column(Modifier.padding(vertical = 6.dp)) {
-                    models.forEach { model ->
-                        ModelPickerCardRow(
-                            model = model,
-                            selected = active?.id == model.id || (active == null && model.current),
-                            switching = state.modelSwitchingKey == "chat|${model.id}",
-                            enabled = state.modelSwitchingKey == null,
-                            onClick = { onSelect(model) },
-                        )
+            sections.forEach { (kind, models) ->
+                val active = state.activeModels[kind] ?: models.firstOrNull { it.current }
+                Text(
+                    modelKindLabel(kind),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = CloverText2,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 6.dp),
+                )
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = CloverSurface.copy(alpha = .72f),
+                    border = BorderStroke(1.dp, CloverLine.copy(alpha = .7f)),
+                ) {
+                    Column(Modifier.padding(vertical = 6.dp)) {
+                        models.forEach { model ->
+                            ModelPickerCardRow(
+                                model = model,
+                                selected = active?.id == model.id || (active == null && model.current),
+                                switching = state.modelSwitchingKey == "$kind|${model.id}",
+                                enabled = state.modelSwitchingKey == null,
+                                onClick = { onSelect(model) },
+                            )
+                        }
                     }
                 }
             }

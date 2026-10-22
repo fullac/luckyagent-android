@@ -72,7 +72,9 @@ class HtmlRenderingTest {
     @Test fun fullHtmlPreviewRendersCssAndDomInteractionAndSwitchesToSource() {
         val source = """<!doctype html><html><head><style>.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.tile{padding:24px;background:#e8f2df}</style></head><body><h1>HTML 页面预览</h1><div class="grid"><div class="tile">CSS Grid</div><div class="tile">完整 HTML</div></div><button id="counter" onclick="this.textContent='已点击'">点击验证</button><script>document.body.dataset.ready='yes'</script></body></html>"""
         compose.setContent { TestHost { MarkdownText("```html\n$source\n```") } }
-        compose.onNodeWithText("打开预览 ›").performClick()
+        compose.onNodeWithText("打开预览 ›").assertDoesNotExist()
+        compose.waitUntil(15000) { webView() != null }
+        compose.onNode(isRoot()).performTouchInput { click(center) }
         compose.waitUntil(15000) { webView() != null && javascript("document.body.dataset.ready") == "\"yes\"" }
         assertEquals("\"grid\"", javascript("getComputedStyle(document.querySelector('.grid')).display"))
         javascript("document.getElementById('counter').click()")
@@ -85,7 +87,8 @@ class HtmlRenderingTest {
         compose.onNodeWithText("预览", useUnmergedTree = true).performClick()
         assertEquals("\"已点击\"", javascript("document.getElementById('counter').textContent"))
         compose.onNodeWithContentDescription("关闭 HTML 预览").performClick()
-        compose.onNodeWithText("打开预览 ›").assertIsDisplayed()
+        compose.onNodeWithText("打开预览 ›").assertDoesNotExist()
+        compose.onNodeWithText("源码", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test fun htmlAttachmentUsesTheSamePreviewAndLoadsLocalContent() {

@@ -103,8 +103,9 @@ internal fun buildStandaloneMessages(session: StandaloneSession, userText: Strin
     }
     return buildList {
         add(mapOf("role" to "system", "content" to system))
-        session.messages.filter { it.kind == "chat" }.forEach { message ->
-            add(mapOf("role" to message.role, "content" to message.content))
+        session.messages.forEach { message ->
+            val content = if (message.kind == "search") "搜索结果：\n${message.content}" else message.content
+            add(mapOf("role" to message.role, "content" to content))
         }
         add(mapOf("role" to "user", "content" to userText))
     }

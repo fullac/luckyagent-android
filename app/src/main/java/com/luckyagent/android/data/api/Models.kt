@@ -248,6 +248,20 @@ data class SwitchModelRequest(
 fun modelsByKind(models: List<ModelRef>): Map<String, List<ModelRef>> =
     models.groupBy { it.kind.trim().lowercase() }
 
+/**
+ * Sheet sections in runtime order, then any extra kind the server returned.
+ * Empty known kinds stay out so the sheet does not show a blank "视觉" header.
+ */
+fun modelSheetSections(models: List<ModelRef>): List<Pair<String, List<ModelRef>>> {
+    val grouped = modelsByKind(models)
+    val known = FunctionalModelKinds.map { it.wireValue }
+    val ordered = known.mapNotNull { kind -> grouped[kind]?.takeIf { it.isNotEmpty() }?.let { kind to it } }
+    val extra = grouped.keys.filter { it !in known }.sorted().mapNotNull { kind ->
+        grouped[kind]?.takeIf { it.isNotEmpty() }?.let { kind to it }
+    }
+    return ordered + extra
+}
+
 @Serializable
 data class ChatOutbound(
     val type: String = "chat",

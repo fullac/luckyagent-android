@@ -33,6 +33,22 @@ class ModelsTest {
     }
 
     @Test
+    fun modelSheetKeepsVisionAndCompactBesideChat() {
+        val models = listOf(
+            ModelRef(id = "grok", kind = "chat", current = true),
+            ModelRef(id = "vision-a", kind = "vision"),
+            ModelRef(id = "compact-a", kind = "compact", current = true),
+            ModelRef(id = "custom-a", kind = "planner"),
+        )
+
+        val sections = modelSheetSections(models)
+
+        assertEquals(listOf("chat", "vision", "compact", "planner"), sections.map { it.first })
+        assertEquals(listOf("vision-a"), sections.first { it.first == "vision" }.second.map(ModelRef::id))
+        assertEquals(listOf("compact-a"), sections.first { it.first == "compact" }.second.map(ModelRef::id))
+    }
+
+    @Test
     fun kindLabelsHaveChineseFallback() {
         assertEquals("压缩", modelKindLabel("compact"))
         assertEquals("对话", modelKindLabel("chat"))

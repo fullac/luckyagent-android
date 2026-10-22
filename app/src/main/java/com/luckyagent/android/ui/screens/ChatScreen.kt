@@ -252,6 +252,35 @@ internal sealed interface ChatTimelineItem {
     data class Process(val steps: List<ChatBubble>, override val key: String) : ChatTimelineItem
 }
 
+/**
+ * One line for the latest chat fold.
+ * A running turn shows only the newest summary. A finished turn yields to the answer,
+ * except cancel and failure, which replace the summary with an end state.
+ */
+internal fun outerProcessLabel(
+    liveSummary: String?,
+    processNotice: String?,
+    isResponding: Boolean,
+    isLatestProcess: Boolean,
+): String? {
+    if (!isLatestProcess) return null
+    if (!isResponding) return processNotice?.trim()?.ifBlank { null }
+    return liveSummary?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+}
+
+/**
+ * Bubbles that exist only in the current turn. History has not stored them yet,
+ * so a page refresh must append them instead of dropping the in-progress fold.
+ */
+internal fun liveTurnBubbles(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): List<ChatBubble> {
+    if (turnId.isBlank() && bufferId.isNullOrBlank()) return emptyList()
+    return bubbles.filter { bubble ->
+        bubble.id == bufferId ||
+            bubble.streaming ||
+            (turnId.isNotBlank() && (bubble.id.contains(turnId) || bubble.stepId?.contains(turnId) == true))
+    }
+}
+
 internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): String? {
     val collabModes = setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue")
     val matched = tasks.filter { task ->
@@ -898,26 +927,28 @@ private fun ChatConversation(
                     }
                 }
         }
-        LaunchedEffect(state.settings.sessionId, timeline.size) {
+        LaunchedEffect(state.settings.sessionId, timeline.size, timeline.lastOrNull()?.key) {
             if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
             val anchor = vm.scrollAnchor(state.settings.sessionId)
             restoredSession = state.settings.sessionId
-            if (anchor == null) {
-                listState.scrollToItem(0)
-                return@LaunchedEffect
-            }
-            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
-            listState.scrollToItem(anchor.first.coerceIn(0, timeline.lastIndex), anchor.second)
+            // A saved top position is the default before the first real scroll.
+            // The list is oldest-first, so that position is the earliest message.
+            val useAnchor = anchor != null && anchor.first > 0
+            val index = if (useAnchor) anchor.first.coerceIn(0, timeline.lastIndex) else timeline.lastIndex
+            val offset = if (useAnchor) anchor.second else 0
+            listState.scrollToItem(index, offset)
+            lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
-        LaunchedEffect(timeline.size, timeline.lastOrNull()) {
+        LaunchedEffect(timeline.size, timeline.lastOrNull()?.key, state.liveSummary, state.isResponding) {
             if (timeline.isEmpty() || restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
             val atBottom = lastVisible == null ||
-                (lastVisible.index == layout.totalItemsCount - 1 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
+                (lastVisible.index >= layout.totalItemsCount - 2 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             if (atBottom || position == lastAutoScrollPosition) {
-                listState.scrollToItem(timeline.size)
+                listState.scrollToItem(timeline.lastIndex.coerceAtLeast(0))
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
         }
@@ -975,6 +1006,12 @@ private fun ChatConversation(
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
                                 isResponding = state.isResponding,
+                                liveSummary = outerProcessLabel(
+                                    liveSummary = state.liveSummary,
+                                    processNotice = state.processNotice,
+                                    isResponding = state.isResponding,
+                                    isLatestProcess = item.key == timeline.lastOrNull { it is ChatTimelineItem.Process }?.key,
+                                ),
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
@@ -1820,6 +1857,7 @@ private fun ApprovalCard(
 private fun ProcessTimeline(
     steps: List<ChatBubble>,
     isResponding: Boolean,
+    liveSummary: String? = null,
     collabLabel: String? = null,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
@@ -1843,6 +1881,7 @@ private fun ProcessTimeline(
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
+                    liveSummary != null -> liveSummary
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
@@ -1850,6 +1889,8 @@ private fun ProcessTimeline(
                     steps.size == 1 -> "思考了 1 步"
                     else -> "思考了 ${steps.size} 步"
                 },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelMedium,
                 color = CloverText3,
                 modifier = Modifier.weight(1f),

@@ -177,4 +177,39 @@ class ChatTimelineTest {
         assertEquals("并行 · 3/3 · 完成", collabFoldLabel(listOf(done), responding = false))
         assertEquals(null, collabFoldLabel(emptyList(), responding = true))
     }
+
+    @Test
+    fun liveTurnKeepsOnlyTheCurrentInMemoryBubbles() {
+        val turn = "turn-7"
+        val bubbles = listOf(
+            ChatBubble("hist-1", "user", "old"),
+            ChatBubble("reasoning-$turn-1", "reasoning", "reading the file"),
+            ChatBubble("tool-$turn:1", "tool", "file_read", stepId = "$turn:1"),
+            ChatBubble("a-live", "assistant", "partial", streaming = true),
+            ChatBubble("u-older", "user", "previous local"),
+        )
+        assertEquals(
+            listOf("reasoning-$turn-1", "tool-$turn:1", "a-live"),
+            liveTurnBubbles(bubbles, turn, "a-live").map { it.id },
+        )
+        assertEquals(emptyList<String>(), liveTurnBubbles(bubbles, "", null).map { it.id })
+    }
+
+    @Test
+    fun outerFoldShowsOnlyTheLatestSummaryUntilTheAnswerArrives() {
+        assertEquals("reading the file", outerProcessLabel("reading the file", null, isResponding = true, isLatestProcess = true))
+        assertEquals("calling file_read", outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = true))
+        assertEquals("calling file_read", outerProcessLabel("calling file_read\nolder detail", null, isResponding = true, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = false, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("   ", null, isResponding = true, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = false))
+    }
+
+    @Test
+    fun outerFoldReplacesTheSummaryWhenTheTurnEndsWithoutAnAnswer() {
+        assertEquals("已取消", outerProcessLabel("reading the file", "已取消", isResponding = false, isLatestProcess = true))
+        assertEquals("请求失败", outerProcessLabel(null, "请求失败", isResponding = false, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("reading the file", "已取消", isResponding = false, isLatestProcess = false))
+        assertEquals("reading the file", outerProcessLabel("reading the file", "已取消", isResponding = true, isLatestProcess = true))
+    }
 }

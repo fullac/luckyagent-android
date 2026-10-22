@@ -9,18 +9,18 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -33,7 +33,7 @@ import org.jsoup.Jsoup
 import java.io.ByteArrayInputStream
 import java.io.IOException
 
-internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String): String {
+internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String, inline: Boolean = false): String {
     val doc = Jsoup.parse(source)
     // The document has an isolated origin; the base only resolves CSS/images and page anchors.
     doc.select("base").remove()
@@ -47,23 +47,41 @@ internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String): Strin
         "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' data:; " +
             "img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; " +
             "connect-src 'none'; worker-src 'none'; child-src 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; base-uri 'self'")
-    doc.head().appendElement("style").appendText("html,body{margin:0;background:transparent}html{overflow-wrap:anywhere}img,video{max-width:100%;height:auto}pre{overflow:auto}")
+    val inlineFit = if (inline) {
+        // A page written for a full viewport (100vh + flex centering) would otherwise
+        // become one screen tall and hide its controls under the message card.
+        "html,body{min-height:0!important;height:auto!important}body{display:block!important}" +
+            "body *{min-height:0!important}"
+    } else ""
+    doc.head().appendElement("style").appendText("html,body{margin:0;background:transparent}html{overflow-wrap:anywhere}img,video{max-width:100%;height:auto}pre{overflow:auto}$inlineFit")
     return doc.outerHtml()
 }
 
-private const val INLINE_HTML_MAX_HEIGHT = 360
+/** Measure laid-out content, ignoring viewport-sized ancestors such as 100vh. */
+internal const val INLINE_HTML_HEIGHT_JS =
+    "(function(){var b=document.body;if(!b)return 0;" +
+        "var bottom=0;var nodes=b.querySelectorAll('*');" +
+        "for(var i=0;i<nodes.length;i++){var n=nodes[i];var s=getComputedStyle(n);" +
+        "if(s.position==='fixed'||s.display==='none'||s.visibility==='hidden')continue;" +
+        "if(n.offsetHeight<=0||n.offsetWidth<=0)continue;" +
+        "var h=n.offsetHeight+n.offsetTop;var p=n.offsetParent;" +
+        "while(p&&p!==b){h+=p.offsetTop-(p.scrollTop||0);p=p.offsetParent}" +
+        "bottom=Math.max(bottom,h)}" +
+        "return Math.ceil(bottom+8)})()"
+
+private const val INLINE_HTML_MAX_HEIGHT = 480
 
 /**
- * Fenced HTML sits in the message flow. A tap opens the existing full-screen preview.
- * Attachments keep [HtmlPreviewDialog] and do not use this inline surface.
+ * Fenced HTML sits in the message flow. Page controls stay tappable; the corner
+ * button opens the existing full-screen preview. Attachments keep [HtmlPreviewDialog].
  */
 @Composable
 internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<String, String>) {
     var show by remember(source) { mutableStateOf(false) }
     var contentHeight by remember(source) { mutableIntStateOf(0) }
-    val density = LocalDensity.current
+    // JS offsetHeight is a CSS pixel. With width=device-width that matches 1 dp, so do not divide by density again.
     val height = if (contentHeight > 0) {
-        with(density) { contentHeight.toDp() }.coerceIn(24.dp, INLINE_HTML_MAX_HEIGHT.dp)
+        contentHeight.dp.coerceIn(24.dp, INLINE_HTML_MAX_HEIGHT.dp)
     } else {
         48.dp
     }
@@ -72,8 +90,7 @@ internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<Str
     Box(
         Modifier
             .fillMaxWidth()
-            .height(height)
-            .clickable { show = true },
+            .height(height),
     ) {
         HtmlPageView(
             source = source,
@@ -84,8 +101,12 @@ internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<Str
             zoomable = false,
             onContentHeight = { contentHeight = it },
         )
-        // The WebView would otherwise take the list's vertical drags.
-        Box(Modifier.fillMaxSize().clickable { show = true })
+        IconButton(
+            onClick = { show = true },
+            modifier = Modifier.align(Alignment.TopEnd).padding(2.dp),
+        ) {
+            Icon(Icons.Outlined.OpenInFull, contentDescription = "全屏查看 HTML")
+        }
     }
     if (show) HtmlPreviewDialog(source = source, baseUrl = baseUrl, headers = headers, onDismiss = { show = false })
 }
@@ -191,15 +212,15 @@ private fun HtmlPageView(
     zoomable: Boolean = true,
     onContentHeight: ((Int) -> Unit)? = null,
 ) {
-    val document = remember(source, baseUrl) { htmlPreviewDocument(source, baseUrl) }
+    val document = remember(source, baseUrl, zoomable) { htmlPreviewDocument(source, baseUrl, inline = !zoomable) }
     val currentBase by rememberUpdatedState(baseUrl)
     val currentLoader by rememberUpdatedState(loader)
     val reportHeight by rememberUpdatedState(onContentHeight)
     fun WebView.reportContentHeight() {
         val report = reportHeight ?: return
-        evaluateJavascript(
-            "(function(){var b=document.body,e=document.documentElement;return Math.max(b?b.scrollHeight:0,b?b.offsetHeight:0,e?e.scrollHeight:0,e?e.offsetHeight:0)})()",
-        ) { raw -> raw?.trim('"')?.toIntOrNull()?.takeIf { it > 0 }?.let(report) }
+        evaluateJavascript(INLINE_HTML_HEIGHT_JS) { raw ->
+            raw?.trim('"')?.toIntOrNull()?.takeIf { it > 0 }?.let(report)
+        }
     }
     AndroidView(modifier = modifier, factory = { context -> WebView(context).apply {
         setBackgroundColor(0)
@@ -209,10 +230,9 @@ private fun HtmlPageView(
         settings.domStorageEnabled = false
         isNestedScrollingEnabled = false
         setOnTouchListener { view, event ->
-            if (!zoomable) {
+            if (!zoomable && event.actionMasked == android.view.MotionEvent.ACTION_MOVE) {
+                // A drag belongs to the message list. A tap still reaches the page.
                 view.parent?.requestDisallowInterceptTouchEvent(false)
-                if (event.action == android.view.MotionEvent.ACTION_UP) view.performClick()
-                return@setOnTouchListener true
             }
             false
         }
@@ -261,7 +281,8 @@ private fun HtmlPageView(
         }
     } }, update = { view ->
         view.visibility = if (visible) android.view.View.VISIBLE else android.view.View.INVISIBLE
-        if (view.tag != document) {
+        val loaded = view.tag as? String
+        if (loaded != document) {
             view.tag = document
             view.loadDataWithBaseURL(HTML_PREVIEW_ORIGIN, document, "text/html", null, null)
         } else {

@@ -40,6 +40,24 @@ class HtmlPreviewTest {
         assertFalse(csp.contains("base-uri 'none'"))
     }
 
+    @Test fun inlinePreviewCollapsesViewportHeightSoControlsStayInFlow() {
+        val source = """
+            <style>body{min-height:100vh;display:flex;align-items:center}button{min-height:40px}</style>
+            <p id="count">0</p><button id="add">Add</button>
+            <script>document.getElementById('add').onclick=function(){}</script>
+        """.trimIndent()
+        val inline = Jsoup.parse(htmlPreviewDocument(source, "", inline = true))
+        val fit = inline.select("style").last()!!.data()
+        assertTrue(fit.contains("min-height:0!important"))
+        assertTrue(fit.contains("height:auto!important"))
+        assertTrue(fit.contains("display:block!important"))
+        assertTrue(inline.selectFirst("script")!!.data().contains("onclick"))
+        val dialog = Jsoup.parse(htmlPreviewDocument(source, "", inline = false))
+        assertFalse(dialog.select("style").last()!!.data().contains("height:auto!important"))
+        assertTrue(INLINE_HTML_HEIGHT_JS.contains("offsetHeight"))
+        assertFalse(INLINE_HTML_HEIGHT_JS.contains("scrollHeight"))
+    }
+
     @Test fun absoluteThirdPartyUrlsAreNotProxied() {
         val documentUrl = "https://example.test/api/v1/artifacts?path=workspace%2Freports%2Fpage.html"
         assertNull(htmlResourceUrl("https://evil.test/steal", documentUrl))

@@ -195,6 +195,12 @@ private fun HtmlPageView(
     val currentBase by rememberUpdatedState(baseUrl)
     val currentLoader by rememberUpdatedState(loader)
     val reportHeight by rememberUpdatedState(onContentHeight)
+    fun WebView.reportContentHeight() {
+        val report = reportHeight ?: return
+        evaluateJavascript(
+            "(function(){var b=document.body,e=document.documentElement;return Math.max(b?b.scrollHeight:0,b?b.offsetHeight:0,e?e.scrollHeight:0,e?e.offsetHeight:0)})()",
+        ) { raw -> raw?.trim('"')?.toIntOrNull()?.takeIf { it > 0 }?.let(report) }
+    }
     AndroidView(modifier = modifier, factory = { context -> WebView(context).apply {
         setBackgroundColor(0)
         settings.javaScriptEnabled = true
@@ -248,17 +254,18 @@ private fun HtmlPageView(
                 }
                 return true
             }
+            override fun onPageFinished(view: WebView, url: String) {
+                view.reportContentHeight()
+                view.postDelayed({ view.reportContentHeight() }, 250)
+            }
         }
     } }, update = { view ->
         view.visibility = if (visible) android.view.View.VISIBLE else android.view.View.INVISIBLE
         if (view.tag != document) {
             view.tag = document
             view.loadDataWithBaseURL(HTML_PREVIEW_ORIGIN, document, "text/html", null, null)
-        }
-        reportHeight?.let { report ->
-            view.evaluateJavascript(
-                "(function(){var b=document.body,e=document.documentElement;return Math.max(b?b.scrollHeight:0,e?e.scrollHeight:0)})()",
-            ) { raw -> raw?.trim('"')?.toIntOrNull()?.let(report) }
+        } else {
+            view.reportContentHeight()
         }
     }, onRelease = { it.stopLoading(); it.destroy() })
 }

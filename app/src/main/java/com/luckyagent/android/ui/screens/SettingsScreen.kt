@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -118,6 +119,8 @@ fun SettingsScreen(
             ) {
                 Column(Modifier.weight(1.25f)) {
                     SettingsSectionTitle("连接")
+                    StandaloneConnectionCard(s, vm)
+                    Spacer(Modifier.height(12.dp))
                     SettingsEndpointCard(s, vm, onScan, onPickQrImage)
                     Spacer(Modifier.height(12.dp))
                     SettingsSessionCard(s, vm)
@@ -138,6 +141,7 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 SettingsSectionTitle("连接")
+                StandaloneConnectionCard(s, vm)
                 SettingsEndpointCard(s, vm, onScan, onPickQrImage)
                 SettingsSessionCard(s, vm)
                 SettingsSectionTitle("状态与外观")
@@ -184,6 +188,32 @@ private fun SettingsConnectionSummary(
             MetaChip(ws)
         }
         Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("Open detailed settings") }
+    }
+}
+
+@Composable
+private fun StandaloneConnectionCard(settings: ClientSettings, vm: AppViewModel) {
+    var apiBase by rememberSaveable(settings.standaloneApiBase) { mutableStateOf(settings.standaloneApiBase) }
+    var apiKey by rememberSaveable(settings.standaloneApiKey) { mutableStateOf(settings.standaloneApiKey) }
+    var model by rememberSaveable(settings.standaloneModel) { mutableStateOf(settings.standaloneModel) }
+    val standalone = settings.connectionMode == "standalone"
+    CloverCard {
+        Text("独立聊天", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("只填模型 Key 和 URL。电脑连接仍保留，两种模式互不覆盖。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = vm::useRuntimeConnection, enabled = standalone) { Text("电脑") }
+            Button(onClick = vm::useStandaloneConnection, enabled = !standalone) { Text("独立") }
+        }
+        OutlinedTextField(apiBase, { apiBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型 URL") }, placeholder = { Text("https://api.example.com/v1") }, singleLine = true)
+        OutlinedTextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型 Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+        OutlinedTextField(model, { model = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型名") }, placeholder = { Text("gpt-4o-mini") }, singleLine = true)
+        Button(
+            onClick = { vm.saveStandaloneSettings(apiBase, apiKey, model) },
+            enabled = apiBase.isNotBlank() && apiKey.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("保存并检查") }
+        val notice = vm.ui.collectAsStateWithLifecycle().value.standaloneNotice
+        notice?.let { Text(it, color = CloverText2, style = MaterialTheme.typography.bodySmall) }
     }
 }
 

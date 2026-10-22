@@ -3,6 +3,9 @@ package com.luckyagent.android.ui.components
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -68,6 +71,18 @@ internal const val INLINE_HTML_HEIGHT_JS =
         "while(p&&p!==b){h+=p.offsetTop-(p.scrollTop||0);p=p.offsetParent}" +
         "bottom=Math.max(bottom,h)}" +
         "return Math.ceil(bottom+8)})()"
+
+private class HtmlHeightBridge(
+    private val onHeight: (Int) -> Unit,
+) {
+    private val main = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun report(raw: String?) {
+        val height = raw?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: return
+        main.post { onHeight(height) }
+    }
+}
 
 private const val INLINE_HTML_MAX_HEIGHT = 480
 
@@ -216,23 +231,30 @@ private fun HtmlPageView(
     val currentBase by rememberUpdatedState(baseUrl)
     val currentLoader by rememberUpdatedState(loader)
     val reportHeight by rememberUpdatedState(onContentHeight)
+    val bridge = remember {
+        HtmlHeightBridge { height -> reportHeight?.invoke(height) }
+    }
     fun WebView.reportContentHeight() {
-        val report = reportHeight ?: return
-        evaluateJavascript(INLINE_HTML_HEIGHT_JS) { raw ->
-            raw?.trim('"')?.toIntOrNull()?.takeIf { it > 0 }?.let(report)
-        }
+        if (reportHeight == null) return
+        evaluateJavascript(
+            "LuckyHtmlBridge.report(String($INLINE_HTML_HEIGHT_JS))",
+            null,
+        )
     }
     AndroidView(modifier = modifier, factory = { context -> WebView(context).apply {
         setBackgroundColor(0)
         settings.javaScriptEnabled = true
+        addJavascriptInterface(bridge, "LuckyHtmlBridge")
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.domStorageEnabled = false
         isNestedScrollingEnabled = false
         setOnTouchListener { view, event ->
-            if (!zoomable && event.actionMasked == android.view.MotionEvent.ACTION_MOVE) {
+            if (!zoomable) {
                 // A drag belongs to the message list. A tap still reaches the page.
-                view.parent?.requestDisallowInterceptTouchEvent(false)
+                view.parent?.requestDisallowInterceptTouchEvent(
+                    event.actionMasked != android.view.MotionEvent.ACTION_MOVE,
+                )
             }
             false
         }

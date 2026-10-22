@@ -251,6 +251,10 @@ data class AppUiState(
     val commandExecuting: Boolean = false,
     val commandExecution: CommandExecution? = null,
     val activityLine: String? = null,
+    /** Latest process summary shown on the chat fold until the answer lands. */
+    val liveSummary: String? = null,
+    /** Terminal fold label after cancel or failure. Null while a turn is running. */
+    val processNotice: String? = null,
     val attachmentNotice: AttachmentNotice? = null,
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
@@ -456,6 +460,8 @@ class AppViewModel(
                 luckyAttachments = 0,
                 luckyPending = luckyPending.values.filter { segment -> segment.sessionId == target },
                 progressSteps = emptyList(),
+                liveSummary = null,
+                processNotice = null,
                 activityLine = "loading history…",
             )
         }
@@ -647,6 +653,8 @@ class AppViewModel(
                                     it.copy(
                                         isResponding = false,
                                         activityLine = "cancelled",
+                                        liveSummary = null,
+                                        processNotice = "已取消",
                                         progressSteps = it.progressSteps.map { step ->
                                             if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
                                         },
@@ -678,6 +686,8 @@ class AppViewModel(
                                     it.copy(
                                         activityLine = "error · $msg",
                                         isResponding = false,
+                                        liveSummary = null,
+                                        processNotice = "请求失败",
                                         progressSteps = it.progressSteps.map { step ->
                                             if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
                                         },
@@ -728,6 +738,8 @@ class AppViewModel(
                                             current.copy(
                                                 isResponding = false,
                                                 activityLine = "complete",
+                                                liveSummary = null,
+                                                processNotice = null,
                                                 progressSteps = current.progressSteps.map { step ->
                                                     if (step.status == ProgressStatus.Active) step.copy(status = ProgressStatus.Complete) else step
                                                 },
@@ -739,8 +751,11 @@ class AppViewModel(
                                         finishBackgroundRun(event.sessionId)
                                     }
                                 }
-                                else -> if (foreground) _ui.update {
-                                    it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
+                                else -> if (foreground) {
+                                    val summary = extractField(env.data, "summary")?.trim().orEmpty()
+                                    val line = summary.ifBlank { message?.trim().orEmpty() }
+                                    if (line.isNotEmpty()) updatePhase("status", line)
+                                    else _ui.update { it.copy(activityLine = state ?: env.type) }
                                 }
                             }
                         }
@@ -758,6 +773,8 @@ class AppViewModel(
                             }
                             if (stage == "content") {
                                 if (content.isNotEmpty()) upsertReasoningBubble(round, content, true)
+                                // Content stays in the sheet. Only a real summary replaces the fold.
+                                if (summary.isNotEmpty()) updatePhase("reasoning-${round ?: 0}", summary)
                             } else {
                                 upsertReasoningBubble(round, label, false)
                                 updatePhase("reasoning-${round ?: 0}", label)
@@ -1287,7 +1304,13 @@ class AppViewModel(
                 }
             }
             val next = upsertProgressStep(previous, ChatProgressStep("phase-$id", label, ProgressStatus.Active))
-            current.copy(isResponding = true, activityLine = label, progressSteps = next)
+            current.copy(
+                isResponding = true,
+                activityLine = label,
+                liveSummary = label.trim().lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(160),
+                processNotice = null,
+                progressSteps = next,
+            )
         }
     }
 
@@ -1622,7 +1645,7 @@ class AppViewModel(
                     attachments = safeAttachments,
                 )
             }
-            st.copy(bubbles = list, isResponding = false)
+            st.copy(bubbles = list, isResponding = false, liveSummary = null, processNotice = null)
         }
         assistantBufferId = null
         assistantBufferIndex = null
@@ -2389,6 +2412,8 @@ class AppViewModel(
                 isResponding = activeRuns[target]?.isNotEmpty() == true,
                 outboundQueue = outboundChatQueue.items(target),
                 progressSteps = emptyList(),
+                liveSummary = null,
+                processNotice = null,
                 pendingQuote = null,
                 contextInspect = null,
                 contextInspectError = null,
@@ -3026,6 +3051,8 @@ class AppViewModel(
                 pendingMedia = if (clearComposer) emptyList() else it.pendingMedia,
                 pendingQuote = if (clearComposer) null else it.pendingQuote,
                 isResponding = true,
+                liveSummary = null,
+                processNotice = null,
                 outboundQueue = outboundChatQueue.items(sessionId),
                 activityLine = if (wasRunning) {
                     "消息已排队 · 当前队列 ${outboundChatQueue.items(sessionId).count { item -> item.status == OutboundQueueStatus.Sending || item.status == OutboundQueueStatus.Queued }} 条"
@@ -3338,6 +3365,8 @@ class AppViewModel(
             it.copy(
                 activityLine = "cancel requested",
                 isResponding = false,
+                liveSummary = null,
+                processNotice = "已取消",
                 progressSteps = it.progressSteps.map { step ->
                     if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
                 },

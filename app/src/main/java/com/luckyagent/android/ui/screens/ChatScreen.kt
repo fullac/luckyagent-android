@@ -252,6 +252,22 @@ internal sealed interface ChatTimelineItem {
     data class Process(val steps: List<ChatBubble>, override val key: String) : ChatTimelineItem
 }
 
+/**
+ * One line for the latest chat fold.
+ * A running turn shows only the newest summary. A finished turn yields to the answer,
+ * except cancel and failure, which replace the summary with an end state.
+ */
+internal fun outerProcessLabel(
+    liveSummary: String?,
+    processNotice: String?,
+    isResponding: Boolean,
+    isLatestProcess: Boolean,
+): String? {
+    if (!isLatestProcess) return null
+    if (!isResponding) return processNotice?.trim()?.ifBlank { null }
+    return liveSummary?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+}
+
 internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): String? {
     val collabModes = setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue")
     val matched = tasks.filter { task ->
@@ -975,6 +991,12 @@ private fun ChatConversation(
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
                                 isResponding = state.isResponding,
+                                liveSummary = outerProcessLabel(
+                                    liveSummary = state.liveSummary,
+                                    processNotice = state.processNotice,
+                                    isResponding = state.isResponding,
+                                    isLatestProcess = item.key == timeline.lastOrNull { it is ChatTimelineItem.Process }?.key,
+                                ),
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
@@ -1820,6 +1842,7 @@ private fun ApprovalCard(
 private fun ProcessTimeline(
     steps: List<ChatBubble>,
     isResponding: Boolean,
+    liveSummary: String? = null,
     collabLabel: String? = null,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
@@ -1843,6 +1866,7 @@ private fun ProcessTimeline(
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
+                    liveSummary != null -> liveSummary
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
@@ -1850,6 +1874,8 @@ private fun ProcessTimeline(
                     steps.size == 1 -> "思考了 1 步"
                     else -> "思考了 ${steps.size} 步"
                 },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelMedium,
                 color = CloverText3,
                 modifier = Modifier.weight(1f),

@@ -177,4 +177,22 @@ class ChatTimelineTest {
         assertEquals("并行 · 3/3 · 完成", collabFoldLabel(listOf(done), responding = false))
         assertEquals(null, collabFoldLabel(emptyList(), responding = true))
     }
+
+    @Test
+    fun outerFoldShowsOnlyTheLatestSummaryUntilTheAnswerArrives() {
+        assertEquals("reading the file", outerProcessLabel("reading the file", null, isResponding = true, isLatestProcess = true))
+        assertEquals("calling file_read", outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = true))
+        assertEquals("calling file_read", outerProcessLabel("calling file_read\nolder detail", null, isResponding = true, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = false, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("   ", null, isResponding = true, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = false))
+    }
+
+    @Test
+    fun outerFoldReplacesTheSummaryWhenTheTurnEndsWithoutAnAnswer() {
+        assertEquals("已取消", outerProcessLabel("reading the file", "已取消", isResponding = false, isLatestProcess = true))
+        assertEquals("请求失败", outerProcessLabel(null, "请求失败", isResponding = false, isLatestProcess = true))
+        assertEquals(null, outerProcessLabel("reading the file", "已取消", isResponding = false, isLatestProcess = false))
+        assertEquals("reading the file", outerProcessLabel("reading the file", "已取消", isResponding = true, isLatestProcess = true))
+    }
 }

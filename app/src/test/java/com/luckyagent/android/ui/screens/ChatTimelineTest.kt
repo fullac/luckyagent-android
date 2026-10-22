@@ -179,6 +179,23 @@ class ChatTimelineTest {
     }
 
     @Test
+    fun liveTurnKeepsOnlyTheCurrentInMemoryBubbles() {
+        val turn = "turn-7"
+        val bubbles = listOf(
+            ChatBubble("hist-1", "user", "old"),
+            ChatBubble("reasoning-$turn-1", "reasoning", "reading the file"),
+            ChatBubble("tool-$turn:1", "tool", "file_read", stepId = "$turn:1"),
+            ChatBubble("a-live", "assistant", "partial", streaming = true),
+            ChatBubble("u-older", "user", "previous local"),
+        )
+        assertEquals(
+            listOf("reasoning-$turn-1", "tool-$turn:1", "a-live"),
+            liveTurnBubbles(bubbles, turn, "a-live").map { it.id },
+        )
+        assertEquals(emptyList<String>(), liveTurnBubbles(bubbles, "", null).map { it.id })
+    }
+
+    @Test
     fun outerFoldShowsOnlyTheLatestSummaryUntilTheAnswerArrives() {
         assertEquals("reading the file", outerProcessLabel("reading the file", null, isResponding = true, isLatestProcess = true))
         assertEquals("calling file_read", outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = true))

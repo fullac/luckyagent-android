@@ -2653,30 +2653,42 @@ class AppViewModel(
 
     private fun applyHistoryPage(sessionId: String, page: MessagePage, offline: Boolean) {
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
-        resetAssistantStream()
-        toolStepIndex.clear()
+        val keepLiveTurn = !offline && activeRuns[sessionId]?.isNotEmpty() == true
+        if (!keepLiveTurn) {
+            resetAssistantStream()
+            toolStepIndex.clear()
+        }
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         publishHistory(
             sessionId,
             offline = offline,
             activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId),
+            preserveLiveTurn = keepLiveTurn,
         )
     }
 
-    private fun publishHistory(sessionId: String, offline: Boolean, activity: String) {
+    private fun publishHistory(sessionId: String, offline: Boolean, activity: String, preserveLiveTurn: Boolean = false) {
         val bubbles = historyToBubbles(historyMessages, historyStartIndex)
         val running = activeRuns[sessionId]?.isNotEmpty() == true
-        _ui.update {
-            it.copy(
-                bubbles = bubbles,
+        _ui.update { current ->
+            val live = if (preserveLiveTurn && running) {
+                com.luckyagent.android.ui.screens.liveTurnBubbles(current.bubbles, currentTurnId, assistantBufferId)
+            } else {
+                emptyList()
+            }
+            val shown = bubbles + live.filter { liveBubble -> bubbles.none { it.id == liveBubble.id } }
+            current.copy(
+                bubbles = shown,
                 activityLine = if (running && !offline) "Agent running · history loaded" else activity,
                 isResponding = running,
                 historyLoading = false,
                 historyLoadingMore = false,
                 historyHasMore = historyStartIndex > 0,
                 showingOfflineCache = offline,
-                progressSteps = emptyList(),
+                progressSteps = if (preserveLiveTurn && running) current.progressSteps else emptyList(),
+                liveSummary = if (preserveLiveTurn && running) current.liveSummary else null,
+                processNotice = if (preserveLiveTurn && running) current.processNotice else null,
                 pendingQuote = null,
             )
         }

@@ -223,8 +223,8 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                 // horizontal lists). Open navigation with the header button; its
                 // full-page menu still supports swiping back to the feature page.
                 userScrollEnabled = navigationPager.settledPage == 0,
-            ) {
-                if (it == 0) {
+            ) { page ->
+                if (page == 0) {
                     NavigationPage(
                         state = state,
                         onSelect = { destination ->
@@ -302,25 +302,11 @@ private fun AppScaffold(
                         modifier = Modifier
                             .width(AppNavRailWidth)
                             .fillMaxHeight()
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
                             .verticalScroll(rememberScrollState()),
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f),
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = surfaceOpacity.drawer),
                     ) {
                         Spacer(Modifier.height(16.dp))
-                        Box(
-                            Modifier
-                                .size(42.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(CloverAccent),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                "✣",
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
+                        BrandMark(state.settings.avatarFile, size = 42.dp, corner = 14.dp)
                         Spacer(Modifier.height(16.dp))
                         navItems.forEach { item ->
                             if (item.dest == AppDestination.Settings) Spacer(Modifier.height(12.dp))
@@ -420,10 +406,11 @@ private fun NavigationPage(
     onClose: () -> Unit,
 ) {
     val live = com.luckyagent.android.ui.components.socketStateLive(state.socketState)
+    val drawerAlpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f
     Column(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = drawerAlpha))
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         // Keep the brand quiet and useful: the connection state sits in its own
@@ -434,20 +421,7 @@ private fun NavigationPage(
                 .padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(CloverAccent),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "✣",
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
+            BrandMark(state.settings.avatarFile, size = 38.dp, corner = 13.dp)
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text("LuckyAgent", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(
@@ -521,6 +495,42 @@ private fun NavigationPage(
         Box(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
             DrawerNavItem(nav(AppDestination.Settings), state, onSelect)
         }
+    }
+}
+
+@Composable
+private fun BrandMark(avatarFile: String, size: androidx.compose.ui.unit.Dp, corner: androidx.compose.ui.unit.Dp) {
+    val context = LocalContext.current
+    val file = avatarFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    if (file != null) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(file)
+                .memoryCacheKey(file.absolutePath + file.lastModified())
+                .diskCacheKey(file.absolutePath + file.lastModified())
+                .crossfade(true)
+                .build(),
+            contentDescription = "设置头像",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(size).clip(CircleShape),
+        )
+        return
+    }
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(corner))
+            .background(CloverAccent),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "✣",
+            color = MaterialTheme.colorScheme.onPrimary,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

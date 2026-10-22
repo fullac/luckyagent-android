@@ -12,6 +12,8 @@ import android.webkit.MimeTypeMap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.api.MemoryEntry
@@ -356,6 +358,8 @@ class AppViewModel(
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
+    /** In-progress turn for a session that is not on screen. Keyed by session id. */
+    private val parkedTurns = mutableMapOf<String, ParkedTurn>()
     private val toolStepIndex = mutableMapOf<String, String>()
     private val mediaUploadSemaphore = Semaphore(1)
     private val outboundChatQueue = OutboundChatQueue()
@@ -364,6 +368,16 @@ class AppViewModel(
     private val luckyPending = LinkedHashMap<String, LuckyPendingSegment>()
     private data class ActiveRun(
         val handle: WsChatHandle,
+    )
+
+    private data class ParkedTurn(
+        val turnId: String,
+        val bufferId: String?,
+        val pending: String,
+        val bubbles: List<ChatBubble>,
+        val progressSteps: List<ChatProgressStep>,
+        val liveSummary: String?,
+        val processNotice: String?,
     )
 
     private val activeRuns = mutableMapOf<String, LinkedHashMap<String, ActiveRun>>()
@@ -2402,6 +2416,8 @@ class AppViewModel(
 
     fun selectSession(id: String) {
         val target = id.ifBlank { "android-main" }
+        val leaving = currentSessionId()
+        if (leaving != target) parkCurrentTurn(leaving)
         val connection = container.settingsRepository.snapshot()
         historyJob?.cancel()
         contextInspectJob?.cancel()
@@ -2414,17 +2430,23 @@ class AppViewModel(
         container.settingsRepository.update { it.copy(sessionId = target) }
         resetAssistantStream()
         toolStepIndex.clear()
+        val parked = parkedTurns.remove(target)
+        if (parked != null && activeRuns[target]?.isNotEmpty() == true) {
+            currentTurnId = parked.turnId
+            assistantBufferId = parked.bufferId
+            assistantPending.append(parked.pending)
+        }
         _ui.update {
             it.copy(
-                bubbles = emptyList(),
+                bubbles = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.bubbles else emptyList(),
                 historyLoading = true,
                 historyLoadingMore = false,
                 historyHasMore = false,
                 isResponding = activeRuns[target]?.isNotEmpty() == true,
                 outboundQueue = outboundChatQueue.items(target),
-                progressSteps = emptyList(),
-                liveSummary = null,
-                processNotice = null,
+                progressSteps = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.progressSteps else emptyList(),
+                liveSummary = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.liveSummary else null,
+                processNotice = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.processNotice else null,
                 pendingQuote = null,
                 contextInspect = null,
                 contextInspectError = null,
@@ -2662,21 +2684,40 @@ class AppViewModel(
         reachedOldest = historyStartIndex == 0,
     )
 
-    private fun applyHistoryPage(sessionId: String, page: MessagePage, offline: Boolean) {
+    private fun parkCurrentTurn(sessionId: String) {
+        if (activeRuns[sessionId].isNullOrEmpty()) {
+            parkedTurns.remove(sessionId)
+            return
+        }
+        flushAssistantPending()
+        val state = _ui.value
+        parkedTurns[sessionId] = ParkedTurn(
+            turnId = currentTurnId,
+            bufferId = assistantBufferId,
+            pending = assistantPending.toString(),
+            bubbles = state.bubbles,
+            progressSteps = state.progressSteps,
+            liveSummary = state.liveSummary,
+            processNotice = state.processNotice,
+        )
+    }
+
+    private suspend fun applyHistoryPage(sessionId: String, page: MessagePage, offline: Boolean) {
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
         val keepLiveTurn = !offline && activeRuns[sessionId]?.isNotEmpty() == true
         if (!keepLiveTurn) {
             resetAssistantStream()
             toolStepIndex.clear()
+            parkedTurns.remove(sessionId)
         }
         historyMessages = page.messages
         historyStartIndex = page.startIndex
-        publishHistory(
-            sessionId,
-            offline = offline,
-            activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId),
-            preserveLiveTurn = keepLiveTurn,
-        )
+        val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
+        // History fetches run off the main thread. Bubble ids are only touched on main.
+        withContext(Dispatchers.Main.immediate) {
+            if (currentSessionId() != sessionId || historySessionId != sessionId) return@withContext
+            publishHistory(sessionId, offline, activity, preserveLiveTurn = keepLiveTurn)
+        }
     }
 
     private fun publishHistory(sessionId: String, offline: Boolean, activity: String, preserveLiveTurn: Boolean = false) {
@@ -2684,11 +2725,14 @@ class AppViewModel(
         val running = activeRuns[sessionId]?.isNotEmpty() == true
         _ui.update { current ->
             val live = if (preserveLiveTurn && running) {
-                com.luckyagent.android.ui.screens.liveTurnBubbles(current.bubbles, currentTurnId, assistantBufferId)
+                com.luckyagent.android.ui.screens.dedupeLiveTurn(
+                    bubbles,
+                    com.luckyagent.android.ui.screens.liveTurnBubbles(current.bubbles, currentTurnId, assistantBufferId),
+                )
             } else {
                 emptyList()
             }
-            val shown = bubbles + live.filter { liveBubble -> bubbles.none { it.id == liveBubble.id } }
+            val shown = bubbles + live
             current.copy(
                 bubbles = shown,
                 activityLine = if (running && !offline) "Agent running · history loaded" else activity,

@@ -61,6 +61,21 @@ class StandaloneChatTest {
     }
 
     @Test
+    fun laterTurnsStillCarryTheSearchResult() {
+        val session = StandaloneSession(
+            id = "s",
+            messages = listOf(
+                StandaloneMessage("user", "/search 口令"),
+                StandaloneMessage("assistant", "搜索「口令」\nblue-fox", kind = "search"),
+                StandaloneMessage("assistant", "查到了"),
+            ),
+        )
+        val prompt = buildStandaloneMessages(session, "再重复一次")
+        assertTrue(prompt.any { it["content"]!!.contains("blue-fox") })
+        assertEquals("再重复一次", prompt.last()["content"])
+    }
+
+    @Test
     fun searchFormatsAbstractAndRelatedTopics() {
         val body = """
             {"AbstractText":"A fact","AbstractURL":"https://example.test/fact",

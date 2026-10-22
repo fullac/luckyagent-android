@@ -5,7 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -86,16 +88,30 @@ private class HtmlHeightBridge(
 
 private const val INLINE_HTML_MAX_HEIGHT = 480
 
+/** Heavy pages stay as source until the user asks. A light page can render inline. */
+internal const val INLINE_HTML_ACTIVE_LIMIT = 48_000
+
+internal fun inlineHtmlShouldRender(source: String): Boolean = source.length <= INLINE_HTML_ACTIVE_LIMIT
+
+internal const val HTML_RENDER_CRASH_MESSAGE = "这段 HTML 把预览进程打崩了，已改显示源码。聊天其他内容不受影响。"
+
 /**
  * Fenced HTML sits in the message flow. Page controls stay tappable; the corner
  * button opens the existing full-screen preview. Attachments keep [HtmlPreviewDialog].
+ * A heavy page, or one whose renderer crashes, falls back to source instead of
+ * taking the process down. Full screen pauses the inline renderer so the same
+ * page is not running twice.
  */
 @Composable
 internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<String, String>) {
     var show by remember(source) { mutableStateOf(false) }
+    var crashed by remember(source) { mutableStateOf(false) }
     var contentHeight by remember(source) { mutableIntStateOf(0) }
+    val render = inlineHtmlShouldRender(source) && !crashed
     // JS offsetHeight is a CSS pixel. With width=device-width that matches 1 dp, so do not divide by density again.
-    val height = if (contentHeight > 0) {
+    val height = if (!render) {
+        96.dp
+    } else if (contentHeight > 0) {
         contentHeight.dp.coerceIn(24.dp, INLINE_HTML_MAX_HEIGHT.dp)
     } else {
         48.dp
@@ -107,15 +123,27 @@ internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<Str
             .fillMaxWidth()
             .height(height),
     ) {
-        HtmlPageView(
-            source = source,
-            baseUrl = baseUrl,
-            loader = loader,
-            modifier = Modifier.fillMaxSize(),
-            visible = true,
-            zoomable = false,
-            onContentHeight = { contentHeight = it },
-        )
+        if (render && !show) {
+            HtmlPageView(
+                source = source,
+                baseUrl = baseUrl,
+                loader = loader,
+                modifier = Modifier.fillMaxSize(),
+                visible = true,
+                zoomable = false,
+                onContentHeight = { contentHeight = it },
+                onRenderCrashed = { crashed = true },
+            )
+        } else {
+            Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Text(
+                    if (crashed) HTML_RENDER_CRASH_MESSAGE else "这段 HTML 较大，点右上角再预览。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (crashed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                )
+            }
+        }
         IconButton(
             onClick = { show = true },
             modifier = Modifier.align(Alignment.TopEnd).padding(2.dp),
@@ -123,7 +151,15 @@ internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<Str
             Icon(Icons.Outlined.OpenInFull, contentDescription = "全屏查看 HTML")
         }
     }
-    if (show) HtmlPreviewDialog(source = source, baseUrl = baseUrl, headers = headers, onDismiss = { show = false })
+    if (show) {
+        HtmlPreviewDialog(
+            source = source,
+            baseUrl = baseUrl,
+            headers = headers,
+            onDismiss = { show = false },
+            onRenderCrashed = { crashed = true },
+        )
+    }
 }
 
 @Composable
@@ -141,6 +177,7 @@ internal fun HtmlPreviewDialog(
     headers: Map<String, String> = emptyMap(),
     onDownload: (() -> Unit)? = null,
     onDismiss: () -> Unit,
+    onRenderCrashed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -151,6 +188,7 @@ internal fun HtmlPreviewDialog(
     var resourceBase by remember(source, uri, baseUrl) { mutableStateOf(if (source != null) "" else resolveHtmlUrl(uri.orEmpty(), baseUrl) ?: "") }
     var error by remember(source, uri) { mutableStateOf<String?>(null) }
     var showSource by remember { mutableStateOf(false) }
+    var renderFailed by remember(source, uri) { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf<String?>(null) }
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/html")) { target ->
         if (target != null) scope.launch {
@@ -202,7 +240,25 @@ internal fun HtmlPreviewDialog(
                     }
                     content == null -> CircularProgressIndicator(Modifier.padding(24.dp))
                     else -> Box(Modifier.fillMaxWidth().weight(1f)) {
-                        HtmlPageView(content.orEmpty(), resourceBase, loader, Modifier.fillMaxSize(), visible = !showSource)
+                        if (renderFailed != null && !showSource) {
+                            Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                                Text(renderFailed.orEmpty(), color = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.height(8.dp))
+                                CodeText(content.orEmpty().take(32_000))
+                            }
+                        } else {
+                            HtmlPageView(
+                                content.orEmpty(),
+                                resourceBase,
+                                loader,
+                                Modifier.fillMaxSize(),
+                                visible = !showSource,
+                                onRenderCrashed = {
+                                    renderFailed = HTML_RENDER_CRASH_MESSAGE
+                                    onRenderCrashed()
+                                },
+                            )
+                        }
                         if (showSource) Surface(Modifier.fillMaxSize()) {
                             Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
                                 if (content.orEmpty().length > 32_000) Text("源码较长，此处显示前 32,000 字符；下载可保存完整文件")
@@ -226,11 +282,13 @@ private fun HtmlPageView(
     visible: Boolean,
     zoomable: Boolean = true,
     onContentHeight: ((Int) -> Unit)? = null,
+    onRenderCrashed: () -> Unit = {},
 ) {
     val document = remember(source, baseUrl, zoomable) { htmlPreviewDocument(source, baseUrl, inline = !zoomable) }
     val currentBase by rememberUpdatedState(baseUrl)
     val currentLoader by rememberUpdatedState(loader)
     val reportHeight by rememberUpdatedState(onContentHeight)
+    val reportCrash by rememberUpdatedState(onRenderCrashed)
     val bridge = remember {
         HtmlHeightBridge { height -> reportHeight?.invoke(height) }
     }
@@ -299,6 +357,13 @@ private fun HtmlPageView(
             override fun onPageFinished(view: WebView, url: String) {
                 view.reportContentHeight()
                 view.postDelayed({ view.reportContentHeight() }, 250)
+            }
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+                // The renderer is already dead. Returning false makes the app exit.
+                view.stopLoading()
+                reportCrash()
+                return true
             }
         }
     } }, update = { view ->

@@ -183,16 +183,59 @@ class ChatTimelineTest {
         val turn = "turn-7"
         val bubbles = listOf(
             ChatBubble("hist-1", "user", "old"),
+            ChatBubble("u-live", "user", "what is in the file"),
             ChatBubble("reasoning-$turn-1", "reasoning", "reading the file"),
             ChatBubble("tool-$turn:1", "tool", "file_read", stepId = "$turn:1"),
             ChatBubble("a-live", "assistant", "partial", streaming = true),
-            ChatBubble("u-older", "user", "previous local"),
         )
         assertEquals(
-            listOf("reasoning-$turn-1", "tool-$turn:1", "a-live"),
+            listOf("u-live", "reasoning-$turn-1", "tool-$turn:1", "a-live"),
             liveTurnBubbles(bubbles, turn, "a-live").map { it.id },
         )
         assertEquals(emptyList<String>(), liveTurnBubbles(bubbles, "", null).map { it.id })
+    }
+
+    @Test
+    fun historyRefreshDropsTheLocalUserOnceTheServerStoredIt() {
+        val turn = "turn-7"
+        val live = listOf(
+            ChatBubble("u-live", "user", "what is in the file"),
+            ChatBubble("reasoning-$turn-1", "reasoning", "reading the file"),
+            ChatBubble("a-live", "assistant", "partial", streaming = true),
+        )
+        val history = listOf(
+            ChatBubble("h-0-user", "user", "old"),
+            ChatBubble("h-1-user", "user", "what is in the file"),
+        )
+        assertEquals(live.map { it.id }, dedupeLiveTurn(history, live).map { it.id })
+        val stillRunning = listOf(ChatBubble("h-0-user", "user", "old"))
+        assertEquals(live.map { it.id }, dedupeLiveTurn(stillRunning, live).map { it.id })
+        val olderCopy = listOf(
+            ChatBubble("h-0-user", "user", "what is in the file"),
+            ChatBubble("h-1-assistant", "assistant", "an earlier answer"),
+        )
+        assertEquals(live.map { it.id }, dedupeLiveTurn(olderCopy, live).map { it.id })
+        val stored = olderCopy + listOf(
+            ChatBubble("h-2-user", "user", "what is in the file"),
+            ChatBubble("h-3-reasoning", "reasoning", "reading the file"),
+            ChatBubble("h-4-assistant", "assistant", "partial"),
+        )
+        assertEquals(emptyList<String>(), dedupeLiveTurn(stored, live).map { it.id })
+    }
+
+    @Test
+    fun openingWithoutAnAnchorLandsOnTheLatestRow() {
+        assertEquals(12 to 0, openingScrollIndex(null, 12))
+        assertEquals(12 to 0, openingScrollIndex(0 to 40, 12))
+        assertEquals(4 to 18, openingScrollIndex(4 to 18, 12))
+        assertEquals(12 to 9, openingScrollIndex(40 to 9, 12))
+    }
+
+    @Test
+    fun followLatestOnlyWhileTheViewportStayedAtTheBottom() {
+        assertTrue(shouldFollowLatest(atBottom = true, stuckToLastAutoScroll = false))
+        assertTrue(shouldFollowLatest(atBottom = false, stuckToLastAutoScroll = true))
+        assertFalse(shouldFollowLatest(atBottom = false, stuckToLastAutoScroll = false))
     }
 
     @Test

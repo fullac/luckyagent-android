@@ -274,12 +274,68 @@ internal fun outerProcessLabel(
  */
 internal fun liveTurnBubbles(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): List<ChatBubble> {
     if (turnId.isBlank() && bufferId.isNullOrBlank()) return emptyList()
-    return bubbles.filter { bubble ->
+    val start = liveTurnStart(bubbles, turnId, bufferId)
+    if (start < 0) return emptyList()
+    return bubbles.drop(start)
+}
+
+/**
+ * Index of the in-memory turn that history has not stored yet.
+ * The user bubble that opened the turn is included, so a refresh can put the
+ * whole turn back after the server page. A later server copy of the same user
+ * text drops that local bubble instead of showing it twice.
+ */
+internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): Int {
+    if (turnId.isBlank() && bufferId.isNullOrBlank()) return -1
+    val marker = bubbles.indexOfLast { bubble ->
         bubble.id == bufferId ||
             bubble.streaming ||
             (turnId.isNotBlank() && (bubble.id.contains(turnId) || bubble.stepId?.contains(turnId) == true))
     }
+    if (marker < 0) return -1
+    val user = bubbles.subList(0, marker).indexOfLast { bubble ->
+        bubble.role.equals("user", ignoreCase = true)
+    }
+    return if (user >= 0) user else marker
 }
+
+/**
+ * Drop the in-memory turn once the server page already ends with the same rows.
+ * A stored user message alone is not enough: the live reasoning and answer stay
+ * until the page carries those rows too. An older copy of the same text, with
+ * a different reply after it, does not count as this turn.
+ */
+internal fun dedupeLiveTurn(history: List<ChatBubble>, live: List<ChatBubble>): List<ChatBubble> {
+    if (live.isEmpty()) return emptyList()
+    val start = live.indexOfFirst { it.role.equals("user", ignoreCase = true) }.let { index ->
+        if (index >= 0) index else 0
+    }
+    val comparable = live.drop(start)
+    if (history.size >= comparable.size &&
+        history.takeLast(comparable.size).map(::liveTurnSignature) == comparable.map(::liveTurnSignature)
+    ) {
+        return emptyList()
+    }
+    return comparable
+}
+
+private fun liveTurnSignature(bubble: ChatBubble): String =
+    listOf(bubble.role, bubble.content, bubble.toolName.orEmpty(), bubble.stepId.orEmpty()).joinToString("\u0000")
+
+/**
+ * Where to land when a session opens.
+ * A saved anchor of 0 is the list default before the first real scroll, so an
+ * oldest-first list uses the latest row instead. A later anchor is restored.
+ */
+internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<Int, Int> {
+    if (lastIndex < 0) return 0 to 0
+    val saved = anchor?.takeIf { it.first > 0 } ?: return lastIndex to 0
+    return saved.first.coerceIn(0, lastIndex) to saved.second
+}
+
+/** Follow the newest row when the viewport was already on it, even if only its content changed. */
+internal fun shouldFollowLatest(atBottom: Boolean, stuckToLastAutoScroll: Boolean): Boolean =
+    atBottom || stuckToLastAutoScroll
 
 internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): String? {
     val collabModes = setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue")
@@ -906,6 +962,12 @@ private fun ChatConversation(
         val latestHistoryState by rememberUpdatedState(state.historyHasMore to state.historyLoadingMore)
         var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
         var restoredSession by remember { mutableStateOf("") }
+        val latestContentKey = timeline.lastOrNull()?.let { item ->
+            when (item) {
+                is ChatTimelineItem.Message -> item.bubble.content.length
+                is ChatTimelineItem.Process -> item.steps.sumOf { it.content.length }
+            }
+        } ?: 0
         LaunchedEffect(state.settings.sessionId) {
             var wasNearTop = false
             snapshotFlow { listState.firstVisibleItemIndex }
@@ -932,22 +994,18 @@ private fun ChatConversation(
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
             val anchor = vm.scrollAnchor(state.settings.sessionId)
             restoredSession = state.settings.sessionId
-            // A saved top position is the default before the first real scroll.
-            // The list is oldest-first, so that position is the earliest message.
-            val useAnchor = anchor != null && anchor.first > 0
-            val index = if (useAnchor) anchor.first.coerceIn(0, timeline.lastIndex) else timeline.lastIndex
-            val offset = if (useAnchor) anchor.second else 0
+            val (index, offset) = openingScrollIndex(anchor, timeline.lastIndex)
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
-        LaunchedEffect(timeline.size, timeline.lastOrNull()?.key, state.liveSummary, state.isResponding) {
+        LaunchedEffect(timeline.size, timeline.lastOrNull()?.key, latestContentKey, state.liveSummary, state.isResponding) {
             if (timeline.isEmpty() || restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
             val atBottom = lastVisible == null ||
                 (lastVisible.index >= layout.totalItemsCount - 2 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-            if (atBottom || position == lastAutoScrollPosition) {
+            if (shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
                 listState.scrollToItem(timeline.lastIndex.coerceAtLeast(0))
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }

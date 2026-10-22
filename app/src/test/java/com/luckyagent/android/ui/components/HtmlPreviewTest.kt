@@ -40,6 +40,12 @@ class HtmlPreviewTest {
         assertFalse(csp.contains("base-uri 'none'"))
     }
 
+    @Test fun heavyInlineHtmlStaysSourceUntilTheUserOpensIt() {
+        assertTrue(inlineHtmlShouldRender("<p>short</p>"))
+        assertFalse(inlineHtmlShouldRender("x".repeat(INLINE_HTML_ACTIVE_LIMIT + 1)))
+        assertTrue(HTML_RENDER_CRASH_MESSAGE.contains("源码"))
+    }
+
     @Test fun inlinePreviewCollapsesViewportHeightSoControlsStayInFlow() {
         val source = """
             <style>body{min-height:100vh;display:flex;align-items:center}button{min-height:40px}</style>

@@ -56,11 +56,10 @@ fun MarkdownText(
             when (block) {
                 is MdBlock.Mermaid -> MermaidView(source = block.source)
                 is MdBlock.Html -> {
-                    if (!requiresHtmlPage(block.source)) {
-                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)
-                    }
                     if (block.showPreview || requiresHtmlPage(block.source)) {
-                        HtmlPreviewCard(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
+                        InlineHtmlPreview(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
+                    } else {
+                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)
                     }
                 }
                 is MdBlock.Code -> CodeText(block.body)

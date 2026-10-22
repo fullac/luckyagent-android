@@ -241,10 +241,19 @@ class MarkdownParserTest {
         val source = "<details><summary>outer</summary>\n\n<details>\n<summary>inner</summary>\nx\n</details>\n</details >"
         assertEquals(source, (splitMarkdownBlocks(source).single() as MdBlock.Html).source)
     }
-    @Test fun incompleteHtmlFenceRemainsAPreviewableHtmlBlock() {
-        val block = splitMarkdownBlocks("```html\n<div><p>streaming").single() as MdBlock.Html
-        assertTrue(block.showPreview)
-        assertTrue(block.source.contains("streaming"))
+    @Test fun incompleteHtmlFenceStaysSourceUntilTheFenceCloses() {
+        val block = splitMarkdownBlocks("```html\n<div><p>streaming").single() as MdBlock.Code
+        assertEquals("html", block.lang)
+        assertTrue(block.body.contains("streaming"))
+    }
+    @Test fun closedHtmlFencesStaySeparatePreviewBlocks() {
+        val blocks = splitMarkdownBlocks("before\n\n```html\n<svg></svg>\n```\n\nmiddle\n\n```html\n<canvas></canvas>\n```\n\nafter")
+        assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+        assertTrue((blocks[1] as MdBlock.Html).showPreview)
+        assertTrue((blocks[1] as MdBlock.Html).source.contains("svg"))
+        assertEquals("middle", (blocks[2] as MdBlock.Paragraph).text)
+        assertTrue((blocks[3] as MdBlock.Html).source.contains("canvas"))
+        assertEquals("after", (blocks[4] as MdBlock.Paragraph).text)
     }
     @Test fun completeDocumentHasPreviewRegardlessOfNativeTagSupport() {
         val block = splitMarkdownBlocks("```html\n<!doctype html><html><body><svg></svg></body></html>\n```").single() as MdBlock.Html

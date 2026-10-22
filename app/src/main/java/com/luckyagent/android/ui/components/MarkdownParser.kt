@@ -150,6 +150,8 @@ internal fun splitMarkdownBlocks(
             out += when {
                 !closed && lang !in setOf("html", "htm") -> MdBlock.Code(body, lang)
                 lang == "mermaid" -> MdBlock.Mermaid(body)
+                // An open fence is still streaming. Keep it as source until it closes.
+                lang in setOf("html", "htm") && !closed -> MdBlock.Code(body, lang)
                 lang in setOf("html", "htm") -> MdBlock.Html(body, showPreview = true)
                 else -> MdBlock.Code(body, lang)
             }

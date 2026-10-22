@@ -3,6 +3,9 @@ package com.luckyagent.android.ui.components
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -15,8 +18,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -31,7 +36,7 @@ import org.jsoup.Jsoup
 import java.io.ByteArrayInputStream
 import java.io.IOException
 
-internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String): String {
+internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String, inline: Boolean = false): String {
     val doc = Jsoup.parse(source)
     // The document has an isolated origin; the base only resolves CSS/images and page anchors.
     doc.select("base").remove()
@@ -45,20 +50,85 @@ internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String): Strin
         "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' data:; " +
             "img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; " +
             "connect-src 'none'; worker-src 'none'; child-src 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; base-uri 'self'")
-    doc.head().appendElement("style").appendText("html{overflow-wrap:anywhere}img,video{max-width:100%;height:auto}pre{overflow:auto}")
+    val inlineFit = if (inline) {
+        // A page written for a full viewport (100vh + flex centering) would otherwise
+        // become one screen tall and hide its controls under the message card.
+        "html,body{min-height:0!important;height:auto!important}body{display:block!important}" +
+            "body *{min-height:0!important}"
+    } else ""
+    doc.head().appendElement("style").appendText("html,body{margin:0;background:transparent}html{overflow-wrap:anywhere}img,video{max-width:100%;height:auto}pre{overflow:auto}$inlineFit")
     return doc.outerHtml()
+}
+
+/** Measure laid-out content, ignoring viewport-sized ancestors such as 100vh. */
+internal const val INLINE_HTML_HEIGHT_JS =
+    "(function(){var b=document.body;if(!b)return 0;" +
+        "var bottom=0;var nodes=b.querySelectorAll('*');" +
+        "for(var i=0;i<nodes.length;i++){var n=nodes[i];var s=getComputedStyle(n);" +
+        "if(s.position==='fixed'||s.display==='none'||s.visibility==='hidden')continue;" +
+        "if(n.offsetHeight<=0||n.offsetWidth<=0)continue;" +
+        "var h=n.offsetHeight+n.offsetTop;var p=n.offsetParent;" +
+        "while(p&&p!==b){h+=p.offsetTop-(p.scrollTop||0);p=p.offsetParent}" +
+        "bottom=Math.max(bottom,h)}" +
+        "return Math.ceil(bottom+8)})()"
+
+private class HtmlHeightBridge(
+    private val onHeight: (Int) -> Unit,
+) {
+    private val main = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun report(raw: String?) {
+        val height = raw?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: return
+        main.post { onHeight(height) }
+    }
+}
+
+private const val INLINE_HTML_MAX_HEIGHT = 480
+
+/**
+ * Fenced HTML sits in the message flow. Page controls stay tappable; the corner
+ * button opens the existing full-screen preview. Attachments keep [HtmlPreviewDialog].
+ */
+@Composable
+internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<String, String>) {
+    var show by remember(source) { mutableStateOf(false) }
+    var contentHeight by remember(source) { mutableIntStateOf(0) }
+    // JS offsetHeight is a CSS pixel. With width=device-width that matches 1 dp, so do not divide by density again.
+    val height = if (contentHeight > 0) {
+        contentHeight.dp.coerceIn(24.dp, INLINE_HTML_MAX_HEIGHT.dp)
+    } else {
+        48.dp
+    }
+    val loader = remember(headers, baseUrl, source) { HtmlResourceLoader(headers, baseUrl) }
+    DisposableEffect(loader) { onDispose { loader.close() } }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(height),
+    ) {
+        HtmlPageView(
+            source = source,
+            baseUrl = baseUrl,
+            loader = loader,
+            modifier = Modifier.fillMaxSize(),
+            visible = true,
+            zoomable = false,
+            onContentHeight = { contentHeight = it },
+        )
+        IconButton(
+            onClick = { show = true },
+            modifier = Modifier.align(Alignment.TopEnd).padding(2.dp),
+        ) {
+            Icon(Icons.Outlined.OpenInFull, contentDescription = "全屏查看 HTML")
+        }
+    }
+    if (show) HtmlPreviewDialog(source = source, baseUrl = baseUrl, headers = headers, onDismiss = { show = false })
 }
 
 @Composable
 internal fun HtmlPreviewCard(source: String, baseUrl: String, headers: Map<String, String>) {
-    var show by remember { mutableStateOf(false) }
-    OutlinedCard(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), onClick = { show = true }) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("HTML", style = MaterialTheme.typography.labelLarge)
-            Text("打开预览 ›", color = MaterialTheme.colorScheme.primary)
-        }
-    }
-    if (show) HtmlPreviewDialog(source = source, baseUrl = baseUrl, headers = headers, onDismiss = { show = false })
+    InlineHtmlPreview(source = source, baseUrl = baseUrl, headers = headers)
 }
 
 /** One full-page viewer used by both fenced HTML and file attachments. */
@@ -148,18 +218,51 @@ internal fun HtmlPreviewDialog(
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun HtmlPageView(source: String, baseUrl: String, loader: HtmlResourceLoader, modifier: Modifier, visible: Boolean) {
-    val document = remember(source, baseUrl) { htmlPreviewDocument(source, baseUrl) }
+private fun HtmlPageView(
+    source: String,
+    baseUrl: String,
+    loader: HtmlResourceLoader,
+    modifier: Modifier,
+    visible: Boolean,
+    zoomable: Boolean = true,
+    onContentHeight: ((Int) -> Unit)? = null,
+) {
+    val document = remember(source, baseUrl, zoomable) { htmlPreviewDocument(source, baseUrl, inline = !zoomable) }
     val currentBase by rememberUpdatedState(baseUrl)
     val currentLoader by rememberUpdatedState(loader)
+    val reportHeight by rememberUpdatedState(onContentHeight)
+    val bridge = remember {
+        HtmlHeightBridge { height -> reportHeight?.invoke(height) }
+    }
+    fun WebView.reportContentHeight() {
+        if (reportHeight == null) return
+        evaluateJavascript(
+            "LuckyHtmlBridge.report(String($INLINE_HTML_HEIGHT_JS))",
+            null,
+        )
+    }
     AndroidView(modifier = modifier, factory = { context -> WebView(context).apply {
+        setBackgroundColor(0)
         settings.javaScriptEnabled = true
+        addJavascriptInterface(bridge, "LuckyHtmlBridge")
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.domStorageEnabled = false
-        settings.setSupportZoom(true)
-        settings.builtInZoomControls = true
-        settings.displayZoomControls = false
+        isNestedScrollingEnabled = false
+        setOnTouchListener { view, event ->
+            if (!zoomable) {
+                // A drag belongs to the message list. A tap still reaches the page.
+                view.parent?.requestDisallowInterceptTouchEvent(
+                    event.actionMasked != android.view.MotionEvent.ACTION_MOVE,
+                )
+            }
+            false
+        }
+        if (zoomable) {
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
+        }
         // Preview document is https://html-preview...; artifact bytes are injected via interception.
         settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         webViewClient = object : WebViewClient() {
@@ -193,12 +296,19 @@ private fun HtmlPageView(source: String, baseUrl: String, loader: HtmlResourceLo
                 }
                 return true
             }
+            override fun onPageFinished(view: WebView, url: String) {
+                view.reportContentHeight()
+                view.postDelayed({ view.reportContentHeight() }, 250)
+            }
         }
     } }, update = { view ->
         view.visibility = if (visible) android.view.View.VISIBLE else android.view.View.INVISIBLE
-        if (view.tag != document) {
+        val loaded = view.tag as? String
+        if (loaded != document) {
             view.tag = document
             view.loadDataWithBaseURL(HTML_PREVIEW_ORIGIN, document, "text/html", null, null)
+        } else {
+            view.reportContentHeight()
         }
     }, onRelease = { it.stopLoading(); it.destroy() })
 }

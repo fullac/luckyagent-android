@@ -5,6 +5,8 @@ import com.luckyagent.android.data.api.LuckyAgentApi
 import com.luckyagent.android.data.api.LuckyAgentWsClient
 import com.luckyagent.android.data.cache.SessionCacheRepository
 import com.luckyagent.android.data.settings.SettingsRepository
+import com.luckyagent.android.data.standalone.StandaloneChatClient
+import com.luckyagent.android.data.standalone.StandaloneStore
 import com.luckyagent.android.data.notification.ChatNotificationHelper
 import com.luckyagent.android.data.update.AppUpdateRepository
 
@@ -16,4 +18,6 @@ class AppContainer(context: Context) {
     val wsClient = LuckyAgentWsClient(settingsRepository)
     val updates = AppUpdateRepository(appContext)
     val notifications = ChatNotificationHelper(appContext)
+    val standalone = StandaloneChatClient()
+    val standaloneStore = StandaloneStore(appContext)
 }

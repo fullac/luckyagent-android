@@ -49,6 +49,12 @@ data class ClientSettings(
     val fontScale: Float = 1.0f,
     /** `serif` uses the Android Noto Serif CJK fallback; `sans` uses Noto Sans CJK. */
     val fontFamily: String = "sans",
+    /** `runtime` keeps the computer connection. `standalone` talks to a model URL on the phone. */
+    val connectionMode: String = "runtime",
+    val standaloneApiBase: String = "",
+    val standaloneApiKey: String = "",
+    val standaloneModel: String = "",
+    val standaloneSessionId: String = "standalone-main",
 )
 
 /**
@@ -111,6 +117,12 @@ class SettingsRepository(context: Context) {
                 ?.lowercase()
                 ?.takeIf { it == "serif" || it == "sans" }
                 ?: "sans",
+            connectionMode = prefs.getString(KEY_CONNECTION_MODE, "runtime")
+                ?.takeIf { it == "standalone" } ?: "runtime",
+            standaloneApiBase = prefs.getString(KEY_STANDALONE_BASE, "") ?: "",
+            standaloneApiKey = prefs.getString(KEY_STANDALONE_KEY, "") ?: "",
+            standaloneModel = prefs.getString(KEY_STANDALONE_MODEL, "") ?: "",
+            standaloneSessionId = prefs.getString(KEY_STANDALONE_SESSION, "standalone-main") ?: "standalone-main",
         )
     }
 
@@ -127,6 +139,11 @@ class SettingsRepository(context: Context) {
                 fontFamily = it.fontFamily.lowercase().let { family ->
                     if (family == "sans") "sans" else "serif"
                 },
+                connectionMode = if (it.connectionMode == "standalone") "standalone" else "runtime",
+                standaloneApiBase = it.standaloneApiBase.trim().trimEnd('/'),
+                standaloneApiKey = it.standaloneApiKey.trim(),
+                standaloneModel = it.standaloneModel.trim(),
+                standaloneSessionId = it.standaloneSessionId.trim().ifEmpty { "standalone-main" },
             )
         }
         val legacyConnectionChanged = next.apiBase != previous.apiBase ||
@@ -175,6 +192,11 @@ class SettingsRepository(context: Context) {
             if (next.drawerOpacity != previous.drawerOpacity) putInt(KEY_DRAWER_OPACITY, next.drawerOpacity.coerceIn(0, 100))
             if (next.fontScale != previous.fontScale) putFloat(KEY_FONT_SCALE, next.fontScale.coerceIn(0.85f, 1.35f))
             if (next.fontFamily != previous.fontFamily) putString(KEY_FONT_FAMILY, next.fontFamily)
+            if (next.connectionMode != previous.connectionMode) putString(KEY_CONNECTION_MODE, next.connectionMode)
+            if (next.standaloneApiBase != previous.standaloneApiBase) putString(KEY_STANDALONE_BASE, next.standaloneApiBase)
+            if (next.standaloneApiKey != previous.standaloneApiKey) putString(KEY_STANDALONE_KEY, next.standaloneApiKey)
+            if (next.standaloneModel != previous.standaloneModel) putString(KEY_STANDALONE_MODEL, next.standaloneModel)
+            if (next.standaloneSessionId != previous.standaloneSessionId) putString(KEY_STANDALONE_SESSION, next.standaloneSessionId)
         }.apply()
         _settings.value = next
     }
@@ -242,6 +264,11 @@ class SettingsRepository(context: Context) {
         private const val KEY_DRAWER_OPACITY = "drawer_opacity"
         private const val KEY_FONT_SCALE = "font_scale"
         private const val KEY_FONT_FAMILY = "font_family"
+        private const val KEY_CONNECTION_MODE = "connection_mode"
+        private const val KEY_STANDALONE_BASE = "standalone_api_base"
+        private const val KEY_STANDALONE_KEY = "standalone_api_key"
+        private const val KEY_STANDALONE_MODEL = "standalone_model"
+        private const val KEY_STANDALONE_SESSION = "standalone_session_id"
     }
 }
 

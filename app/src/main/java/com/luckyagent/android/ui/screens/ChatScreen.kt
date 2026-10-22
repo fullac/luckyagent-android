@@ -1325,6 +1325,12 @@ private fun BubbleRow(
         verticalAlignment = Alignment.Top,
     ) {
         when {
+            bubble.role.equals("search", ignoreCase = true) -> {
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Text("搜索结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                    MarkdownText(markdown = bubble.content, imageHeaders = imageHeaders, imageBaseUrl = imageBaseUrl)
+                }
+            }
             isSystem -> {
                 Text(
                     bubble.content,
@@ -2279,6 +2285,23 @@ private fun ComposerBar(
                 }
             }
         }
+        if (state.settings.connectionMode == "standalone") {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "独立聊天 · 约 ${state.standaloneTokens} token",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+                TextButton(onClick = vm::compactStandalone) { Text("压缩") }
+            }
+            state.standaloneNotice?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = CloverText2, modifier = Modifier.padding(bottom = 4.dp))
+            }
+        }
         if (activityWorking) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
@@ -2340,7 +2363,11 @@ private fun ComposerBar(
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
                         Text(
-                            if (state.luckyActive) "继续添加，/lucky off 一次发送" else "问 LuckyAgent",
+                            when {
+                                state.luckyActive -> "继续添加，/lucky off 一次发送"
+                                state.settings.connectionMode == "standalone" -> "直接问模型，/search 搜索"
+                                else -> "问 LuckyAgent"
+                            },
                             color = CloverText3,
                             style = MaterialTheme.typography.bodyLarge,
                             maxLines = 1,

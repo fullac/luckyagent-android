@@ -70,6 +70,12 @@ import com.luckyagent.android.data.api.toTaskSummary
 import com.luckyagent.android.data.api.WsChatHandle
 import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
+import com.luckyagent.android.data.standalone.StandaloneMessage
+import com.luckyagent.android.data.standalone.StandaloneSession
+import com.luckyagent.android.data.standalone.StandaloneSettings
+import com.luckyagent.android.data.standalone.buildStandaloneMessages
+import com.luckyagent.android.data.standalone.compactStandaloneSession
+import com.luckyagent.android.data.standalone.standaloneContextTokens
 import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.data.work.AgentTaskWork
@@ -190,6 +196,8 @@ data class AttachmentNotice(
 data class AppUiState(
     val destination: AppDestination = AppDestination.Chat,
     val settings: ClientSettings = ClientSettings(),
+    val standaloneNotice: String? = null,
+    val standaloneTokens: Int = 0,
     val sessions: List<RuntimeSession> = emptyList(),
     val sessionsLoading: Boolean = false,
     val sessionsError: String? = null,
@@ -415,6 +423,9 @@ class AppViewModel(
         }
         observeWs()
         ensureRuntimeWatch()
+        if (container.settingsRepository.snapshot().connectionMode == "standalone") {
+            showStandaloneSession()
+        }
         restoreCachedSession()
         refreshSessions()
         refreshPersona()
@@ -2943,6 +2954,10 @@ class AppViewModel(
     }
 
     fun sendComposer() {
+        if (_ui.value.settings.connectionMode == "standalone") {
+            sendStandalone()
+            return
+        }
         val text = _ui.value.composer.trim()
         val pending = _ui.value.pendingMedia
         val hasQuote = _ui.value.pendingQuote != null
@@ -3007,6 +3022,136 @@ class AppViewModel(
             descriptors = descriptors,
             media = media,
             quote = pendingQuote,
+        )
+    }
+
+    fun saveStandaloneSettings(apiBase: String, apiKey: String, model: String) {
+        updateSettings {
+            it.copy(
+                connectionMode = "standalone",
+                standaloneApiBase = apiBase,
+                standaloneApiKey = apiKey,
+                standaloneModel = model,
+            )
+        }
+        checkStandalone()
+    }
+
+    fun useRuntimeConnection() {
+        updateSettings { it.copy(connectionMode = "runtime") }
+        refreshSessions()
+    }
+
+    fun useStandaloneConnection() {
+        updateSettings { it.copy(connectionMode = "standalone") }
+        showStandaloneSession()
+    }
+
+    fun compactStandalone() {
+        val settings = container.settingsRepository.snapshot()
+        val session = container.standaloneStore.load(settings.standaloneSessionId)
+        val compacted = compactStandaloneSession(session, keepRecentTokens = 800)
+        if (compacted == null) {
+            _ui.update { it.copy(standaloneNotice = "还没有足够的旧消息可以压缩") }
+            return
+        }
+        container.standaloneStore.save(compacted)
+        showStandaloneSession(compacted)
+        _ui.update { it.copy(standaloneNotice = "已压缩更早的对话，最近几条还在") }
+    }
+
+    private fun checkStandalone() {
+        val settings = standaloneSettings()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            container.standalone.check(settings).onSuccess {
+                _ui.update { it.copy(standaloneNotice = "模型已连通", healthOk = true) }
+            }.onFailure { error ->
+                _ui.update { it.copy(standaloneNotice = error.message ?: "模型没有连通", healthOk = false) }
+            }
+        }
+    }
+
+    private fun sendStandalone() {
+        val text = _ui.value.composer.trim()
+        if (text.isEmpty()) return
+        val settings = standaloneSettings()
+        if (settings.apiBase.isBlank() || settings.apiKey.isBlank()) {
+            _ui.update { it.copy(standaloneNotice = "先在设置里填写模型 Key 和 URL") }
+            return
+        }
+        val sessionId = settings.sessionId
+        val stored = container.standaloneStore.load(sessionId)
+        val searchQuery = text.removePrefix("/search").trim().takeIf { text.startsWith("/search") && it.isNotBlank() }
+        val userBubble = ChatBubble(
+            id = "su-${System.currentTimeMillis()}",
+            role = "user",
+            content = text,
+            createdAt = nowIsoTimestamp(),
+        )
+        pushBubble(userBubble)
+        _ui.update { it.copy(composer = "", isResponding = true, standaloneNotice = if (searchQuery != null) "正在搜索" else "正在回复") }
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            var session = stored.copy(messages = stored.messages + StandaloneMessage("user", text))
+            val search = searchQuery?.let { query ->
+                container.standalone.search(query).fold(
+                    onSuccess = { result ->
+                        session = session.copy(messages = session.messages + StandaloneMessage("assistant", result, kind = "search"))
+                        result
+                    },
+                    onFailure = { error ->
+                        val notice = "这次没有拿到外部结果：${error.message ?: "搜索失败"}"
+                        session = session.copy(messages = session.messages + StandaloneMessage("assistant", notice, kind = "search"))
+                        notice
+                    },
+                )
+            }
+            val prompt = buildStandaloneMessages(session, if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text)
+            val reply = container.standalone.complete(settings, prompt).fold(
+                onSuccess = { it },
+                onFailure = { error ->
+                    container.standaloneStore.save(session)
+                    showStandaloneSession(session)
+                    _ui.update { it.copy(isResponding = false, standaloneNotice = error.message ?: "模型请求失败，已有消息还在") }
+                    return@launch
+                },
+            )
+            session = session.copy(
+                title = session.title.ifBlank { text.take(24) },
+                messages = session.messages + StandaloneMessage("assistant", reply),
+            )
+            val compacted = if (standaloneContextTokens(session) > 3000) compactStandaloneSession(session) else null
+            val saved = compacted ?: session
+            container.standaloneStore.save(saved)
+            showStandaloneSession(saved)
+            _ui.update {
+                it.copy(
+                    isResponding = false,
+                    standaloneNotice = if (compacted != null) "上下文已自动压缩" else null,
+                )
+            }
+        }
+    }
+
+    private fun showStandaloneSession(session: StandaloneSession? = null) {
+        val settings = container.settingsRepository.snapshot()
+        val loaded = session ?: container.standaloneStore.load(settings.standaloneSessionId)
+        val bubbles = loaded.messages.mapIndexed { index, message ->
+            ChatBubble(
+                id = "standalone-$index-${message.content.hashCode()}",
+                role = if (message.kind == "search") "search" else message.role,
+                content = message.content,
+            )
+        }
+        _ui.update { it.copy(bubbles = bubbles, standaloneTokens = standaloneContextTokens(loaded), historyLoading = false) }
+    }
+
+    private fun standaloneSettings(): StandaloneSettings {
+        val settings = container.settingsRepository.snapshot()
+        return StandaloneSettings(
+            apiBase = settings.standaloneApiBase,
+            apiKey = settings.standaloneApiKey,
+            model = settings.standaloneModel,
+            sessionId = settings.standaloneSessionId,
         )
     }
 

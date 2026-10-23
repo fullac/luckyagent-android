@@ -41,6 +41,16 @@ class WorkCardTest {
         assertEquals("已完成", card?.status?.let(::workCardStatusLabel))
     }
 
+    @Test fun focusFallsBackWhenTheChosenListDoesNotContainTheTask() {
+        val task = task("chat-task", status = "running")
+
+        val card = visibleWorkCard("chat-task", true, listOf(task), emptyList(), "other")
+
+        assertEquals("chat-task", card?.id)
+        assertEquals(WorkCardKind.Task, card?.kind)
+        assertFalse(card?.loading == true)
+    }
+
     @Test fun missingFocusStillShowsAReturnCard() {
         val card = visibleWorkCard("missing", true, emptyList(), emptyList(), "chat")
 

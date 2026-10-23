@@ -60,6 +60,7 @@ class ChatNotificationHelper(private val context: Context) {
         body: String,
         sessionId: String = "",
         terminal: Boolean = false,
+        background: Boolean = kind == RuntimeNoticeKind.Background,
     ) {
         post(
             kind = kind,
@@ -68,7 +69,7 @@ class ChatNotificationHelper(private val context: Context) {
             title = title.ifBlank { "LuckyAgent · ${kind.titlePrefix}" },
             body = body.ifBlank { kind.titlePrefix },
             sessionId = sessionId,
-            destination = if (kind == RuntimeNoticeKind.Background) "background" else "tasks",
+            destination = if (background) "background" else "tasks",
             ongoing = !terminal,
             remember = false,
             taskId = taskId,

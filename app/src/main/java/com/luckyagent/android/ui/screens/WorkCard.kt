@@ -63,12 +63,17 @@ internal fun visibleWorkCard(
 ): WorkCard? {
     val focus = focusedId?.trim().orEmpty()
     if (focus.isNotEmpty()) {
-        val source = if (focusedBackground) {
+        val preferred = if (focusedBackground) {
             background.filter { it.id == focus }.map { it.toWorkCard() }
         } else {
             tasks.filter { it.id == focus }.map { it.toWorkCard() }
         }
-        return source.firstOrNull() ?: WorkCard(
+        val fallback = if (focusedBackground) {
+            tasks.filter { it.id == focus }.map { it.toWorkCard() }
+        } else {
+            background.filter { it.id == focus }.map { it.toWorkCard() }
+        }
+        return preferred.firstOrNull() ?: fallback.firstOrNull() ?: WorkCard(
             id = focus,
             kind = if (focusedBackground) WorkCardKind.Background else WorkCardKind.Task,
             title = "正在读取这件事",

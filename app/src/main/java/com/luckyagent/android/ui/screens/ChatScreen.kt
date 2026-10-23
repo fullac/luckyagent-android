@@ -1298,7 +1298,7 @@ private fun WorkReturnCard(
                     color = CloverText2,
                 )
             }
-            if (!card.loading) StatusChip(workCardStatusLabel(card.status))
+            if (!card.loading) StatusChip(card.status)
             IconButton(onClick = onClose) {
                 Icon(Icons.Outlined.Close, contentDescription = "关闭卡片", tint = CloverText3)
             }

@@ -1031,7 +1031,7 @@ class AppViewModel(
                 if (task.childCount > 0) append(" · ${task.completedChildren}/${task.childCount}")
                 task.error?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it.take(80)) }
             }
-            container.notifications.notifyTask(kind, task.id, title, body, task.executionSession().orEmpty(), terminal)
+            container.notifications.notifyTask(kind, task.id, title, body, task.executionSession().orEmpty(), terminal, background = false)
         }
         taskFingerprints.keys.retainAll(seen)
         if (tasks.isNotEmpty() || progressWatchReady) progressWatchReady = true
@@ -1112,7 +1112,7 @@ class AppViewModel(
             progress?.let { append(" · ${(it * 100).toInt().coerceIn(0, 100)}%") }
             if (message.isNotBlank()) append(" · ").append(message.take(80))
         }
-        container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal)
+        container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal, background = false)
     }
 
     /** Reads both explicit and legacy metadata session links from task events. */
@@ -1872,7 +1872,8 @@ class AppViewModel(
         focusWorkCard(id, background)
         navigate(AppDestination.Chat)
         viewModelScope.launch {
-            if (background) refreshBackgroundNow() else refreshTasksNow()
+            refreshTasksNow()
+            refreshBackgroundNow()
         }
     }
 

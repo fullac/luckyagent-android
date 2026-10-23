@@ -94,7 +94,13 @@ class AgentTaskWorker(
                 // WorkManager removes its foreground notification on completion.
                 // Post the durable result through the normal task channel first.
                 app.container.notifications.notifyTask(
-                    task.noticeKind, taskId, title, body, task.executionSessionId, terminal = true,
+                    task.noticeKind,
+                    taskId,
+                    title,
+                    body,
+                    task.executionSessionId,
+                    terminal = true,
+                    background = autonomy,
                 )
                 return if (task.successful) Result.success() else Result.failure()
             }

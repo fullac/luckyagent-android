@@ -73,6 +73,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -177,6 +178,7 @@ import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
 import com.luckyagent.android.data.api.isSecureCredentialForm
@@ -1035,6 +1037,23 @@ private fun ChatConversation(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    item(key = "session-navigation") {
+                        SessionNavigationCard(
+                            sessionId = state.settings.sessionId,
+                            tasks = state.tasks,
+                            background = state.backgroundTasks,
+                            onOpenTask = { taskId ->
+                                vm.selectTask(taskId)
+                                vm.navigate(AppDestination.Tasks)
+                            },
+                            onOpenBackground = { taskId ->
+                                vm.selectBackgroundTask(taskId)
+                                vm.navigate(AppDestination.Background)
+                            },
+                            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+                            onOpenMemory = { vm.navigate(AppDestination.Memory) },
+                        )
+                    }
                     items(
                         items = timeline,
                         key = { it.key },
@@ -1092,20 +1111,6 @@ private fun ChatConversation(
                                     collabTasksForTurn(item.steps, state.tasks, state.settings.sessionId),
                                     state.isResponding,
                                 ),
-                            )
-                        }
-                    }
-                    if (timeline.isNotEmpty()) {
-                        item(key = "session-navigation") {
-                            SessionNavigationCard(
-                                sessionId = state.settings.sessionId,
-                                tasks = state.tasks,
-                                onOpenTask = { taskId ->
-                                    vm.selectTask(taskId)
-                                    vm.navigate(AppDestination.Tasks)
-                                },
-                                onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
-                                onOpenMemory = { vm.navigate(AppDestination.Memory) },
                             )
                         }
                     }
@@ -1248,26 +1253,62 @@ private fun ChatConversation(
 private fun SessionNavigationCard(
     sessionId: String,
     tasks: List<TaskSummary>,
+    background: List<AutonomyTaskSummary>,
     onOpenTask: (String) -> Unit,
+    onOpenBackground: (String) -> Unit,
     onOpenTrace: () -> Unit,
     onOpenMemory: () -> Unit,
 ) {
     val mine = remember(tasks, sessionId) { tasksForSession(tasks, sessionId) }
+    val board = remember(background, sessionId) { backgroundForSession(background, sessionId) }
     val featured = remember(mine) { sessionNavigationTask(mine) }
+    val featuredBoard = remember(board) { sessionNavigationBackground(board) }
+    val quiet = featured == null && featuredBoard == null
     CloverCard {
         Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
-        if (featured == null) {
-            Text("这轮还没有单独的任务。轨迹和记忆从这里进入。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
-        } else {
-            Text(
+        when {
+            featured != null -> Text(
                 featured.description.ifBlank { "正在处理的任务" },
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            featuredBoard != null -> Text(
+                featuredBoard.title.ifBlank { featuredBoard.description.ifBlank { "后台还在处理" } },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            else -> Text("这轮还没有单独的任务。轨迹和记忆从这里进入。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        }
+        if (!quiet) {
+            val tone = when {
+                featured?.status?.taskNeedsAttention() == true || featuredBoard?.state?.taskNeedsAttention() == true -> CloverWarning
+                else -> CloverLeaf
+            }
+            Text(
+                sessionProgressLabel(featured, featuredBoard),
+                color = tone,
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (featured != null) {
+                TextButton(onClick = { onOpenTask(featured.id) }) {
+                    Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("任务")
+                }
+            }
+            if (featuredBoard != null) {
+                TextButton(onClick = { onOpenBackground(featuredBoard.id) }) {
+                    Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("后台")
+                }
+            }
             TextButton(onClick = onOpenTrace) {
                 Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
@@ -1278,15 +1319,17 @@ private fun SessionNavigationCard(
                 Spacer(Modifier.width(4.dp))
                 Text("记忆")
             }
-            if (featured != null) {
-                TextButton(onClick = { onOpenTask(featured.id) }) {
-                    Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("任务")
-                }
-            }
         }
     }
+}
+
+private fun sessionProgressLabel(task: TaskSummary?, background: AutonomyTaskSummary?): String {
+    val taskLabel = task?.let { friendlyTaskStatus(it.status) }
+    val boardLabel = background?.let { friendlyTaskStatus(it.state) }
+    return listOfNotNull(
+        taskLabel?.let { "任务 · $it" },
+        boardLabel?.let { "后台 · $it" },
+    ).joinToString(" · ")
 }
 
 @Composable

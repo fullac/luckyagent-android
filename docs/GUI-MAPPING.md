@@ -4,7 +4,7 @@ Source of truth for UX: `lucky-agent/UI/GUI`.
 
 | GUI | Android |
 |-----|---------|
-| `App.tsx` shell / sidebar nav | `LuckyAgentAppRoot`。手机导航分「当前会话」和「这台电脑」；服务器配置从基础设置进入 |
+| `App.tsx` shell / sidebar nav | `LuckyAgentAppRoot`。手机抽屉和宽屏侧栏都分「当前会话」和「这台电脑」；服务器配置从基础设置进入 |
 | Chat view + composer + bubbles | `ChatScreen` |
 | Sessions list / search | `SessionDrawerContent` |
 | WebSocket `/api/v1/ws` | `LuckyAgentWsClient` |

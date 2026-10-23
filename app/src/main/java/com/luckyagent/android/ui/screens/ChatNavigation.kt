@@ -1,5 +1,6 @@
 package com.luckyagent.android.ui.screens
 
+import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
@@ -11,16 +12,44 @@ import com.luckyagent.android.data.api.isTerminalTaskStatus
 internal fun tasksForSession(tasks: List<TaskSummary>, sessionId: String): List<TaskSummary> {
     val owner = sessionId.trim()
     if (owner.isEmpty()) return emptyList()
+    return tasks.filter { task -> taskBelongsToSession(owner, task.parentSessionId, task.sessionId, task.executionSession(), task.metadata) }
+}
+
+/**
+ * Background board items for the same chat. Session fields match the autonomy
+ * payload; missing fields stay off the current-session card.
+ */
+internal fun backgroundForSession(tasks: List<AutonomyTaskSummary>, sessionId: String): List<AutonomyTaskSummary> {
+    val owner = sessionId.trim()
+    if (owner.isEmpty()) return emptyList()
     return tasks.filter { task ->
-        task.parentSessionId?.trim() == owner ||
-            task.metadata["parent_session_id"]?.trim() == owner ||
-            task.metadata["owner_session_id"]?.trim() == owner ||
-            task.sessionId?.trim() == owner ||
-            task.executionSession()?.trim() == owner
+        taskBelongsToSession(owner, task.parentSessionId, task.sessionId, task.executionSession(), task.metadata)
     }
 }
+
+private fun taskBelongsToSession(
+    owner: String,
+    parentSessionId: String?,
+    sessionId: String?,
+    executionSession: String?,
+    metadata: Map<String, String>,
+): Boolean =
+    parentSessionId?.trim() == owner ||
+        metadata["parent_session_id"]?.trim() == owner ||
+        metadata["owner_session_id"]?.trim() == owner ||
+        sessionId?.trim() == owner ||
+        executionSession?.trim() == owner
 
 internal fun sessionNavigationTask(tasks: List<TaskSummary>): TaskSummary? =
     tasks.firstOrNull { it.status.taskNeedsAttention() }
         ?: tasks.firstOrNull { it.status.taskIsActive() && !it.status.isTerminalTaskStatus() }
         ?: tasks.maxByOrNull { it.lastActivityAt ?: it.completedAt ?: it.createdAt ?: "" }
+
+internal fun sessionNavigationBackground(tasks: List<AutonomyTaskSummary>): AutonomyTaskSummary? =
+    tasks.firstOrNull { it.state.taskNeedsAttention() }
+        ?: tasks.firstOrNull { it.state.taskIsActive() }
+        ?: tasks.maxByOrNull { it.lastActivityAt ?: it.completedAt ?: it.updatedAt ?: it.createdAt ?: "" }
+
+/** Phone and wide layouts share these groups. Chat and settings stay outside them. */
+internal val sessionNavDestinations = listOf("任务", "本轮轨迹", "记忆")
+internal val computerNavDestinations = listOf("定时", "渠道", "插件", "技能", "后台黑板")

@@ -73,6 +73,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
+import com.luckyagent.android.ui.screens.computerNavDestinations
+import com.luckyagent.android.ui.screens.sessionNavDestinations
 import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
@@ -122,15 +124,12 @@ private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
  * session. Host controls stay under one computer, not beside chat.
  * Server config is opened from Settings, not from this list.
  */
+private fun navGroup(label: String, names: List<String>) =
+    label to names.map { name -> navItems.first { it.label == name } }
+
 private val navGroups = listOf(
-    "当前会话" to listOf(AppDestination.Tasks, AppDestination.Trajectory, AppDestination.Memory).map(::nav),
-    "这台电脑" to listOf(
-        AppDestination.Cron,
-        AppDestination.Gateways,
-        AppDestination.Plugins,
-        AppDestination.Skills,
-        AppDestination.Background,
-    ).map(::nav),
+    navGroup("当前会话", sessionNavDestinations),
+    navGroup("这台电脑", computerNavDestinations),
 )
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
@@ -316,21 +315,20 @@ private fun AppScaffold(
                         Spacer(Modifier.height(16.dp))
                         BrandMark(state.settings.avatarFile, size = 42.dp, corner = 14.dp)
                         Spacer(Modifier.height(16.dp))
-                        navItems.forEach { item ->
-                            if (item.dest == AppDestination.Settings) Spacer(Modifier.height(12.dp))
-                            NavigationRailItem(
-                                selected = state.destination == item.dest,
-                                onClick = { vm.navigate(item.dest) },
-                                icon = {
-                                    val badge = badgeColor(item.dest, state)
-                                    if (badge == null) Icon(item.icon, contentDescription = item.label)
-                                    else androidx.compose.material3.BadgedBox(badge = { androidx.compose.material3.Badge(containerColor = badge) }) {
-                                        Icon(item.icon, contentDescription = item.label)
-                                    }
-                                },
-                                label = { Text(item.label, maxLines = 1) },
+                        RailDestination(nav(AppDestination.Chat), state, vm)
+                        navGroups.forEach { (groupLabel, groupItems) ->
+                            Text(
+                                groupLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CloverText3,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                             )
+                            groupItems.forEach { RailDestination(it, state, vm) }
                         }
+                        Spacer(Modifier.height(12.dp))
+                        RailDestination(nav(AppDestination.Settings), state, vm)
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
@@ -351,7 +349,11 @@ private fun AppScaffold(
                             AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
                             AppDestination.Plugins -> PluginsScreen(state = state, vm = vm)
                             AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
-                            AppDestination.RuntimeConfig -> RuntimeConfigScreen(state = state, vm = vm)
+                            AppDestination.RuntimeConfig -> RuntimeConfigScreen(
+                                state = state,
+                                vm = vm,
+                                onBack = { vm.navigate(AppDestination.Settings) },
+                            )
                             AppDestination.Settings -> SettingsScreen(
                                 state = state,
                                 vm = vm,
@@ -405,6 +407,22 @@ private fun WallpaperLayer(settings: com.luckyagent.android.data.settings.Client
         modifier = Modifier.fillMaxSize(),
     )
     Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = settings.chatBackgroundDim.coerceIn(0, 70) / 100f)))
+}
+
+@Composable
+private fun RailDestination(item: NavSpec, state: AppUiState, vm: AppViewModel) {
+    NavigationRailItem(
+        selected = state.destination == item.dest,
+        onClick = { vm.navigate(item.dest) },
+        icon = {
+            val badge = badgeColor(item.dest, state)
+            if (badge == null) Icon(item.icon, contentDescription = item.label)
+            else androidx.compose.material3.BadgedBox(badge = { androidx.compose.material3.Badge(containerColor = badge) }) {
+                Icon(item.icon, contentDescription = item.label)
+            }
+        },
+        label = { Text(item.label, maxLines = 1) },
+    )
 }
 
 @Composable

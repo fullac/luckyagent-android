@@ -106,8 +106,13 @@ fun SettingsScreen(
         )
 
         if (!showDetails) {
-            Column(Modifier.padding(horizontal = 16.dp)) {
+            Column(
+                Modifier.padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 SettingsConnectionSummary(s, state.socketState, onOpen = { showDetails = true })
+                SettingsSectionTitle("这台电脑")
+                SettingsServerConfigCard { vm.navigate(AppDestination.RuntimeConfig) }
             }
             Spacer(Modifier.height(24.dp))
             return@Column

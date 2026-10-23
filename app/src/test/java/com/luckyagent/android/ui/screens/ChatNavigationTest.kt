@@ -1,8 +1,11 @@
 package com.luckyagent.android.ui.screens
 
+import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.TaskSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatNavigationTest {
@@ -25,6 +28,35 @@ class ChatNavigationTest {
         assertEquals("running", sessionNavigationTask(listOf(done, running))?.id)
         assertEquals("done", sessionNavigationTask(listOf(done))?.id)
         assertNull(sessionNavigationTask(emptyList()))
+    }
+
+    @Test fun sessionCardKeepsOnlyBackgroundItemsThatBelongToTheOpenChat() {
+        val owner = AutonomyTaskSummary(id = "board", parentSessionId = "chat")
+        val child = AutonomyTaskSummary(id = "worker", sessionId = "chat")
+        val other = AutonomyTaskSummary(id = "elsewhere", parentSessionId = "other")
+
+        val visible = backgroundForSession(listOf(other, owner, child), "chat")
+
+        assertEquals(listOf("board", "worker"), visible.map { it.id })
+        assertTrue(backgroundForSession(listOf(other), "").isEmpty())
+    }
+
+    @Test fun sessionCardPrefersBlockedBackgroundWork() {
+        val done = AutonomyTaskSummary(id = "done", state = "done", lastActivityAt = "9")
+        val running = AutonomyTaskSummary(id = "running", state = "in_progress", lastActivityAt = "2")
+        val blocked = AutonomyTaskSummary(id = "blocked", state = "blocked", lastActivityAt = "1")
+
+        assertEquals("blocked", sessionNavigationBackground(listOf(done, running, blocked))?.id)
+        assertEquals("running", sessionNavigationBackground(listOf(done, running))?.id)
+        assertNull(sessionNavigationBackground(emptyList()))
+    }
+
+    @Test fun phoneAndWideNavigationUseTheSameGroups() {
+        assertEquals(listOf("任务", "本轮轨迹", "记忆"), sessionNavDestinations)
+        assertEquals(listOf("定时", "渠道", "插件", "技能", "后台黑板"), computerNavDestinations)
+        assertFalse(sessionNavDestinations.contains("服务器配置"))
+        assertFalse(computerNavDestinations.contains("服务器配置"))
+        assertFalse((sessionNavDestinations + computerNavDestinations).contains("聊天"))
     }
 
     private fun task(

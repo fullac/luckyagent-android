@@ -13,12 +13,13 @@ import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.components.ScreenHeader
 
 @Composable
-fun RuntimeConfigScreen(state: AppUiState, vm: AppViewModel) {
+fun RuntimeConfigScreen(state: AppUiState, vm: AppViewModel, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             eyebrow = "Runtime",
             title = "服务器配置",
             subtitle = "保存后会影响这台电脑上的服务 · ${state.settings.apiBase}",
+            onBack = onBack,
         )
         Column(
             Modifier

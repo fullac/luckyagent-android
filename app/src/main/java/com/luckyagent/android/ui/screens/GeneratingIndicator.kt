@@ -2,7 +2,6 @@ package com.luckyagent.android.ui.screens
 
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.WsEnvelope
-import com.luckyagent.android.ui.ChatBubble
 
 /**
  * Composer label for the current session.
@@ -80,17 +79,6 @@ internal fun historySettlesUnownedTurn(
     historyEndsWithFinalAssistant: Boolean,
     ownsOutboundLease: Boolean,
 ): Boolean = historyEndsWithFinalAssistant && !ownsOutboundLease
-
-internal fun historyEndsWithFinalAssistant(bubbles: List<ChatBubble>): Boolean {
-    val last = bubbles.lastOrNull { bubble ->
-        bubble.role.equals("assistant", ignoreCase = true) ||
-            bubble.role.equals("user", ignoreCase = true)
-    } ?: return false
-    return last.role.equals("assistant", ignoreCase = true) &&
-        !last.streaming &&
-        !last.isIntermediate &&
-        last.content.isNotBlank()
-}
 
 /** True when the stored page already ends on a final assistant reply. */
 internal fun historyPageEndsWithFinalAssistant(messages: List<ProviderMessage>): Boolean {

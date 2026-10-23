@@ -1,8 +1,8 @@
 package com.luckyagent.android.ui.screens
 
+import com.luckyagent.android.data.api.HistoryToolCall
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.WsEnvelope
-import com.luckyagent.android.ui.ChatBubble
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -95,13 +95,14 @@ class GeneratingIndicatorTest {
 
     @Test
     fun historyFinalReplyWithoutLeaseClearsIndicator() {
-        val history = listOf(
-            ChatBubble(id = "u", role = "user", content = "你好"),
-            ChatBubble(id = "a", role = "assistant", content = "已回复"),
+        val page = listOf(
+            ProviderMessage(role = "user", content = "你好"),
+            ProviderMessage(role = "assistant", content = "已回复"),
         )
-        assertTrue(historyEndsWithFinalAssistant(history))
-        assertTrue(historySettlesUnownedTurn(historyEndsWithFinalAssistant(history), ownsOutboundLease = false))
-        assertFalse(historySettlesUnownedTurn(historyEndsWithFinalAssistant(history), ownsOutboundLease = true))
+        val settled = historyPageEndsWithFinalAssistant(page)
+        assertTrue(settled)
+        assertTrue(historySettlesUnownedTurn(settled, ownsOutboundLease = false))
+        assertFalse(historySettlesUnownedTurn(settled, ownsOutboundLease = true))
     }
 
     @Test
@@ -120,9 +121,25 @@ class GeneratingIndicatorTest {
 
     @Test
     fun openUserTurnDoesNotSettleFromHistory() {
-        val history = listOf(ChatBubble(id = "u", role = "user", content = "还没回"))
-        assertFalse(historyEndsWithFinalAssistant(history))
-        assertFalse(historySettlesUnownedTurn(false, ownsOutboundLease = false))
+        val page = listOf(ProviderMessage(role = "user", content = "还没回"))
+        val settled = historyPageEndsWithFinalAssistant(page)
+        assertFalse(settled)
+        assertFalse(historySettlesUnownedTurn(settled, ownsOutboundLease = false))
+    }
+
+    @Test
+    fun assistantTurnWaitingOnToolsDoesNotSettle() {
+        // A reply that still owes a tool result is not final, so the replayed
+        // run must survive history refresh.
+        val page = listOf(
+            ProviderMessage(role = "user", content = "查一下"),
+            ProviderMessage(
+                role = "assistant",
+                content = "",
+                toolCalls = listOf(HistoryToolCall(id = "call-1", name = "search")),
+            ),
+        )
+        assertFalse(historyPageEndsWithFinalAssistant(page))
     }
 
     private fun envelope(

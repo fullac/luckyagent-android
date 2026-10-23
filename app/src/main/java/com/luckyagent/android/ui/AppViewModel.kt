@@ -703,12 +703,13 @@ class AppViewModel(
                                 (
                                     isCurrentSessionRunActive() ||
                                         _ui.value.isResponding ||
-                                        _ui.value.bubbles.any { it.streaming } ||
-                                        requestId != null
+                                        _ui.value.bubbles.any { it.streaming }
                                     )
                             if (visibleStuck) {
                                 // The frame may omit the request id after a journal
                                 // gap. The visible session still has to leave 「生成中」.
+                                // Anything visibly working is proof enough; an id alone
+                                // is not, or a replayed old error would invent a failure.
                                 clearRuns(event.sessionId)
                             } else if (!matched) {
                                 return@collect

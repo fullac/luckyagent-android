@@ -2272,7 +2272,12 @@ private fun ComposerBar(
 ) {
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
     val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
-    val activityWorking = chatWorking || state.commandExecuting
+    val activityLabel = composerActivityLabel(
+        agentWorking = state.isResponding,
+        commandExecuting = state.commandExecuting,
+        streaming = state.bubbles.any { it.streaming },
+    )
+    val activityWorking = activityLabel != ComposerActivityLabel.Hidden
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
     val attachmentActivity = state.activityLine?.takeIf {
@@ -2437,7 +2442,7 @@ private fun ComposerBar(
                 CloverPulseIndicator()
                 StreamingDots()
                 Text(
-                    if (state.commandExecuting) "执行中" else "生成中",
+                    if (activityLabel == ComposerActivityLabel.Executing) "执行中" else "生成中",
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
                 )

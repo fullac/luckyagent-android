@@ -87,6 +87,10 @@ import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.util.bubbleCopyText
 import com.luckyagent.android.ui.util.buildOutboundMessage
+import com.luckyagent.android.ui.screens.connectionStatusLightsTurn
+import com.luckyagent.android.ui.screens.historyPageEndsWithFinalAssistant
+import com.luckyagent.android.ui.screens.historySettlesUnownedTurn
+import com.luckyagent.android.ui.screens.replayRegistersLiveRun
 import com.luckyagent.android.ui.util.quoteFromBubble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -697,14 +701,29 @@ class AppViewModel(
                         }
                         "error" -> {
                             val requestId = eventRequestId(event)
-                            if (!completeRun(event)) return@collect
-                            val msg = env.error
-                                ?: extractField(env.data, "message")
-                                ?: extractText(env.data)
-                                ?: "Unknown error"
+                            val msg = errorText(env)
+                            val matched = completeRun(event)
+                            val visibleStuck = !matched &&
+                                event.sessionId == currentSessionId() &&
+                                (
+                                    isCurrentSessionRunActive() ||
+                                        _ui.value.isResponding ||
+                                        _ui.value.bubbles.any { it.streaming }
+                                    )
+                            if (visibleStuck) {
+                                // The frame may omit the request id after a journal
+                                // gap. The visible session still has to leave 「生成中」.
+                                // Anything visibly working is proof enough; an id alone
+                                // is not, or a replayed old error would invent a failure.
+                                clearRuns(event.sessionId)
+                                if (requestId == null) failInFlightOutbound(event.sessionId, msg)
+                            } else if (!matched) {
+                                return@collect
+                            }
                             finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
-                            if (foreground) {
+                            if (foreground || visibleStuck) {
                                 finishAssistant(null)
+                                clearStreamingBubbles()
                                 pushBubble(
                                     ChatBubble(
                                         id = "err-${System.currentTimeMillis()}",
@@ -714,7 +733,7 @@ class AppViewModel(
                                 )
                                 _ui.update {
                                     it.copy(
-                                        activityLine = "error · $msg",
+                                        activityLine = "请求失败 · ${failureNextStep(msg)}",
                                         isResponding = false,
                                         liveSummary = null,
                                         processNotice = "请求失败",
@@ -963,9 +982,17 @@ class AppViewModel(
         event.envelope.parentId
             ?: event.envelope.runId?.takeIf { id -> activeRuns[event.sessionId]?.containsKey(id) == true }
 
-    private fun isForegroundEvent(event: WsEvent): Boolean =
-        event.sessionId == currentSessionId() &&
-            eventRequestId(event) == foregroundRequestIds[event.sessionId]
+    private fun isForegroundEvent(event: WsEvent): Boolean {
+        if (event.sessionId != currentSessionId()) return false
+        val requestId = eventRequestId(event)
+        // A reconnect notice has no request id. Comparing it with a missing
+        // foreground id used to treat "connected" as the live turn.
+        if (connectionStatusLightsTurn(event.envelope.type, extractField(event.envelope.data, "state"), requestId)) {
+            return false
+        }
+        if (requestId == null) return false
+        return requestId == foregroundRequestIds[event.sessionId]
+    }
 
     private fun completeRun(event: WsEvent): Boolean {
         val runs = activeRuns[event.sessionId] ?: return false
@@ -1129,7 +1156,53 @@ class AppViewModel(
         val requestId = event.envelope.parentId ?: return
         if (event.envelope.runId.isNullOrBlank()) return
         if (activeRuns[event.sessionId]?.containsKey(requestId) == true) return
+        // Replay updates records. Only an explicit still-executing mark may
+        // light 「生成中」. A historical status or reasoning frame must not.
+        if (!replayRegistersLiveRun(event.envelope)) return
         registerRun(container.wsClient.replayHandle(event.sessionId, requestId, event.connectionId))
+    }
+
+    private fun errorText(env: com.luckyagent.android.data.api.WsEnvelope): String =
+        env.error
+            ?: extractField(env.data, "message")
+            ?: extractText(env.data)
+            ?: "Unknown error"
+
+    /** Shown after a failed turn so 「生成中」 is replaced by a next step. */
+    private fun failureNextStep(message: String): String = when {
+        message.contains("journal sequence gap", ignoreCase = true) -> "这次回复没有送达，请再发一次"
+        message.contains("too large", ignoreCase = true) -> "消息过大，缩短后再发"
+        else -> "请再发一次"
+    }
+
+    private fun clearStreamingBubbles() {
+        _ui.update { current ->
+            if (current.bubbles.none { it.streaming }) return@update current
+            current.copy(
+                bubbles = current.bubbles.map { bubble ->
+                    if (bubble.streaming) bubble.copy(streaming = false) else bubble
+                },
+                isResponding = false,
+            )
+        }
+    }
+
+    private fun ownsOutboundLease(sessionId: String): Boolean =
+        activeRuns[sessionId]?.values?.any { it.handle.ownsLease } == true
+
+    /**
+     * An error frame without a request id cannot close its queue item by lookup,
+     * so the message the user just sent would stay on 「发送中」 while the composer
+     * already says the request failed. Fail whatever is still in flight by id.
+     */
+    private fun failInFlightOutbound(sessionId: String, message: String) {
+        val stuck = outboundChatQueue.items(sessionId)
+            .filter { it.status == OutboundQueueStatus.Sending }
+        if (stuck.isEmpty()) return
+        stuck.forEach { item ->
+            outboundChatQueue.update(item.id, status = OutboundQueueStatus.Failed, error = message)
+        }
+        publishOutboundQueue(sessionId)
     }
 
     private fun prepareNextForeground(sessionId: String) {
@@ -2797,16 +2870,36 @@ class AppViewModel(
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
         historyMessages = page.messages
         historyStartIndex = page.startIndex
+        val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
         val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
         // History projection runs off the main thread. Bubble ids are only touched on main.
         withContext(Dispatchers.Main.immediate) {
             if (currentSessionId() != sessionId || historySessionId != sessionId) return@withContext
+            if (
+                historySettlesUnownedTurn(
+                    settleUnowned,
+                    ownsOutboundLease(sessionId),
+                )
+            ) {
+                // The page already has the final reply and this phone did not
+                // send the turn. Drop the replayed run so history cannot keep 「生成中」.
+                clearRuns(sessionId)
+                resetAssistantStream()
+            }
+            val stillOwned = ownsOutboundLease(sessionId) && activeRuns[sessionId]?.isNotEmpty() == true
+            val shownActivity = if (offline) {
+                activity
+            } else if (activeRuns[sessionId]?.isNotEmpty() == true) {
+                "Agent running · history loaded"
+            } else {
+                "loaded ${historyMessages.size} messages"
+            }
             publishHistory(
                 sessionId = sessionId,
                 offline = offline,
-                activity = activity,
+                activity = shownActivity,
                 historyBubbles = historyBubbles,
-                preserveLiveTurn = keepLiveTurn,
+                preserveLiveTurn = keepLiveTurn && stillOwned,
             )
         }
     }

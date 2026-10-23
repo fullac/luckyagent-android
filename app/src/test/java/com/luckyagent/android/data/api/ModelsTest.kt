@@ -8,6 +8,21 @@ import org.junit.Test
 
 class ModelsTest {
     @Test
+    fun chatFrameLeavesIterationLimitToServerConfig() {
+        val json = Json { encodeDefaults = true }
+        val frame = json.encodeToString(
+            ChatOutbound.serializer(),
+            ChatOutbound(
+                id = "req-1",
+                sessionId = "session-1",
+                data = ChatOutboundData(message = "hello"),
+            ),
+        )
+        assertTrue(frame.contains("\"max_iterations\":0"))
+        assertTrue(!frame.contains("\"max_iterations\":8"))
+    }
+
+    @Test
     fun gatewayStartRequestCarriesOptionalToken() {
         val json = Json { explicitNulls = false }
         val request = json.decodeFromString<GatewayStartRequest>("{\"token\":\"tg-token\"}")

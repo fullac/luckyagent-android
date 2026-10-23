@@ -255,18 +255,47 @@ internal sealed interface ChatTimelineItem {
 
 /**
  * One line for the latest chat fold.
- * A running turn shows only the newest summary. A finished turn yields to the answer,
- * except cancel and failure, which replace the summary with an end state.
+ * A running turn shows only the newest summary, and only on the fold that
+ * belongs to that turn. A finished turn yields to the answer, except cancel
+ * and failure, which replace the summary with an end state.
  */
 internal fun outerProcessLabel(
     liveSummary: String?,
     processNotice: String?,
     isResponding: Boolean,
     isLatestProcess: Boolean,
+    ownsCurrentTurn: Boolean = true,
 ): String? {
-    if (!isLatestProcess) return null
+    if (!isLatestProcess || !ownsCurrentTurn) return null
     if (!isResponding) return processNotice?.trim()?.ifBlank { null }
     return liveSummary?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+}
+
+/** A status box opened for a new turn before any reasoning or tool text arrives. */
+internal fun isTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+    bubble.role == "reasoning" && !bubble.reasoningHasContent && bubble.content.isBlank()
+
+/** A placeholder stays only until the same fold has a real step. It is not counted as a thought. */
+internal fun visibleProcessSteps(steps: List<ChatBubble>): List<ChatBubble> {
+    if (steps.any { !isTurnStatusPlaceholder(it) }) return steps.filterNot(::isTurnStatusPlaceholder)
+    return steps
+}
+
+/**
+ * A fold owns the live turn when it is the latest process and a user message
+ * sits between it and the previous process. An older fold must not take the
+ * new turn's status.
+ */
+internal fun processOwnsTurn(steps: List<ChatBubble>, timeline: List<ChatTimelineItem>): Boolean {
+    val processes = timeline.filterIsInstance<ChatTimelineItem.Process>()
+    val index = processes.indexOfFirst { it.steps === steps || it.steps == steps }
+    if (index < 0 || index != processes.lastIndex) return false
+    if (index == 0) return true
+    val itemIndex = timeline.indexOfFirst { it is ChatTimelineItem.Process && it.steps == steps }
+    val previous = timeline.subList(0, itemIndex).indexOfLast { it is ChatTimelineItem.Process }
+    return timeline.subList(previous + 1, itemIndex).any { item ->
+        item is ChatTimelineItem.Message && item.bubble.role.equals("user", ignoreCase = true)
+    }
 }
 
 /**
@@ -283,8 +312,7 @@ internal fun liveTurnBubbles(bubbles: List<ChatBubble>, turnId: String, bufferId
 /**
  * Index of the in-memory turn that history has not stored yet.
  * The user bubble that opened the turn is included, so a refresh can put the
- * whole turn back after the server page. A later server copy of the same user
- * text drops that local bubble instead of showing it twice.
+ * whole turn back after the server page.
  */
 internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): Int {
     if (turnId.isBlank() && bufferId.isNullOrBlank()) return -1
@@ -301,27 +329,22 @@ internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: 
 }
 
 /**
- * Drop the in-memory turn once the server page already ends with the same rows.
- * A stored user message alone is not enough: the live reasoning and answer stay
- * until the page carries those rows too. An older copy of the same text, with
- * a different reply after it, does not count as this turn.
+ * Replace live rows once history already holds that server message.
+ *
+ * Identity is the session-wide oldest-first index, not a page offset and not
+ * full-text equality. One server message can project to several bubbles, so a
+ * confirmed index drops the whole live projection of that message. Rows past
+ * the stored tail stay, including a second user message with the same text.
  */
 internal fun dedupeLiveTurn(history: List<ChatBubble>, live: List<ChatBubble>): List<ChatBubble> {
     if (live.isEmpty()) return emptyList()
-    val start = live.indexOfFirst { it.role.equals("user", ignoreCase = true) }.let { index ->
-        if (index >= 0) index else 0
+    val storedThrough = history.mapNotNull { it.serverOrdinal }.maxOrNull() ?: return live
+    val turnOrdinal = live.mapNotNull { it.serverOrdinal }.minOrNull()
+    return live.filter { bubble ->
+        val ordinal = bubble.serverOrdinal ?: if (isTurnStatusPlaceholder(bubble)) turnOrdinal else null
+        ordinal == null || ordinal > storedThrough
     }
-    val comparable = live.drop(start)
-    if (history.size >= comparable.size &&
-        history.takeLast(comparable.size).map(::liveTurnSignature) == comparable.map(::liveTurnSignature)
-    ) {
-        return emptyList()
-    }
-    return comparable
 }
-
-private fun liveTurnSignature(bubble: ChatBubble): String =
-    listOf(bubble.role, bubble.content, bubble.toolName.orEmpty(), bubble.stepId.orEmpty()).joinToString("\u0000")
 
 /**
  * Where to land when a session opens.
@@ -388,8 +411,9 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
         return candidate
     }
     fun flushSteps() {
-        if (steps.isNotEmpty()) {
-            result += ChatTimelineItem.Process(steps.toList(), uniqueKey(steps.first().id))
+        val visible = visibleProcessSteps(steps)
+        if (visible.isNotEmpty()) {
+            result += ChatTimelineItem.Process(visible, uniqueKey(visible.first().id))
             steps.clear()
         }
     }
@@ -1064,12 +1088,13 @@ private fun ChatConversation(
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
-                                isResponding = state.isResponding,
+                                isResponding = state.isResponding && processOwnsTurn(item.steps, timeline),
                                 liveSummary = outerProcessLabel(
                                     liveSummary = state.liveSummary,
                                     processNotice = state.processNotice,
                                     isResponding = state.isResponding,
                                     isLatestProcess = item.key == timeline.lastOrNull { it is ChatTimelineItem.Process }?.key,
+                                    ownsCurrentTurn = processOwnsTurn(item.steps, timeline),
                                 ),
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
@@ -1082,7 +1107,7 @@ private fun ChatConversation(
                                     vm.notifyCopied()
                                 },
                                 onOpenThinking = {
-                                    selectedThinkingSteps = item.steps
+                                    selectedThinkingSteps = item.steps.filterNot(::isTurnStatusPlaceholder)
                                     showThinkingSheet = true
                                 },
                                 collabLabel = collabFoldLabel(
@@ -1963,9 +1988,9 @@ private fun ProcessTimeline(
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
+                    steps.all(::isTurnStatusPlaceholder) -> "Thinking through the request"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
-                    steps.size == 1 -> "思考了 1 步"
-                    else -> "思考了 ${steps.size} 步"
+                    else -> "思考了 ${steps.count { !isTurnStatusPlaceholder(it) }} 步"
                 },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

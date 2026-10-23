@@ -155,6 +155,11 @@ data class ChatBubble(
     val quote: MessageQuote? = null,
     /** Assistant commentary from a tool/continuation round belongs inside the process fold. */
     val isIntermediate: Boolean = false,
+    /**
+     * Session-wide oldest-first index of the server message this live bubble is
+     * waiting to replace. Null until the turn is anchored. Not a page offset.
+     */
+    val serverOrdinal: Int? = null,
 )
 
 data class ChatMedia(
@@ -367,6 +372,11 @@ class AppViewModel(
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
+    /**
+     * How many server messages were already known when [currentTurnId] started.
+     * The next stored user row is this turn. Later rows replace the live tail.
+     */
+    private var turnBaselineCount: Int? = null
     /** In-progress turn for a session that is not on screen. Keyed by session id. */
     private val parkedTurns = mutableMapOf<String, ParkedTurn>()
     private val toolStepIndex = mutableMapOf<String, String>()
@@ -381,6 +391,7 @@ class AppViewModel(
 
     private data class ParkedTurn(
         val turnId: String,
+        val baselineCount: Int?,
         val bufferId: String?,
         val pending: String,
         val bubbles: List<ChatBubble>,
@@ -471,6 +482,7 @@ class AppViewModel(
         historySessionId = target
         historyMessages = emptyList()
         historyStartIndex = 0
+        turnBaselineCount = null
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
@@ -1786,6 +1798,23 @@ class AppViewModel(
         resetAssistantStream()
     }
 
+    /** A new turn gets its own status fold before the first reasoning or tool event. */
+    private fun openTurnStatusBox() {
+        val id = "reasoning-$currentTurnId-0"
+        _ui.update { state ->
+            if (state.bubbles.any { it.id == id }) return@update state
+            state.copy(
+                bubbles = state.bubbles + ChatBubble(
+                    id = id,
+                    role = "reasoning",
+                    content = "",
+                    reasoningRound = 0,
+                    reasoningHasContent = false,
+                ),
+            )
+        }
+    }
+
     private fun pushBubble(bubble: ChatBubble) {
         val safeBubble = bubble.copy(
             content = capUiText(bubble.content, MAX_UI_MESSAGE_CHARS),
@@ -2511,8 +2540,11 @@ class AppViewModel(
         val parked = parkedTurns.remove(target)
         if (parked != null && activeRuns[target]?.isNotEmpty() == true) {
             currentTurnId = parked.turnId
+            turnBaselineCount = parked.baselineCount
             assistantBufferId = parked.bufferId
             assistantPending.append(parked.pending)
+        } else {
+            turnBaselineCount = null
         }
         _ui.update {
             it.copy(
@@ -2838,6 +2870,7 @@ class AppViewModel(
         val state = _ui.value
         parkedTurns[sessionId] = ParkedTurn(
             turnId = currentTurnId,
+            baselineCount = turnBaselineCount,
             bufferId = assistantBufferId,
             pending = assistantPending.toString(),
             bubbles = state.bubbles,
@@ -2855,6 +2888,7 @@ class AppViewModel(
             toolStepIndex.clear()
             parkedTurns.remove(sessionId)
         }
+        val knownBefore = historyStartIndex + historyMessages.size
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
@@ -2880,6 +2914,11 @@ class AppViewModel(
                 "Agent running · history loaded"
             } else {
                 "loaded ${historyMessages.size} messages"
+            }
+            if (keepLiveTurn && stillOwned) {
+                anchorLiveTurn(turnBaselineCount ?: knownBefore)
+            } else {
+                turnBaselineCount = null
             }
             publishHistory(sessionId, offline, shownActivity, preserveLiveTurn = keepLiveTurn && stillOwned)
         }
@@ -2948,22 +2987,56 @@ class AppViewModel(
         return if (running) "Agent running · history loaded" else "loaded ${historyMessages.size} messages"
     }
 
+    /**
+     * Stamp the current turn with the server ordinal of the user message that
+     * opened it, then give every later live row the ordinal history will use.
+     * [baseline] is the message count known before this turn, so an older copy
+     * of the same text is not this turn.
+     */
+    private fun anchorLiveTurn(baseline: Int) {
+        val bubbles = _ui.value.bubbles
+        val turn = com.luckyagent.android.ui.screens.liveTurnBubbles(bubbles, currentTurnId, assistantBufferId)
+        val localUser = turn.firstOrNull { it.role.equals("user", ignoreCase = true) }
+        val covered = historyStartIndex + historyMessages.size
+        val userOrdinal = when {
+            localUser?.serverOrdinal != null -> localUser.serverOrdinal
+            covered > baseline -> baseline
+            else -> null
+        }
+        if (userOrdinal != null) {
+            turnBaselineCount = userOrdinal
+        }
+        if (userOrdinal == null) return
+        var next = userOrdinal
+        val stamped = bubbles.map { bubble ->
+            if (turn.none { it.id == bubble.id }) return@map bubble
+            val ordinal = bubble.serverOrdinal ?: next
+            if (bubble.serverOrdinal == null) next += 1
+            bubble.copy(serverOrdinal = ordinal)
+        }
+        if (stamped != bubbles) {
+            _ui.update { it.copy(bubbles = stamped) }
+        }
+    }
+
     private fun historyToBubbles(messages: List<ProviderMessage>, startIndex: Int = 0): List<ChatBubble> {
         val bubbles = mutableListOf<ChatBubble>()
         messages.forEachIndexed { index, message ->
-            message.toBubbles(startIndex + index).forEach { bubble ->
-                val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
+            val ordinal = startIndex + index
+            message.toBubbles(ordinal).forEach { bubble ->
+                val tagged = bubble.copy(serverOrdinal = ordinal)
+                val callIndex = if (message.role == "tool" && tagged.role == "tool" && !message.toolCallId.isNullOrBlank()) {
                     bubbles.indexOfLast { it.role == "tool" && it.stepId == message.toolCallId }
                 } else -1
                 if (callIndex >= 0) {
                     val call = bubbles[callIndex]
                     bubbles[callIndex] = call.copy(
-                        content = bubble.content,
-                        toolOutput = bubble.toolOutput,
-                        attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
+                        content = tagged.content,
+                        toolOutput = tagged.toolOutput,
+                        attachments = if (tagged.attachments.isNotEmpty()) tagged.attachments else call.attachments,
                     )
                 } else {
-                    bubbles += bubble
+                    bubbles += tagged
                 }
             }
         }
@@ -3397,12 +3470,26 @@ class AppViewModel(
                 status = OutboundQueueStatus.Queued,
             ),
         )
+        val turnUserId = if (!wasRunning && showUserBubble) "u-${System.currentTimeMillis()}" else null
         if (!wasRunning) {
             currentTurnId = "turn-${System.currentTimeMillis()}"
+            turnBaselineCount = historyStartIndex + historyMessages.size
             toolStepIndex.clear()
             resetAssistantStream()
         }
-        if (showUserBubble) {
+        if (showUserBubble && turnUserId != null) {
+            pushBubble(
+                ChatBubble(
+                    id = turnUserId,
+                    role = "user",
+                    content = displayText,
+                    createdAt = nowIsoTimestamp(),
+                    attachments = media,
+                    quote = quote,
+                ),
+            )
+            openTurnStatusBox()
+        } else if (showUserBubble) {
             pushBubble(
                 ChatBubble(
                     id = "u-${System.currentTimeMillis()}",
@@ -3420,7 +3507,7 @@ class AppViewModel(
                 pendingMedia = if (clearComposer) emptyList() else it.pendingMedia,
                 pendingQuote = if (clearComposer) null else it.pendingQuote,
                 isResponding = true,
-                liveSummary = null,
+                liveSummary = if (wasRunning) it.liveSummary else "Thinking through the request",
                 processNotice = null,
                 outboundQueue = outboundChatQueue.items(sessionId),
                 activityLine = if (wasRunning) {

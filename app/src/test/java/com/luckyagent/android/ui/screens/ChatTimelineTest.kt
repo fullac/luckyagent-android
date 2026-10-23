@@ -196,31 +196,94 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun historyRefreshDropsTheLocalUserOnceTheServerStoredIt() {
+    fun historyRefreshReplacesTheLiveTurnByServerOrdinal() {
         val turn = "turn-7"
         val live = listOf(
-            ChatBubble("u-live", "user", "what is in the file"),
-            ChatBubble("reasoning-$turn-1", "reasoning", "reading the file"),
-            ChatBubble("a-live", "assistant", "partial", streaming = true),
+            ChatBubble("u-live", "user", "what is in the file", serverOrdinal = 1),
+            ChatBubble("reasoning-$turn-1", "reasoning", "reading the file", serverOrdinal = 2),
+            ChatBubble("a-live", "assistant", "partial", streaming = true, serverOrdinal = 3),
         )
-        val history = listOf(
-            ChatBubble("h-0-user", "user", "old"),
-            ChatBubble("h-1-user", "user", "what is in the file"),
+        val historyUserOnly = listOf(
+            ChatBubble("ord:0-user", "user", "old", serverOrdinal = 0),
+            ChatBubble("ord:1-user", "user", "what is in the file", serverOrdinal = 1),
         )
-        assertEquals(live.map { it.id }, dedupeLiveTurn(history, live).map { it.id })
-        val stillRunning = listOf(ChatBubble("h-0-user", "user", "old"))
-        assertEquals(live.map { it.id }, dedupeLiveTurn(stillRunning, live).map { it.id })
+        assertEquals(listOf("reasoning-$turn-1", "a-live"), dedupeLiveTurn(historyUserOnly, live).map { it.id })
+
+        val notStoredYet = listOf(ChatBubble("ord:0-user", "user", "old", serverOrdinal = 0))
+        assertEquals(live.map { it.id }, dedupeLiveTurn(notStoredYet, live).map { it.id })
+
         val olderCopy = listOf(
-            ChatBubble("h-0-user", "user", "what is in the file"),
-            ChatBubble("h-1-assistant", "assistant", "an earlier answer"),
+            ChatBubble("ord:0-user", "user", "what is in the file", serverOrdinal = 0),
+            ChatBubble("ord:1-assistant", "assistant", "an earlier answer", serverOrdinal = 1),
         )
-        assertEquals(live.map { it.id }, dedupeLiveTurn(olderCopy, live).map { it.id })
+        val secondSend = listOf(
+            ChatBubble("u-again", "user", "what is in the file", serverOrdinal = 2),
+            ChatBubble("a-again", "assistant", "second", streaming = true, serverOrdinal = 3),
+        )
+        assertEquals(secondSend.map { it.id }, dedupeLiveTurn(olderCopy, secondSend).map { it.id })
+
         val stored = olderCopy + listOf(
-            ChatBubble("h-2-user", "user", "what is in the file"),
-            ChatBubble("h-3-reasoning", "reasoning", "reading the file"),
-            ChatBubble("h-4-assistant", "assistant", "partial"),
+            ChatBubble("ord:2-user", "user", "what is in the file", serverOrdinal = 2),
+            ChatBubble("ord:3-reasoning", "reasoning", "another reading", serverOrdinal = 3),
+            ChatBubble("ord:4-assistant", "assistant", "the stored answer is longer", serverOrdinal = 4),
         )
-        assertEquals(emptyList<String>(), dedupeLiveTurn(stored, live).map { it.id })
+        val partial = listOf(
+            ChatBubble("u-again", "user", "what is in the file", serverOrdinal = 2),
+            ChatBubble("reasoning-$turn-1", "reasoning", "reading", serverOrdinal = 3),
+            ChatBubble("a-again", "assistant", "part", streaming = true, serverOrdinal = 4),
+        )
+        assertEquals(emptyList<String>(), dedupeLiveTurn(stored, partial).map { it.id })
+
+        val windowMoved = listOf(
+            ChatBubble("ord:8-user", "user", "what is in the file", serverOrdinal = 8),
+            ChatBubble("ord:9-reasoning", "reasoning", "the stored reasoning", serverOrdinal = 9),
+            ChatBubble("ord:9-tool", "tool", "file_read", serverOrdinal = 9),
+        )
+        val liveWithTool = listOf(
+            ChatBubble("u-live", "user", "what is in the file", serverOrdinal = 8),
+            ChatBubble("reasoning-$turn-1", "reasoning", "reading", serverOrdinal = 9),
+            ChatBubble("tool-$turn:1", "tool", "file_read", stepId = "$turn:1", serverOrdinal = 9),
+            ChatBubble("a-live", "assistant", "still streaming", streaming = true, serverOrdinal = 10),
+        )
+        assertEquals(listOf("a-live"), dedupeLiveTurn(windowMoved, liveWithTool).map { it.id })
+
+        val placeholder = listOf(
+            ChatBubble("u-live", "user", "what is in the file", serverOrdinal = 1),
+            ChatBubble("reasoning-$turn-0", "reasoning", "", reasoningHasContent = false),
+        )
+        assertEquals(emptyList<String>(), dedupeLiveTurn(historyUserOnly, placeholder).map { it.id })
+        val waiting = listOf(
+            ChatBubble("u-live", "user", "what is in the file", serverOrdinal = 4),
+            ChatBubble("reasoning-$turn-0", "reasoning", "", reasoningHasContent = false),
+        )
+        assertEquals(waiting.map { it.id }, dedupeLiveTurn(historyUserOnly, waiting).map { it.id })
+    }
+
+    @Test
+    fun newTurnStatusStartsInItsOwnFold() {
+        val previous = listOf(
+            ChatBubble("u-old", "user", "earlier"),
+            ChatBubble("reasoning-turn-1-1", "reasoning", "old thought", reasoningHasContent = true),
+            ChatBubble("a-old", "assistant", "earlier answer"),
+        )
+        val opened = previous + listOf(
+            ChatBubble("u-new", "user", "next"),
+            ChatBubble("reasoning-turn-2-0", "reasoning", "", reasoningHasContent = false),
+        )
+        val items = buildTimeline(opened)
+        val folds = items.filterIsInstance<ChatTimelineItem.Process>()
+        assertEquals(2, folds.size)
+        assertFalse(processOwnsTurn(folds[0].steps, items))
+        assertTrue(processOwnsTurn(folds[1].steps, items))
+        assertEquals(
+            "reading the file",
+            outerProcessLabel("reading the file", null, isResponding = true, isLatestProcess = true, ownsCurrentTurn = true),
+        )
+        assertEquals(
+            null,
+            outerProcessLabel("reading the file", null, isResponding = true, isLatestProcess = true, ownsCurrentTurn = false),
+        )
+        assertTrue(folds[1].steps.all(::isTurnStatusPlaceholder))
     }
 
     @Test
@@ -246,6 +309,7 @@ class ChatTimelineTest {
         assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = false, isLatestProcess = true))
         assertEquals(null, outerProcessLabel("   ", null, isResponding = true, isLatestProcess = true))
         assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = false))
+        assertEquals(null, outerProcessLabel("calling file_read", null, isResponding = true, isLatestProcess = true, ownsCurrentTurn = false))
     }
 
     @Test

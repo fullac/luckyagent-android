@@ -3,6 +3,11 @@ package com.luckyagent.android.ui
 import com.luckyagent.android.data.api.ProviderMessage
 
 /** Shared history projection, kept pure so tool-round commentary and final answers can be regression tested. */
+/** Session-wide oldest-first index. Stable across refreshes; not a page offset. */
+internal const val SERVER_ORDINAL_PREFIX = "ord:"
+
+internal fun serverOrdinalId(ordinal: Int): String = "$SERVER_ORDINAL_PREFIX$ordinal"
+
 internal fun ProviderMessage.toHistoryBubbles(
     idx: Int,
     messageAttachments: List<ChatMedia> = emptyList(),
@@ -13,7 +18,7 @@ internal fun ProviderMessage.toHistoryBubbles(
     val result = mutableListOf<ChatBubble>()
     reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
         result += ChatBubble(
-            id = "h-$idx-reasoning",
+            id = "${serverOrdinalId(idx)}-reasoning",
             role = "reasoning",
             content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
             reasoningHasContent = true,
@@ -21,7 +26,7 @@ internal fun ProviderMessage.toHistoryBubbles(
     }
     toolCalls.forEachIndexed { toolIndex, tool ->
         result += ChatBubble(
-            id = "h-$idx-tool-$toolIndex",
+            id = "${serverOrdinalId(idx)}-tool-$toolIndex",
             role = "tool",
             content = buildToolContent(
                 name = tool.name ?: "tool",
@@ -39,7 +44,7 @@ internal fun ProviderMessage.toHistoryBubbles(
     }
     if (role == "tool") {
         result += ChatBubble(
-            id = "h-$idx-tool-result",
+            id = "${serverOrdinalId(idx)}-tool-result",
             role = "tool",
             content = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS),
             toolName = name ?: "tool",
@@ -50,14 +55,14 @@ internal fun ProviderMessage.toHistoryBubbles(
         )
     } else if (role == "system" && compactLabel != null) {
         result += ChatBubble(
-            id = "h-$idx-compact",
+            id = "${serverOrdinalId(idx)}-compact",
             role = "compact",
             content = compactLabel,
             createdAt = createdAt,
         )
     } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
         result += ChatBubble(
-            id = "h-$idx-${role.hashCode()}",
+            id = "${serverOrdinalId(idx)}-${role.hashCode()}",
             role = role,
             content = base,
             createdAt = createdAt,

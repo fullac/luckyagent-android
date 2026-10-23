@@ -941,6 +941,22 @@ private fun ChatConversation(
             onOpenModel = { showModelSheet = true },
             onReconnect = { vm.connectSocket(force = true) },
         )
+        SessionNavigationCard(
+            sessionId = state.settings.sessionId,
+            tasks = state.tasks,
+            background = state.backgroundTasks,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            onOpenTask = { taskId ->
+                vm.selectTask(taskId)
+                vm.navigate(AppDestination.Tasks)
+            },
+            onOpenBackground = { taskId ->
+                vm.selectBackgroundTask(taskId)
+                vm.navigate(AppDestination.Background)
+            },
+            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+            onOpenMemory = { vm.navigate(AppDestination.Memory) },
+        )
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
@@ -1037,23 +1053,6 @@ private fun ChatConversation(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    item(key = "session-navigation") {
-                        SessionNavigationCard(
-                            sessionId = state.settings.sessionId,
-                            tasks = state.tasks,
-                            background = state.backgroundTasks,
-                            onOpenTask = { taskId ->
-                                vm.selectTask(taskId)
-                                vm.navigate(AppDestination.Tasks)
-                            },
-                            onOpenBackground = { taskId ->
-                                vm.selectBackgroundTask(taskId)
-                                vm.navigate(AppDestination.Background)
-                            },
-                            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
-                            onOpenMemory = { vm.navigate(AppDestination.Memory) },
-                        )
-                    }
                     items(
                         items = timeline,
                         key = { it.key },
@@ -1254,6 +1253,7 @@ private fun SessionNavigationCard(
     sessionId: String,
     tasks: List<TaskSummary>,
     background: List<AutonomyTaskSummary>,
+    modifier: Modifier = Modifier,
     onOpenTask: (String) -> Unit,
     onOpenBackground: (String) -> Unit,
     onOpenTrace: () -> Unit,
@@ -1264,7 +1264,7 @@ private fun SessionNavigationCard(
     val featured = remember(mine) { sessionNavigationTask(mine) }
     val featuredBoard = remember(board) { sessionNavigationBackground(board) }
     val quiet = featured == null && featuredBoard == null
-    CloverCard {
+    CloverCard(modifier = modifier) {
         Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
         when {
             featured != null -> Text(

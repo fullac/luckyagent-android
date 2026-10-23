@@ -74,7 +74,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
 import com.luckyagent.android.ui.screens.computerNavDestinations
-import com.luckyagent.android.ui.screens.sessionNavDestinations
 import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
@@ -120,17 +119,11 @@ private val navItems = listOf(
 private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 
 /**
- * Phone home is chat. Progress, traces, and memory grow out of the current
- * session. Host controls stay under one computer, not beside chat.
+ * Phone home is chat. Progress, traces, memory, and the background board grow
+ * out of the current session card. Host controls stay under one computer.
  * Server config is opened from Settings, not from this list.
  */
-private fun navGroup(label: String, names: List<String>) =
-    label to names.map { name -> navItems.first { it.label == name } }
-
-private val navGroups = listOf(
-    navGroup("当前会话", sessionNavDestinations),
-    navGroup("这台电脑", computerNavDestinations),
-)
+private val computerNavItems = computerNavDestinations.map { name -> navItems.first { it.label == name } }
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
 private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (dest) {
@@ -316,17 +309,15 @@ private fun AppScaffold(
                         BrandMark(state.settings.avatarFile, size = 42.dp, corner = 14.dp)
                         Spacer(Modifier.height(16.dp))
                         RailDestination(nav(AppDestination.Chat), state, vm)
-                        navGroups.forEach { (groupLabel, groupItems) ->
-                            Text(
-                                groupLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CloverText3,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-                            )
-                            groupItems.forEach { RailDestination(it, state, vm) }
-                        }
+                        Text(
+                            "这台电脑",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CloverText3,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        )
+                        computerNavItems.forEach { RailDestination(it, state, vm) }
                         Spacer(Modifier.height(12.dp))
                         RailDestination(nav(AppDestination.Settings), state, vm)
                     }
@@ -506,16 +497,14 @@ private fun NavigationPage(
                 .padding(horizontal = 12.dp, vertical = 14.dp),
         ) {
             DrawerNavItem(nav(AppDestination.Chat), state, onSelect)
-            navGroups.forEach { (groupLabel, groupItems) ->
-                Text(
-                    groupLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CloverText3,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp),
-                )
-                groupItems.forEach { DrawerNavItem(it, state, onSelect) }
-            }
+            Text(
+                "这台电脑",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp),
+            )
+            computerNavItems.forEach { DrawerNavItem(it, state, onSelect) }
         }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp))
         Box(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {

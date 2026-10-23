@@ -120,7 +120,7 @@ fun TasksScreen(state: AppUiState, vm: AppViewModel) {
             } else {
                 detail.root.summary.description.ifBlank { detail.root.summary.id }
             },
-            onBack = if (detail != null) vm::clearSelectedTask else null,
+            onBack = if (detail != null) vm::clearSelectedTask else ({ vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) }),
             actions = {
                 IconButton(onClick = { if (detail == null) vm.refreshTasks() else vm.selectTask(detail.root.summary.id) }) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")

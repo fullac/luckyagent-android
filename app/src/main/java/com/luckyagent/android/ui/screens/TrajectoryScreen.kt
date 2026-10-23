@@ -84,6 +84,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
             eyebrow = "Runtime",
             title = "本轮轨迹",
             subtitle = state.settings.sessionId.ifBlank { "先打开一个会话" },
+            onBack = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
             actions = {
                 IconButton(onClick = vm::refreshTrajectory) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")

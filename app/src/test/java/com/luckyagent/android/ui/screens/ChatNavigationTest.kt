@@ -51,12 +51,14 @@ class ChatNavigationTest {
         assertNull(sessionNavigationBackground(emptyList()))
     }
 
-    @Test fun phoneAndWideNavigationUseTheSameGroups() {
-        assertEquals(listOf("任务", "本轮轨迹", "记忆"), sessionNavDestinations)
-        assertEquals(listOf("定时", "渠道", "插件", "技能", "后台黑板"), computerNavDestinations)
-        assertFalse(sessionNavDestinations.contains("服务器配置"))
+    @Test fun navigationKeepsSessionProgressOffTheModuleList() {
+        assertEquals(listOf("定时", "渠道", "插件", "技能"), computerNavDestinations)
+        assertFalse(computerNavDestinations.contains("任务"))
+        assertFalse(computerNavDestinations.contains("本轮轨迹"))
+        assertFalse(computerNavDestinations.contains("记忆"))
+        assertFalse(computerNavDestinations.contains("后台黑板"))
         assertFalse(computerNavDestinations.contains("服务器配置"))
-        assertFalse((sessionNavDestinations + computerNavDestinations).contains("聊天"))
+        assertFalse(computerNavDestinations.contains("聊天"))
     }
 
     private fun task(

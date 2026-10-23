@@ -50,6 +50,8 @@ internal fun sessionNavigationBackground(tasks: List<AutonomyTaskSummary>): Auto
         ?: tasks.firstOrNull { it.state.taskIsActive() }
         ?: tasks.maxByOrNull { it.lastActivityAt ?: it.completedAt ?: it.updatedAt ?: it.createdAt ?: "" }
 
-/** Phone and wide layouts share these groups. Chat and settings stay outside them. */
-internal val sessionNavDestinations = listOf("任务", "本轮轨迹", "记忆")
-internal val computerNavDestinations = listOf("定时", "渠道", "插件", "技能", "后台黑板")
+/**
+ * Phone drawer and wide rail share this list. Session progress is a card on
+ * chat, so tasks, traces, memory, and the background board are not peers here.
+ */
+internal val computerNavDestinations = listOf("定时", "渠道", "插件", "技能")

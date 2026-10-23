@@ -192,6 +192,7 @@ import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.ReplacedBubbleList
 import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
@@ -405,6 +406,58 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     }
     flushSteps()
     return result
+}
+
+/**
+ * Reuse the existing timeline while a streaming answer replaces its last
+ * bubble. History/tool changes still take the full projection path because
+ * they can change process-fold boundaries.
+ */
+internal class ChatTimelineCache {
+    private var bubbles: List<ChatBubble>? = null
+    private var timeline: List<ChatTimelineItem> = emptyList()
+
+    fun update(next: List<ChatBubble>): List<ChatTimelineItem> {
+        val previous = bubbles
+        if (next === previous) return timeline
+        val replacement = next as? ReplacedBubbleList
+        val incremental = replacement
+            ?.takeIf {
+                it.source === previous ||
+                    (previous is ReplacedBubbleList &&
+                        previous.source === it.source &&
+                        previous.replacementIndex == it.replacementIndex)
+            }
+            ?.let(::replaceLastBubble)
+        timeline = incremental ?: buildTimeline(next)
+        bubbles = next
+        return timeline
+    }
+
+    private fun replaceLastBubble(change: ReplacedBubbleList): List<ChatTimelineItem>? {
+        if (change.replacementIndex != change.source.lastIndex) return null
+        val previous = change.source.lastOrNull() ?: return null
+        val replacement = change.replacement
+        if (isProcessBubble(previous) != isProcessBubble(replacement)) return null
+        val lastIndex = timeline.lastIndex
+        if (lastIndex < 0) return null
+
+        val updated = when (val item = timeline[lastIndex]) {
+            is ChatTimelineItem.Message -> {
+                if (isProcessBubble(replacement) || item.bubble.id != previous.id) return null
+                item.copy(bubble = replacement)
+            }
+            is ChatTimelineItem.Process -> {
+                if (!isProcessBubble(replacement) || item.steps.lastOrNull()?.id != previous.id) return null
+                item.copy(steps = item.steps.dropLast(1) + replacement)
+            }
+        }
+        return timeline.toMutableList().also { it[lastIndex] = updated }
+    }
+
+    private fun isProcessBubble(bubble: ChatBubble): Boolean =
+        bubble.role == "reasoning" || bubble.role == "tool" || bubble.role == "compact" ||
+            bubble.toolName != null || (bubble.role == "assistant" && bubble.isIntermediate)
 }
 
 @Composable
@@ -940,7 +993,8 @@ private fun ChatConversation(
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
         val refreshState = rememberPullToRefreshState()
-        val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        val timelineCache = remember { ChatTimelineCache() }
+        val timeline = remember(state.bubbles) { timelineCache.update(state.bubbles) }
         val latestAssistantId = remember(state.bubbles) {
             state.bubbles
                 .lastOrNull { it.role.equals("assistant", ignoreCase = true) && !it.isIntermediate && it.content.isNotBlank() }

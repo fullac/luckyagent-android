@@ -1669,17 +1669,26 @@ class AppViewModel(
         val piece = assistantPending.toString()
         assistantPending.setLength(0)
         _ui.update { st ->
-            val list = st.bubbles.toMutableList()
             val cachedIndex = assistantBufferIndex
-                ?.takeIf { it in list.indices && list[it].id == id }
-            val idx = cachedIndex ?: list.indexOfLast { it.id == id }
+                ?.takeIf { it in st.bubbles.indices && st.bubbles[it].id == id }
+            val idx = cachedIndex ?: st.bubbles.indexOfLast { it.id == id }
+            val list: List<ChatBubble>
             if (idx >= 0) {
-                list[idx] = list[idx].copy(
-                    content = appendUiText(list[idx].content, piece, MAX_UI_MESSAGE_CHARS),
-                    streaming = true,
+                val bubble = st.bubbles[idx]
+                list = st.bubbles.replaceBubbleAt(
+                    idx,
+                    bubble.copy(
+                        content = appendUiText(bubble.content, piece, MAX_UI_MESSAGE_CHARS),
+                        streaming = true,
+                    ),
                 )
             } else {
-                list += ChatBubble(id = id, role = "assistant", content = capUiText(piece, MAX_UI_MESSAGE_CHARS), streaming = true)
+                list = st.bubbles + ChatBubble(
+                    id = id,
+                    role = "assistant",
+                    content = capUiText(piece, MAX_UI_MESSAGE_CHARS),
+                    streaming = true,
+                )
             }
             assistantBufferIndex = if (idx >= 0) idx else list.lastIndex
             st.copy(bubbles = list, isResponding = true)
@@ -2855,11 +2864,15 @@ class AppViewModel(
             toolStepIndex.clear()
             parkedTurns.remove(sessionId)
         }
+        val historyBubbles = withContext(Dispatchers.Default) {
+            historyToBubbles(page.messages, page.startIndex)
+        }
+        if (currentSessionId() != sessionId || historySessionId != sessionId) return
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
         val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
-        // History fetches run off the main thread. Bubble ids are only touched on main.
+        // History projection runs off the main thread. Bubble ids are only touched on main.
         withContext(Dispatchers.Main.immediate) {
             if (currentSessionId() != sessionId || historySessionId != sessionId) return@withContext
             if (
@@ -2881,12 +2894,24 @@ class AppViewModel(
             } else {
                 "loaded ${historyMessages.size} messages"
             }
-            publishHistory(sessionId, offline, shownActivity, preserveLiveTurn = keepLiveTurn && stillOwned)
+            publishHistory(
+                sessionId = sessionId,
+                offline = offline,
+                activity = shownActivity,
+                historyBubbles = historyBubbles,
+                preserveLiveTurn = keepLiveTurn && stillOwned,
+            )
         }
     }
 
-    private fun publishHistory(sessionId: String, offline: Boolean, activity: String, preserveLiveTurn: Boolean = false) {
-        val bubbles = historyToBubbles(historyMessages, historyStartIndex)
+    private fun publishHistory(
+        sessionId: String,
+        offline: Boolean,
+        activity: String,
+        historyBubbles: List<ChatBubble>,
+        preserveLiveTurn: Boolean = false,
+    ) {
+        val bubbles = historyBubbles
         val running = activeRuns[sessionId]?.isNotEmpty() == true
         _ui.update { current ->
             val live = if (preserveLiveTurn && running) {

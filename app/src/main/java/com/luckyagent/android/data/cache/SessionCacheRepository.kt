@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.RuntimeSession
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
@@ -76,7 +78,9 @@ class SessionCacheRepository internal constructor(
         if (session == null || session.startIndex < 0) return null
         val stored = dao.messages(endpoint, session.sessionId)
         if (stored.isEmpty() && session.messageCount > 0) return null
-        val messages = stored.map { entity -> decodeMessage(entity.rawJson) ?: return null }
+        val messages = withContext(Dispatchers.Default) {
+            stored.map { entity -> decodeMessage(entity.rawJson) ?: return@withContext null }
+        } ?: return null
         if (stored.withIndex().any { (index, entity) -> entity.ordinal != session.startIndex + index }) return null
         return MessagePage(
             messages = messages,
@@ -146,21 +150,27 @@ class SessionCacheRepository internal constructor(
                 if (existing == null || sessionRowChanged(existing, session)) dao.upsertSession(session)
             }
             is HistoryCacheWrite.Patch -> {
+                val inserts = withContext(Dispatchers.Default) {
+                    write.inserts.map { item ->
+                        messageEntity(endpoint, sessionId, item.ordinal, item.message)
+                    }
+                }
                 dao.patchMessages(
                     session = session,
-                    inserts = write.inserts.map { item ->
-                        messageEntity(endpoint, sessionId, item.ordinal, item.message)
-                    },
+                    inserts = inserts,
                     deleteBefore = write.deleteBefore,
                     deleteFrom = write.deleteFrom,
                 )
             }
             HistoryCacheWrite.Replace -> {
+                val messages = withContext(Dispatchers.Default) {
+                    capped.messages.mapIndexed { index, message ->
+                        messageEntity(endpoint, sessionId, capped.startIndex + index, message)
+                    }
+                }
                 dao.replaceMessages(
                     session = session,
-                    messages = capped.messages.mapIndexed { index, message ->
-                        messageEntity(endpoint, sessionId, capped.startIndex + index, message)
-                    },
+                    messages = messages,
                     minOrdinal = capped.startIndex,
                 )
             }

@@ -8,15 +8,28 @@ internal data class ManualConnection(
     val useBearer: Boolean,
 )
 
+enum class ComputerLink { Unknown, Checking, Ready, Failed }
+
 /**
- * The first-run gate stays up until a computer address and key exist and the
- * latest health check has not failed. A later socket reconnect is separate.
- * Standalone model chat does not use this computer connection.
+ * Stay on the connection step until this session has authenticated to the
+ * computer. A saved address is not enough: the key still has to be accepted.
+ * A later socket reconnect does not return here. Standalone model chat does not
+ * use this computer connection.
  */
-internal fun needsConnectionSetup(settings: ClientSettings, healthOk: Boolean?): Boolean {
+internal fun needsConnectionSetup(settings: ClientSettings, link: ComputerLink): Boolean {
     if (settings.connectionMode == "standalone") return false
-    if (healthOk == false) return true
-    return settings.apiBase.isBlank() || settings.apiKey.isBlank()
+    return settings.apiBase.isBlank() || settings.apiKey.isBlank() || link != ComputerLink.Ready
+}
+
+/** Health check does not require a key, so a rejected key must be recognized from an authenticated call. */
+internal fun connectionFailureMessage(error: Throwable?): String {
+    val text = error?.message.orEmpty()
+    val rejected = text.contains("401") || text.contains("403") || text.contains("api key", ignoreCase = true)
+    return if (rejected) {
+        "密钥没有通过这台电脑的验证。可以重试、改地址或重新扫码。"
+    } else {
+        "没能连上这台电脑。可以重试、改地址或重新扫码。"
+    }
 }
 
 /** Accepts an address and key. A leading "Bearer " selects that header; otherwise the key is sent as X-API-Key. */

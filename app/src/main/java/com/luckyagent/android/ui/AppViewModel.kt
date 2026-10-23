@@ -73,6 +73,8 @@ import com.luckyagent.android.data.api.WsChatHandle
 import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
+import com.luckyagent.android.ui.screens.ComputerLink
+import com.luckyagent.android.ui.screens.connectionFailureMessage
 import com.luckyagent.android.ui.screens.connectionHostLabel
 import com.luckyagent.android.ui.screens.manualConnection
 import com.luckyagent.android.data.standalone.StandaloneMessage
@@ -225,6 +227,8 @@ data class AppUiState(
     val healthOk: Boolean? = null,
     /** Shown by the first-connection step. Null when that step has nothing new to say. */
     val connectionNotice: String? = null,
+    /** Ready only after an authenticated request succeeds in this session. */
+    val computerLink: ComputerLink = ComputerLink.Unknown,
     val memoryEntries: List<MemoryEntry> = emptyList(),
     val memoryStats: MemoryStats? = null,
     val memoryGraphNodes: List<MemoryGraphNode> = emptyList(),
@@ -344,6 +348,7 @@ class AppViewModel(
 
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
+    private var connectionVerifyJob: Job? = null
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
     private var cronPollingJob: Job? = null
@@ -402,6 +407,7 @@ class AppViewModel(
                         current.settings.useBearer != s.useBearer
                     current.copy(
                         settings = s,
+                        computerLink = if (endpointChanged) ComputerLink.Unknown else current.computerLink,
                         pendingQuote = if (current.settings.sessionId != s.sessionId) null else current.pendingQuote,
                         models = if (endpointChanged) emptyList() else current.models,
                         activeModels = if (endpointChanged) emptyMap() else current.activeModels,
@@ -422,6 +428,11 @@ class AppViewModel(
                     )
                 }
                 if (endpointChanged) resetForEndpointChange(s)
+                val shouldVerify = s.connectionMode != "standalone" &&
+                    s.apiBase.isNotBlank() &&
+                    s.apiKey.isNotBlank() &&
+                    (endpointChanged || _ui.value.computerLink == ComputerLink.Unknown)
+                if (shouldVerify) verifyComputerConnection()
             }
         }
         viewModelScope.launch {
@@ -431,7 +442,18 @@ class AppViewModel(
         }
         viewModelScope.launch {
             container.wsClient.lastError.collect { err ->
-                _ui.update { it.copy(socketError = err) }
+                val rejected = err?.contains("认证失败") == true
+                _ui.update {
+                    it.copy(
+                        socketError = err,
+                        computerLink = if (rejected) ComputerLink.Failed else it.computerLink,
+                        connectionNotice = if (rejected) {
+                            "密钥没有通过这台电脑的验证。可以重试、改地址或重新扫码。"
+                        } else {
+                            it.connectionNotice
+                        },
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -2203,7 +2225,7 @@ class AppViewModel(
             settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = endpoint.id)
         }
         refreshSessions()
-        probeHealth(endpoint.name)
+        verifyComputerConnection(endpoint.name)
     }
 
     fun submitFirstConnection(address: String, key: String) {
@@ -2235,7 +2257,7 @@ class AppViewModel(
             settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = currentId)
         }
         refreshSessions()
-        probeHealth(label)
+        verifyComputerConnection(label)
     }
 
     fun saveRuntimeEndpoint(endpoint: RuntimeEndpoint) {
@@ -2374,23 +2396,52 @@ class AppViewModel(
         }
     }
 
-    fun probeHealth(connectedName: String? = null) {
-        val settings = container.settingsRepository.snapshot()
-        val name = connectionHostLabel(settings.apiBase, connectedName)
-        _ui.update { it.copy(healthOk = null, healthText = null, connectionNotice = "正在连接…") }
+    fun probeHealth() {
         viewModelScope.launch {
             val result = container.api.healthLive()
-            val connected = "已连接 $name"
-            val failed = "没能连上这台电脑。可以重试、改地址或重新扫码。"
             _ui.update {
                 it.copy(
                     healthOk = result.isSuccess,
-                    healthText = result.getOrElse { error -> error.message ?: failed },
+                    healthText = result.getOrElse { error -> error.message ?: "health failed" },
+                )
+            }
+        }
+    }
+
+    /**
+     * Confirms the saved address and key with an authenticated request.
+     * /health/live does not check the key, so it cannot open the chat gate.
+     */
+    fun verifyComputerConnection(connectedName: String? = null) {
+        val settings = container.settingsRepository.snapshot()
+        if (settings.connectionMode == "standalone") return
+        if (settings.apiBase.isBlank() || settings.apiKey.isBlank()) {
+            _ui.update {
+                it.copy(
+                    computerLink = ComputerLink.Failed,
+                    connectionNotice = "先填写电脑地址和密钥。",
+                )
+            }
+            return
+        }
+        val name = connectionHostLabel(settings.apiBase, connectedName)
+        connectionVerifyJob?.cancel()
+        _ui.update { it.copy(computerLink = ComputerLink.Checking, connectionNotice = "正在连接…") }
+        connectionVerifyJob = viewModelScope.launch {
+            val result = container.api.listSessions()
+            if (!currentCacheConnectionMatches(settings.apiBase, settings.apiKey)) return@launch
+            val connected = "已连接 $name"
+            val failed = connectionFailureMessage(result.exceptionOrNull())
+            _ui.update {
+                it.copy(
+                    computerLink = if (result.isSuccess) ComputerLink.Ready else ComputerLink.Failed,
                     connectionNotice = if (result.isSuccess) connected else failed,
                     snackbarMessage = if (result.isSuccess) connected else it.snackbarMessage,
                     activityLine = if (result.isSuccess) connected else failed,
+                    healthText = result.exceptionOrNull()?.message ?: it.healthText,
                 )
             }
+            if (result.isSuccess) connectSocket(force = true)
         }
     }
 

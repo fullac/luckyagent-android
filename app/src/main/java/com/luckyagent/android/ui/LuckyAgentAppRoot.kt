@@ -76,6 +76,7 @@ import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
 import com.luckyagent.android.ui.screens.FirstConnectionScreen
 import com.luckyagent.android.ui.screens.needsConnectionSetup
+import com.luckyagent.android.ui.screens.ComputerLink
 import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
@@ -173,7 +174,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
     val openNavigation: () -> Unit = remember(navigationPager, scope) {
         { scope.launch { navigationPager.animateScrollToPage(0) }; Unit }
     }
-    val setupRequired = needsConnectionSetup(state.settings, state.healthOk)
+    val setupRequired = needsConnectionSetup(state.settings, state.computerLink)
     val navigationOpen = !setupRequired && state.destination != AppDestination.Chat && navigationPager.currentPage == 0
     BackHandler(enabled = navigationOpen) {
         scope.launch { navigationPager.animateScrollToPage(1) }
@@ -300,7 +301,7 @@ private fun AppScaffold(
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.safeDrawing),
             ) {
-                if (useRail && !needsConnectionSetup(state.settings, state.healthOk)) {
+                if (useRail && !needsConnectionSetup(state.settings, state.computerLink)) {
                     NavigationRail(
                         modifier = Modifier
                             .width(AppNavRailWidth)
@@ -330,7 +331,7 @@ private fun AppScaffold(
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     Box(Modifier.widthIn(max = 1440.dp).fillMaxSize()) {
-                        if (needsConnectionSetup(state.settings, state.healthOk)) {
+                        if (needsConnectionSetup(state.settings, state.computerLink)) {
                             FirstConnectionScreen(
                                 state = state,
                                 onScan = startPairingScan,
@@ -342,7 +343,7 @@ private fun AppScaffold(
                                     )
                                 },
                                 onSubmit = vm::submitFirstConnection,
-                                onRetry = { vm.probeHealth() },
+                                onRetry = { vm.verifyComputerConnection() },
                                 onUseStandalone = vm::useStandaloneConnection,
                             )
                         } else when (state.destination) {

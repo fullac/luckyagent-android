@@ -8,16 +8,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FirstConnectionTest {
-    @Test fun freshInstallNeedsAnAddressAndKeyBeforeChat() {
+    @Test fun savedKeyStillWaitsUntilThisSessionAuthenticates() {
         val fresh = ClientSettings(apiBase = "http://10.0.2.2:9090", apiKey = "")
-        assertTrue(needsConnectionSetup(fresh, healthOk = null))
-        assertFalse(needsConnectionSetup(fresh.copy(apiKey = "secret"), healthOk = null))
-        assertTrue(needsConnectionSetup(fresh.copy(apiKey = "secret"), healthOk = false))
+        val saved = fresh.copy(apiKey = "secret")
+        assertTrue(needsConnectionSetup(fresh, ComputerLink.Unknown))
+        assertTrue(needsConnectionSetup(saved, ComputerLink.Unknown))
+        assertTrue(needsConnectionSetup(saved, ComputerLink.Failed))
+        assertFalse(needsConnectionSetup(saved, ComputerLink.Ready))
+    }
+
+    @Test fun rejectedKeyGetsADifferentNextStepFromAnUnreachableComputer() {
+        assertTrue(connectionFailureMessage(IllegalStateException("sessions 401: api key required")).contains("密钥"))
+        assertTrue(connectionFailureMessage(IllegalStateException("failed to connect")).contains("没能连上"))
     }
 
     @Test fun standaloneChatDoesNotUseTheComputerGate() {
         val standalone = ClientSettings(connectionMode = "standalone", apiBase = "", apiKey = "")
-        assertFalse(needsConnectionSetup(standalone, healthOk = false))
+        assertFalse(needsConnectionSetup(standalone, ComputerLink.Failed))
     }
 
     @Test fun manualEntryInfersBearerAndRejectsABareHost() {

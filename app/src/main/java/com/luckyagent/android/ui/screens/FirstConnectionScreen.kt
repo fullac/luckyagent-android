@@ -41,13 +41,13 @@ fun FirstConnectionScreen(
     onRetry: () -> Unit,
     onUseStandalone: () -> Unit,
 ) {
-    var manual by rememberSaveable { mutableStateOf(false) }
+    var manual by rememberSaveable { mutableStateOf(state.settings.apiKey.isNotBlank()) }
     var address by rememberSaveable(state.settings.apiBase) {
         mutableStateOf(state.settings.apiBase.takeUnless { it.isBlank() }.orEmpty())
     }
     var key by rememberSaveable { mutableStateOf("") }
-    val probing = state.connectionNotice == "正在连接…"
-    val failed = state.healthOk == false
+    val probing = state.computerLink == ComputerLink.Checking
+    val failed = state.computerLink == ComputerLink.Failed
     Column(
         Modifier
             .fillMaxSize()

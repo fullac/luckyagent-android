@@ -82,8 +82,8 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = "Tool trajectory",
-            subtitle = state.settings.sessionId.ifBlank { "Select a chat session first" },
+            title = "执行轨迹",
+            subtitle = state.settings.sessionId.ifBlank { "先打开一个会话" },
             actions = {
                 IconButton(onClick = vm::refreshTrajectory) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
@@ -93,7 +93,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
 
         if (state.trajectoryLoading) {
             Text(
-                "Loading tool trace…",
+                "正在读取本轮轨迹",
                 color = CloverText2,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
@@ -129,9 +129,9 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             listOf(
-                TrajectoryFilter.All to "All",
-                TrajectoryFilter.Success to "Success",
-                TrajectoryFilter.Failure to "Failure",
+                TrajectoryFilter.All to "全部",
+                TrajectoryFilter.Success to "成功",
+                TrajectoryFilter.Failure to "失败",
             ).forEach { (value, label) ->
                 FilterChip(
                     selected = state.trajectoryFilter == value,
@@ -155,7 +155,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             decorationBox = { inner ->
                 if (state.trajectoryQuery.isEmpty()) {
-                    Text("Filter by tool / args / result", color = CloverText3)
+                    Text("搜索工具、参数或结果", color = CloverText3)
                 }
                 inner()
             },
@@ -164,18 +164,20 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
         when {
             state.settings.sessionId.isBlank() -> {
                 EmptyState(
-                    title = "No session selected",
-                    body = "Open Chat, pick a session, then return here to inspect tool calls.",
+                    title = "还没有会话",
+                    body = "先回聊天打开一轮对话，工具调用会出现在这里。",
                     modifier = Modifier.padding(16.dp),
-                    actionLabel = "打开 Chat",
+                    actionLabel = "回到聊天",
                     onAction = { vm.navigate(AppDestination.Chat) },
                 )
             }
             !state.trajectoryLoading && state.trajectoryError == null && records.isEmpty() && trace?.tools.isNullOrEmpty() -> {
                 EmptyState(
-                    title = "No tool activity yet",
-                    body = "Tool calls from this session will show as structured cards once the agent runs tools.",
+                    title = "这轮还没有轨迹",
+                    body = "聊天里用到工具之后，调用会按步骤出现在这里。",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(AppDestination.Chat) },
                     icon = {
                         Icon(
                             Icons.Outlined.PlaylistRemove,
@@ -189,9 +191,11 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
             }
             !state.trajectoryLoading && records.isEmpty() -> {
                 EmptyState(
-                    title = "No matches",
-                    body = "No calls match the current filters.",
+                    title = "没有匹配的轨迹",
+                    body = "换个筛选，或回到聊天继续这一轮。",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(AppDestination.Chat) },
                 )
             }
             else -> {

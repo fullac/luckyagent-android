@@ -456,8 +456,11 @@ private fun NavigationPage(
                 )
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (state.settings.apiBase.isBlank()) "未设置服务地址"
-                        else com.luckyagent.android.ui.components.socketStateLabel(state.socketState),
+                        com.luckyagent.android.ui.components.socketStateLabel(
+                            state.socketState,
+                            responding = state.isResponding,
+                            addressMissing = state.settings.apiBase.isBlank(),
+                        ),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Medium,
                     )

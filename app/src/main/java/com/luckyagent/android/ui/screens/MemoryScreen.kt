@@ -126,8 +126,8 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
         item(key = "header") {
             ScreenHeader(
                 eyebrow = "Vault",
-                title = "Memory graph",
-                subtitle = "Knowledge graph and recall paths",
+                title = "记忆",
+                subtitle = "已连接电脑上的知识图谱和召回",
                 actions = { IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Refresh, "Refresh") } },
             )
         }
@@ -491,7 +491,15 @@ private fun DetailPanel(node: MemoryGraphNode?, traceNode: MemoryTraceNode?, nei
 private fun LazyListScope.memoryRecallItems(state: AppUiState, vm: AppViewModel) {
     item(key = "recall-search") { RecallSearchBar(state.memoryQuery, state.memoryEntries.size, vm) }
     if (state.memoryEntries.isEmpty() && !state.memoryLoading && state.memoryError == null) {
-        item(key = "recall-empty") { EmptyState("No memories matched", "Try another recall query. Write/remember stays on the host runtime.", Modifier.padding(horizontal = 16.dp)) }
+        item(key = "recall-empty") {
+            EmptyState(
+                "没有匹配的记忆",
+                "换个召回词再试。写入仍在已连接的电脑上完成。",
+                Modifier.padding(horizontal = 16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
+            )
+        }
     }
     itemsIndexed(state.memoryEntries, key = { index, entry -> entry.id?.let { "memory-$it" } ?: "memory-index-$index" }) { _, entry ->
         Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { MemoryEntryCard(entry) }

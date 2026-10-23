@@ -114,11 +114,11 @@ fun TasksScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = if (detail == null) "Tasks" else "Task details",
+            title = if (detail == null) "任务" else "任务详情",
             subtitle = if (detail == null) {
-                if (state.taskPolling) "Watching active tasks" else "Multi-agent task center"
+                if (state.taskPolling) "正在看进行中的任务" else "聊天里派出去的任务会出现在这里"
             } else {
-                detail.root.summary.id
+                detail.root.summary.description.ifBlank { detail.root.summary.id }
             },
             onBack = if (detail != null) vm::clearSelectedTask else null,
             actions = {
@@ -141,11 +141,11 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
     state.tasksError?.let { ErrorLine(it) }
 
     val filters = listOf(
-        TaskFilter.All to "All",
-        TaskFilter.Active to "Active",
-        TaskFilter.Completed to "Done",
-        TaskFilter.Failed to "Failed",
-        TaskFilter.Cancelled to "Cancelled",
+        TaskFilter.All to "全部",
+        TaskFilter.Active to "进行中",
+        TaskFilter.Completed to "已完成",
+        TaskFilter.Failed to "失败",
+        TaskFilter.Cancelled to "已取消",
     )
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
@@ -174,7 +174,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
             .background(CloverSurface2)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         decorationBox = { inner ->
-            if (state.taskQuery.isEmpty()) Text("Filter by task, agent, mode or status", color = CloverText3)
+            if (state.taskQuery.isEmpty()) Text("搜索任务、代理或状态", color = CloverText3)
             inner()
         },
     )
@@ -185,17 +185,19 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
 
     when {
         state.tasksLoading && state.tasks.isEmpty() -> {
-            Text("Loading tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
+            Text("正在读取任务", color = CloverText2, modifier = Modifier.padding(16.dp))
         }
         !state.tasksLoading && tasks.isEmpty() -> {
             EmptyState(
-                title = "No tasks",
+                title = if (state.tasks.isEmpty()) "还没有任务" else "没有匹配的任务",
                 body = if (state.tasks.isEmpty()) {
-                    "Multi-agent and background tasks will appear here."
+                    "从聊天发出的协作任务会出现在这里。"
                 } else {
-                    "No tasks match the current filters."
+                    "换个筛选，或回到聊天继续这一轮。"
                 },
                 modifier = Modifier.padding(16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 icon = {
                     Icon(
                         Icons.Outlined.AssignmentLate,
@@ -441,8 +443,10 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
         } else if (detail.origin == TaskOrigin.Legacy) {
             item {
                 EmptyState(
-                    title = "No event stream",
-                    body = "This legacy task exposes child state and output, but not persisted task events.",
+                    title = "没有事件记录",
+                    body = "这条旧任务只有步骤和结果，没有保存过程。",
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 )
             }
         }

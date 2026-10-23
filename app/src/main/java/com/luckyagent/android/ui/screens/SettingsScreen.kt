@@ -72,6 +72,7 @@ import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.DetailDisclosure
 import com.luckyagent.android.ui.components.ScreenHeader
+import com.luckyagent.android.ui.components.socketStateLabel
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverLine
@@ -165,29 +166,28 @@ private fun SettingsConnectionSummary(
 ) {
     val endpoint = settings.runtimeEndpoints.firstOrNull { it.id == settings.activeRuntimeEndpointId }
         ?: settings.runtimeEndpoints.firstOrNull()
-    val host = endpoint?.name?.ifBlank { null } ?: "Default"
-    val url = endpoint?.apiBase?.ifBlank { null } ?: settings.apiBase.ifBlank { "Not set" }
+    val host = endpoint?.name?.ifBlank { null } ?: "默认"
+    val url = endpoint?.apiBase?.ifBlank { null } ?: settings.apiBase.ifBlank { "未设置服务地址" }
     val auth = when {
-        settings.apiKey.isBlank() -> "No key"
+        settings.apiKey.isBlank() -> "没有密钥"
         settings.useBearer -> "Bearer"
         else -> "X-API-Key"
     }
-    val ws = when (socket) {
-        SocketState.Connected, SocketState.Running -> "WS connected"
-        SocketState.Connecting, SocketState.Reconnecting -> "WS connecting"
-        else -> "WS idle"
-    }
+    val link = socketStateLabel(socket, addressMissing = settings.apiBase.isBlank())
     CloverCard {
-        Text("Connection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("Detailed host, session, appearance, and notification settings stay closed until you open them.", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Text("连接", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("地址、密钥和外观先收着。打开详细设置后再改。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
         Text(host, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(url, color = CloverText2, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MetaChip(settings.sessionId.ifBlank { "android-main" }.take(24))
             MetaChip(auth)
-            MetaChip(ws)
+            MetaChip(link)
         }
-        Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("Open detailed settings") }
+        if (connectionNeedsAction(socket, settings.apiBase.isBlank())) {
+            Text(connectionFailureLine(settings.apiBase.isBlank()), color = CloverError, style = MaterialTheme.typography.bodySmall)
+        }
+        Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("打开详细设置") }
     }
 }
 
@@ -666,44 +666,41 @@ private fun SettingsField(label: String, value: String, onValueChange: (String) 
 @Composable
 private fun SettingsLiveCard(state: AppUiState, vm: AppViewModel) {
     CloverCard {
-        Text("Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("连接检查", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = vm::probeHealth) {
                 Icon(Icons.Outlined.HealthAndSafety, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("Health")
+                Text("检查服务")
             }
             OutlinedButton(onClick = { vm.connectSocket(force = true) }) {
                 Icon(Icons.Outlined.Cable, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("Reconnect WS")
+                Text("重新连接")
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            MetaChip(when (state.socketState) {
-                SocketState.Connected, SocketState.Running -> "WS connected"
-                SocketState.Connecting, SocketState.Reconnecting -> "WS connecting"
-                else -> "WS idle"
-            })
+            MetaChip(socketStateLabel(state.socketState, responding = state.isResponding, addressMissing = state.settings.apiBase.isBlank()))
         }
-        state.healthText?.let { DetailDisclosure("Health 响应", it, json = true, previewLines = 1) }
-        state.activityLine?.let { Text(it, color = CloverText2, style = MaterialTheme.typography.bodyMedium) }
+        if (connectionNeedsAction(state.socketState, state.settings.apiBase.isBlank())) {
+            Text(connectionFailureLine(state.settings.apiBase.isBlank()), color = CloverError, style = MaterialTheme.typography.bodySmall)
+        }
+        state.healthText?.let { DetailDisclosure("服务响应", it, json = true, previewLines = 1) }
+        activityStatusLine(state.activityLine)?.let { Text(it, color = CloverText2, style = MaterialTheme.typography.bodyMedium) }
     }
 }
 
 @Composable
 private fun SettingsAboutCard() {
     CloverCard {
-        Text("About this client", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("关于这个客户端", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text(
-            "LuckyAgent Android is a thin remote UI. Chat, trajectory, gateways, skills and memory are " +
-                "read from / written through the host HTTP API and websocket. No Go runtime is embedded.",
+            "LuckyAgent Android 是已连接电脑的远程界面。聊天、轨迹、渠道、技能和记忆都通过这台电脑的接口读写。手机里没有嵌入运行时。",
             color = CloverText2,
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            "Gateway start/stop is available from the Gateways page when the connected host exposes the control API. " +
-                "Other runtime settings remain managed by the host.",
+            "渠道的启动和停止在网关页。其他服务配置仍由已连接的电脑管理。",
             color = CloverText3,
             style = MaterialTheme.typography.bodySmall,
         )

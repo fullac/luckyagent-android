@@ -206,17 +206,19 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
 
     when {
         state.backgroundLoading && state.backgroundDashboard == null -> {
-            Text("Loading background tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
+            Text("正在读取后台任务", color = CloverText2, modifier = Modifier.padding(16.dp))
         }
         !state.backgroundLoading && tasks.isEmpty() && state.backgroundDashboard == null -> {
             EmptyState(
-                title = "No background tasks",
+                title = if (state.backgroundTasks.isEmpty()) "还没有后台任务" else "没有匹配的后台任务",
                 body = if (state.backgroundTasks.isEmpty()) {
-                    "Autonomy queue tasks will appear here."
+                    "聊天里交给后台继续的工作会出现在这里。"
                 } else {
-                    "No background tasks match the current filters."
+                    "换个筛选，或回到聊天继续这一轮。"
                 },
                 modifier = Modifier.padding(16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 icon = {
                     Icon(
                         Icons.Outlined.HourglassEmpty,

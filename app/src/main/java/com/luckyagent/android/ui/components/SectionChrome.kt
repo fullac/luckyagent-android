@@ -300,16 +300,12 @@ fun ErrorLine(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-/** Human label for the socket state, shared by the chat top bar and the navigation drawer. */
-fun socketStateLabel(state: com.luckyagent.android.data.api.SocketState): String = when (state) {
-    com.luckyagent.android.data.api.SocketState.Connected -> "已连接"
-    com.luckyagent.android.data.api.SocketState.Running -> "运行中"
-    com.luckyagent.android.data.api.SocketState.Connecting -> "连接中"
-    com.luckyagent.android.data.api.SocketState.Reconnecting -> "重连中"
-    com.luckyagent.android.data.api.SocketState.Error -> "连接出错"
-    com.luckyagent.android.data.api.SocketState.Idle,
-    com.luckyagent.android.data.api.SocketState.Closed -> "未连接"
-}
+/** Human label for the socket state, shared by navigation, settings, and chat. */
+fun socketStateLabel(
+    state: com.luckyagent.android.data.api.SocketState,
+    responding: Boolean = false,
+    addressMissing: Boolean = false,
+): String = com.luckyagent.android.ui.screens.connectionStatusLabel(state, responding, addressMissing)
 
 fun socketStateLive(state: com.luckyagent.android.data.api.SocketState): Boolean =
     state == com.luckyagent.android.data.api.SocketState.Connected ||

@@ -281,6 +281,8 @@ data class AppUiState(
     val taskPolling: Boolean = false,
     val backgroundDashboard: AutonomyDashboardResponse? = null,
     val backgroundTasks: List<AutonomyTaskSummary> = emptyList(),
+    val focusedWorkCardId: String? = null,
+    val focusedWorkCardBackground: Boolean = false,
     val backgroundLoading: Boolean = false,
     val backgroundError: String? = null,
     val backgroundFilter: BackgroundFilter = BackgroundFilter.All,
@@ -1851,6 +1853,35 @@ class AppViewModel(
     /** Opens the conversation used by an autonomy queue task, when present. */
     fun openBackgroundSession(sessionId: String?) {
         openSession(sessionId)
+    }
+
+    /**
+     * Opens the one card a notification is about. The module list stays
+     * available from navigation; this path does not land there.
+     */
+    fun openWorkCardFromNotification(taskId: String, background: Boolean) {
+        val id = taskId.trim()
+        if (id.isBlank()) return
+        focusWorkCard(id, background)
+        navigate(AppDestination.Chat)
+        viewModelScope.launch {
+            if (background) refreshBackgroundNow() else refreshTasksNow()
+        }
+    }
+
+    fun focusWorkCard(taskId: String, background: Boolean) {
+        val id = taskId.trim()
+        if (id.isBlank()) return
+        _ui.update {
+            it.copy(
+                focusedWorkCardId = id,
+                focusedWorkCardBackground = background,
+            )
+        }
+    }
+
+    fun clearFocusedWorkCard() {
+        _ui.update { it.copy(focusedWorkCardId = null, focusedWorkCardBackground = false) }
     }
 
     fun openDestinationFromNotification(destination: String) {
@@ -3826,6 +3857,12 @@ class AppViewModel(
         }
     }
 
+    /** Cancels the task behind the pinned chat card. Detail pages stay closed. */
+    fun cancelWorkCard(taskId: String) {
+        val task = _ui.value.tasks.firstOrNull { it.id == taskId } ?: return
+        cancelTask(task)
+    }
+
     fun cancelTask(task: TaskSummary) {
         if (task.status.isTerminalTaskStatus()) return
         viewModelScope.launch {
@@ -3834,7 +3871,7 @@ class AppViewModel(
             if (result.isSuccess) {
                 refreshTasksNow()
             } else {
-                _ui.update { it.copy(taskDetailError = result.exceptionOrNull()?.message ?: "Cancel request failed") }
+                _ui.update { it.copy(taskDetailError = result.exceptionOrNull()?.message ?: "没能取消。重试这一条。") }
             }
         }
     }

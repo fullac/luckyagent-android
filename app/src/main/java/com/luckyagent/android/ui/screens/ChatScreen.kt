@@ -123,6 +123,8 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.luckyagent.android.ui.components.CloverCard
+import com.luckyagent.android.ui.components.StatusChip
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -935,6 +937,45 @@ private fun ChatConversation(
             onOpenModel = { showModelSheet = true },
             onReconnect = { vm.connectSocket(force = true) },
         )
+        val workCard = remember(
+            state.focusedWorkCardId,
+            state.focusedWorkCardBackground,
+            state.tasks,
+            state.backgroundTasks,
+            state.settings.sessionId,
+        ) {
+            visibleWorkCard(
+                focusedId = state.focusedWorkCardId,
+                focusedBackground = state.focusedWorkCardBackground,
+                tasks = state.tasks,
+                background = state.backgroundTasks,
+                sessionId = state.settings.sessionId,
+            )
+        }
+        if (workCard != null) {
+            WorkReturnCard(
+                card = workCard,
+                onCancel = { vm.cancelWorkCard(workCard.id) },
+                onOpenResult = {
+                    val session = workCard.sessionId
+                    if (session.isNullOrBlank()) {
+                        vm.focusWorkCard(workCard.id, workCard.kind == WorkCardKind.Background)
+                    } else {
+                        vm.openSession(session)
+                        vm.focusWorkCard(workCard.id, workCard.kind == WorkCardKind.Background)
+                    }
+                },
+                onOpenDetail = {
+                    if (workCard.kind == WorkCardKind.Background) {
+                        vm.selectBackgroundTask(workCard.id)
+                        vm.navigate(AppDestination.Background)
+                    } else {
+                        vm.selectTask(workCard.id)
+                        vm.navigate(AppDestination.Tasks)
+                    }
+                },
+            )
+        }
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
@@ -1202,7 +1243,11 @@ private fun ChatConversation(
                     state.isResponding,
                 ),
                 collabTasks = turnTasks,
-                onOpenTask = { vm.selectTask(it); vm.navigate(com.luckyagent.android.ui.AppDestination.Tasks) },
+                onOpenTask = {
+                    vm.focusWorkCard(it, background = false)
+                    vm.selectTask(it)
+                    vm.navigate(AppDestination.Tasks)
+                },
                 imageHeaders = imageHeaders,
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
@@ -1223,6 +1268,48 @@ private fun ChatConversation(
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 88.dp),
         )
+    }
+}
+
+@Composable
+private fun WorkReturnCard(
+    card: WorkCard,
+    onCancel: () -> Unit,
+    onOpenResult: () -> Unit,
+    onOpenDetail: () -> Unit,
+) {
+    CloverCard(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    card.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (card.loading) "正在读取这件事" else workCardStatusLabel(card.status),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CloverText2,
+                )
+            }
+            if (!card.loading) StatusChip(workCardStatusLabel(card.status))
+        }
+        if (card.terminal && card.sessionId.isNullOrBlank()) {
+            Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
+        if (!card.loading) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (workCardCanCancel(card)) {
+                    OutlinedButton(onClick = onCancel) { Text("取消") }
+                }
+                if (card.terminal) {
+                    Button(onClick = onOpenResult) { Text("打开结果") }
+                }
+                TextButton(onClick = onOpenDetail) { Text("打开详情") }
+            }
+        }
     }
 }
 

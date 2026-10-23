@@ -314,11 +314,11 @@ private fun TaskSummaryCard(
             TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开结果")
             }
         }
         if (onOpenSession == null) {
-            Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
         LinearProgressIndicator(
             progress = { task.progress.coerceIn(0.0, 1.0).toFloat() },
@@ -372,11 +372,11 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     ) {
                         Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Open agent chat")
+                        Text("打开结果")
                     }
                 }
                 if (summary.executionSession() == null) {
-                    Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                    Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 }
                 Text(
                     summary.status.taskReadableAction(summary),
@@ -399,7 +399,7 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     Button(onClick = { vm.cancelTask(summary) }) {
                         Icon(Icons.Outlined.Close, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
-                        Text("Request cancel")
+                        Text("取消")
                     }
                 }
             }
@@ -709,7 +709,7 @@ private fun TaskNodeCard(node: TaskNode, onOpenSession: (TaskSummary) -> Unit) {
             ) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开结果")
             }
         }
         node.summary.result?.takeIf { it.isNotBlank() }?.let { DetailPayload("Output", it) }

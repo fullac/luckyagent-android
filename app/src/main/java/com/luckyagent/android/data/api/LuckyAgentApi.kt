@@ -549,7 +549,7 @@ class LuckyAgentApi(
         offset: Int = 0,
         /** When true, request full message bodies (include=full). Default uses server preview caps. */
         includeFull: Boolean = false,
-    ): Result<SessionHistory> =
+    ): Result<SessionHistoryFetch> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val query = buildMap {
@@ -565,8 +565,9 @@ class LuckyAgentApi(
                     .build()
                 client.newCall(request).execute().use { resp ->
                     val body = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) error("session history ${resp.code}: $body")
-                    json.decodeFromString(SessionHistory.serializer(), body)
+                    sessionHistoryFetch(resp.code, body) { raw ->
+                        json.decodeFromString(SessionHistory.serializer(), raw)
+                    }
                 }
             }
         }

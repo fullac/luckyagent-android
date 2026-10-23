@@ -198,7 +198,7 @@ data class WsChatHandle(
 data class ChatOutboundData(
     val message: String,
     val stream: Boolean = true,
-    @SerialName("max_iterations") val maxIterations: Int = 8,
+    @SerialName("max_iterations") val maxIterations: Int = 0,
     val attachments: List<MediaAttachment> = emptyList(),
 )
 

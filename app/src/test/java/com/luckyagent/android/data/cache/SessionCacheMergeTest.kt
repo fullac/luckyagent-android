@@ -9,14 +9,21 @@ import org.junit.Test
 class SessionCacheMergeTest {
     @Test
     fun unchangedCountAndUpdatedAtSkipsBodyFetch() {
-        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t2", reachedOldest = false)
+        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t2", reachedOldest = true)
         val remote = RuntimeSession(id = "s", messageCount = 12, updatedAt = "t2")
         assertEquals(HistorySync.Unchanged, historySyncAction(cached, remote))
     }
 
     @Test
+    fun partialCacheForcesFullReplacementEvenWhenMetadataIsUnchanged() {
+        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t2", reachedOldest = false)
+        val remote = RuntimeSession(id = "s", messageCount = 12, updatedAt = "t2")
+        assertEquals(HistorySync.Invalidate, historySyncAction(cached, remote))
+    }
+
+    @Test
     fun grownCountMergesLatestPage() {
-        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t1", reachedOldest = false)
+        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t1", reachedOldest = true)
         val remote = RuntimeSession(id = "s", messageCount = 14, updatedAt = "t2")
         assertEquals(HistorySync.MergeLatest, historySyncAction(cached, remote))
     }
@@ -171,7 +178,7 @@ class SessionCacheMergeTest {
     }
 
     @Test
-    fun fullWindowDropsTheHeadRowAndKeepsTheRest() {
+    fun aNarrowerWindowReplacesInsteadOfDroppingUnboundedHistory() {
         val stored = page(
             start = 0,
             count = 200,
@@ -183,11 +190,7 @@ class SessionCacheMergeTest {
             messages = (1 until 201).map { msg("m$it", created = "c$it") },
         )
 
-        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
-
-        assertEquals(listOf(200), write.inserts.map { it.ordinal })
-        assertEquals(1, write.deleteBefore)
-        assertEquals(201, write.deleteFrom)
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
     }
 
     @Test
@@ -202,24 +205,6 @@ class SessionCacheMergeTest {
         val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
         val incoming = page(start = 4, count = 6, messages = listOf(msg("new-a"), msg("new-b")))
         assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
-    }
-
-    @Test
-    fun capKeepsTheNewest200AndMarksOldestMissing() {
-        val page = page(
-            start = 0,
-            count = 250,
-            messages = (0 until 250).map { msg("m$it") },
-            reachedOldest = true,
-        )
-
-        val capped = capLatestMessages(page)
-
-        assertEquals(200, capped.messages.size)
-        assertEquals(50, capped.startIndex)
-        assertEquals("m50", capped.messages.first().content)
-        assertEquals("m249", capped.messages.last().content)
-        assertEquals(false, capped.reachedOldest)
     }
 
     private fun msg(

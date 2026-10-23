@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui
 
 import com.luckyagent.android.data.api.MediaAttachment
+import com.luckyagent.android.data.api.ProviderMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -37,7 +38,7 @@ class ChatSendQueueTest {
     }
 
     @Test
-    fun firstQueuedSkipsFailedAndBlocksWhileSending() {
+    fun firstQueuedSkipsFailedAndAllowsTheRuntimeQueueToFill() {
         val queue = OutboundChatQueue()
         queue.add(item("failed", status = OutboundQueueStatus.Failed))
         queue.add(item("next"))
@@ -45,9 +46,12 @@ class ChatSendQueueTest {
 
         assertEquals("next", queue.firstQueued("s1")!!.id)
         queue.update("next", status = OutboundQueueStatus.Sending)
+        assertEquals("after", queue.firstQueued("s1")!!.id)
+        queue.update("after", status = OutboundQueueStatus.Sending)
         assertNull(queue.firstQueued("s1"))
         queue.remove("next")
-        assertEquals("after", queue.firstQueued("s1")!!.id)
+        queue.remove("after")
+        assertNull(queue.firstQueued("s1"))
     }
 
     @Test
@@ -98,19 +102,63 @@ class ChatSendQueueTest {
         assertEquals(listOf("two"), queue.items("s2").map { it.id })
     }
 
+    @Test
+    fun storedRequestIdRetiresTheOutboundRow() {
+        val pending = listOf(item("outbound-1", message = "hi"))
+        val history = listOf(userMessage("hi", clientMessageId = "outbound-1"))
+
+        assertEquals(setOf("outbound-1"), confirmedOutboundIds(pending, history))
+    }
+
+    @Test
+    fun identicalStoredTextRetiresOneOutstandingRowOldestFirst() {
+        val pending = listOf(
+            item("first", message = "status?", createdAt = 1),
+            item("second", message = "status?", createdAt = 2),
+        )
+        val history = listOf(userMessage("status?"))
+
+        assertEquals(setOf("first"), confirmedOutboundIds(pending, history))
+    }
+
+    @Test
+    fun unconfirmedRowsStayPending() {
+        val pending = listOf(item("outbound-1", message = "never stored"))
+        val history = listOf(userMessage("something else"), userMessage("and another"))
+
+        assertTrue(confirmedOutboundIds(pending, history).isEmpty())
+    }
+
+    @Test
+    fun assistantTextNeverConfirmsAUserRow() {
+        val pending = listOf(item("outbound-1", message = "hi"))
+        val history = listOf(ProviderMessage(role = "assistant", content = "hi"))
+
+        assertTrue(confirmedOutboundIds(pending, history).isEmpty())
+    }
+
+    private fun userMessage(content: String, clientMessageId: String? = null) = ProviderMessage(
+        role = "user",
+        content = content,
+        clientMessageId = clientMessageId,
+    )
+
     private fun item(
         id: String,
         sessionId: String = "s1",
         status: OutboundQueueStatus = OutboundQueueStatus.Queued,
         error: String? = null,
         attachments: List<MediaAttachment> = emptyList(),
+        message: String = "message-$id",
+        createdAt: Long = 0,
     ) = OutboundQueueItem(
         id = id,
         sessionId = sessionId,
         preview = id,
-        message = "message-$id",
+        message = message,
         attachments = attachments,
         status = status,
         error = error,
+        createdAt = createdAt,
     )
 }

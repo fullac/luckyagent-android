@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui
 
 import com.luckyagent.android.data.api.MediaAttachment
+import com.luckyagent.android.data.api.ProviderMessage
 
 /**
  * The runtime serializes turns per session. This class keeps the client-side
@@ -10,6 +11,9 @@ import com.luckyagent.android.data.api.MediaAttachment
 enum class OutboundQueueStatus {
     Queued,
     Sending,
+    Accepted,
+    ServerQueued,
+    Running,
     Failed,
 }
 
@@ -22,6 +26,7 @@ data class OutboundQueueItem(
     val requestId: String? = null,
     val status: OutboundQueueStatus = OutboundQueueStatus.Queued,
     val error: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 /** Small synchronized store so ViewModel event callbacks can update queue state safely. */
@@ -31,6 +36,17 @@ class OutboundChatQueue {
     @Synchronized
     fun add(item: OutboundQueueItem) {
         items[item.id] = item
+    }
+
+    @Synchronized
+    fun replace(nextItems: List<OutboundQueueItem>) {
+        items.clear()
+        nextItems.forEach { items[it.id] = it }
+    }
+
+    @Synchronized
+    fun clear() {
+        items.clear()
     }
 
     @Synchronized
@@ -56,13 +72,13 @@ class OutboundChatQueue {
         items.values.firstOrNull { it.sessionId == sessionId && it.requestId == requestId }
 
     /**
-     * Next sendable message. A message already in flight blocks the rest.
-     * A failed message stays until retry and does not block later queued messages.
+     * Next frame that has not reached the WebSocket yet. Multiple frames may be
+     * in flight: the runtime owns the server-side turn queue and reports whether
+     * each request is accepted or waiting behind another run.
      */
     @Synchronized
     fun firstQueued(sessionId: String): OutboundQueueItem? {
         val sessionItems = items.values.filter { it.sessionId == sessionId }
-        if (sessionItems.any { it.status == OutboundQueueStatus.Sending }) return null
         return sessionItems.firstOrNull { it.status == OutboundQueueStatus.Queued }
     }
 
@@ -80,4 +96,41 @@ class OutboundChatQueue {
     @Synchronized
     fun items(sessionId: String): List<OutboundQueueItem> =
         items.values.filter { it.sessionId == sessionId }
+}
+
+/**
+ * Outbox rows the server already stored.
+ *
+ * A request id is authoritative when the server echoes it back as
+ * `client_message_id`. Until then a stored user message with identical text
+ * consumes one outstanding row, oldest first, so a repeated phrase still leaves
+ * the later copy pending.
+ */
+internal fun confirmedOutboundIds(
+    items: List<OutboundQueueItem>,
+    messages: List<ProviderMessage>,
+): Set<String> {
+    if (items.isEmpty()) return emptySet()
+    val storedIds = messages.mapNotNull { it.clientMessageId?.trim()?.takeIf(String::isNotBlank) }.toSet()
+    val storedText = mutableMapOf<String, Int>()
+    messages.forEach { message ->
+        if (!message.role.equals("user", ignoreCase = true)) return@forEach
+        val text = message.content?.trim().orEmpty()
+        if (text.isEmpty()) return@forEach
+        storedText[text] = (storedText[text] ?: 0) + 1
+    }
+    val confirmed = mutableSetOf<String>()
+    items.sortedBy(OutboundQueueItem::createdAt).forEach { item ->
+        if (item.id in storedIds) {
+            confirmed += item.id
+            return@forEach
+        }
+        val text = item.message.trim()
+        val remaining = storedText[text] ?: 0
+        if (remaining > 0) {
+            storedText[text] = remaining - 1
+            confirmed += item.id
+        }
+    }
+    return confirmed
 }

@@ -2,6 +2,7 @@ package com.luckyagent.android.data.cache
 
 import android.content.Context
 import androidx.room.Room
+import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.RuntimeSession
 import kotlinx.coroutines.Dispatchers
@@ -9,6 +10,19 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
+
+data class CachedOutboundMessage(
+    val sessionId: String,
+    val clientMessageId: String,
+    val preview: String,
+    val message: String,
+    val attachments: List<MediaAttachment>,
+    val status: String,
+    val requestId: String?,
+    val error: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
 
 class SessionCacheRepository internal constructor(
     private val dao: SessionCacheDao,
@@ -20,7 +34,9 @@ class SessionCacheRepository internal constructor(
             context.applicationContext,
             SessionCacheDatabase::class.java,
             "luckyagent_session_cache.db",
-        ).fallbackToDestructiveMigration().build(),
+        ).addMigrations(SessionCacheDatabase.MIGRATION_2_3)
+            .fallbackToDestructiveMigration()
+            .build(),
         json: Json = Json {
             ignoreUnknownKeys = true
             explicitNulls = false
@@ -67,6 +83,56 @@ class SessionCacheRepository internal constructor(
     suspend fun loadPage(apiBase: String, sessionId: String, apiKey: String = ""): MessagePage? {
         val endpoint = cacheKey(apiBase, apiKey)
         return readPage(endpoint, dao.session(endpoint, sessionId))
+    }
+
+    suspend fun listOutbound(apiBase: String, apiKey: String = ""): List<CachedOutboundMessage> =
+        dao.outbound(cacheKey(apiBase, apiKey)).mapNotNull { entity ->
+            val attachments = runCatching {
+                json.decodeFromString<List<MediaAttachment>>(entity.attachmentsJson)
+            }.getOrNull() ?: return@mapNotNull null
+            CachedOutboundMessage(
+                sessionId = entity.sessionId,
+                clientMessageId = entity.clientMessageId,
+                preview = entity.preview,
+                message = entity.message,
+                attachments = attachments,
+                status = entity.status,
+                requestId = entity.requestId,
+                error = entity.error,
+                createdAt = entity.createdAt,
+                updatedAt = entity.updatedAt,
+            )
+        }
+
+    suspend fun saveOutbound(
+        apiBase: String,
+        item: CachedOutboundMessage,
+        apiKey: String = "",
+    ) {
+        dao.upsertOutbound(
+            CachedOutboundEntity(
+                endpoint = cacheKey(apiBase, apiKey),
+                sessionId = item.sessionId,
+                clientMessageId = item.clientMessageId,
+                preview = item.preview,
+                message = item.message,
+                attachmentsJson = json.encodeToString(item.attachments),
+                status = item.status,
+                requestId = item.requestId,
+                error = item.error,
+                createdAt = item.createdAt,
+                updatedAt = item.updatedAt,
+            ),
+        )
+    }
+
+    suspend fun removeOutbound(
+        apiBase: String,
+        sessionId: String,
+        clientMessageId: String,
+        apiKey: String = "",
+    ) {
+        dao.deleteOutbound(cacheKey(apiBase, apiKey), sessionId, clientMessageId)
     }
 
     /**
@@ -124,7 +190,6 @@ class SessionCacheRepository internal constructor(
                 dao.deleteMessages(endpoint, stale)
                 dao.deleteSession(endpoint, stale)
             }
-        evictClosedSessions(endpoint)
     }
 
     suspend fun savePage(
@@ -141,11 +206,10 @@ class SessionCacheRepository internal constructor(
         stored: MessagePage? = null,
     ) {
         val endpoint = cacheKey(apiBase, apiKey)
-        val capped = capLatestMessages(page)
         val existing = dao.session(endpoint, sessionId)
         val storedPage = stored ?: readPage(endpoint, existing)
-        val session = sessionEntity(endpoint, sessionId, title, updatedAt, createdAt, capped, existing, opened, now)
-        when (val write = historyCacheWrite(storedPage, capped)) {
+        val session = sessionEntity(endpoint, sessionId, title, updatedAt, createdAt, page, existing, opened, now)
+        when (val write = historyCacheWrite(storedPage, page)) {
             HistoryCacheWrite.Unchanged -> {
                 if (existing == null || sessionRowChanged(existing, session)) dao.upsertSession(session)
             }
@@ -164,18 +228,17 @@ class SessionCacheRepository internal constructor(
             }
             HistoryCacheWrite.Replace -> {
                 val messages = withContext(Dispatchers.Default) {
-                    capped.messages.mapIndexed { index, message ->
-                        messageEntity(endpoint, sessionId, capped.startIndex + index, message)
+                    page.messages.mapIndexed { index, message ->
+                        messageEntity(endpoint, sessionId, page.startIndex + index, message)
                     }
                 }
                 dao.replaceMessages(
                     session = session,
                     messages = messages,
-                    minOrdinal = capped.startIndex,
+                    minOrdinal = page.startIndex,
                 )
             }
         }
-        evictClosedSessions(endpoint)
     }
 
     private fun sessionRowChanged(existing: CachedSessionEntity, next: CachedSessionEntity): Boolean =
@@ -234,6 +297,7 @@ class SessionCacheRepository internal constructor(
         val endpoint = cacheKey(apiBase, apiKey)
         dao.deleteMessages(endpoint, sessionId)
         dao.deleteSession(endpoint, sessionId)
+        dao.deleteOutboundSession(endpoint, sessionId)
     }
 
     suspend fun invalidate(apiBase: String, sessionId: String, apiKey: String = "") {
@@ -247,15 +311,6 @@ class SessionCacheRepository internal constructor(
                 cachedAt = System.currentTimeMillis(),
             ),
         )
-    }
-
-    private suspend fun evictClosedSessions(endpoint: String) {
-        val ids = dao.sessionIdsByRecentOpen(endpoint)
-        if (ids.size <= SessionCachePolicy.MAX_SESSIONS) return
-        ids.drop(SessionCachePolicy.MAX_SESSIONS).forEach { stale ->
-            dao.deleteMessages(endpoint, stale)
-            dao.deleteSession(endpoint, stale)
-        }
     }
 
     private fun decodeMessage(raw: String): ProviderMessage? =

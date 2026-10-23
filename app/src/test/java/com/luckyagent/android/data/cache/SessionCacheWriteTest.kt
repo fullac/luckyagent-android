@@ -1,5 +1,6 @@
 package com.luckyagent.android.data.cache
 
+import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -121,6 +122,51 @@ class SessionCacheWriteTest {
         assertEquals(listOf(8, 9), dao.messages.map { it.ordinal })
     }
 
+    @Test
+    fun fullHistoryIsStoredWithoutATruncationWindow() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            "title",
+            "t1",
+            null,
+            page(start = 0, count = 250, messages = (0 until 250).map { msg("m$it") }),
+            opened = true,
+            now = 10,
+        )
+
+        assertEquals((0 until 250).toList(), dao.messages.map { it.ordinal })
+        assertEquals("m0", dao.messages.first().content)
+        assertEquals(250, dao.sessions.single().messageCount)
+    }
+
+    @Test
+    fun outboundRowsRoundTripAttachmentsAndCanBeRemoved() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val row = CachedOutboundMessage(
+            sessionId = "s",
+            clientMessageId = "outbound-1",
+            preview = "hello",
+            message = "hello",
+            attachments = listOf(MediaAttachment(type = "image", fileName = "a.png")),
+            status = "Sending",
+            requestId = "outbound-1",
+            error = null,
+            createdAt = 10,
+            updatedAt = 11,
+        )
+
+        cache.saveOutbound("http://127.0.0.1:9090", row)
+
+        assertEquals(listOf(row), cache.listOutbound("http://127.0.0.1:9090"))
+        cache.removeOutbound("http://127.0.0.1:9090", "s", "outbound-1")
+        assertEquals(emptyList<CachedOutboundMessage>(), cache.listOutbound("http://127.0.0.1:9090"))
+    }
+
     private fun cache(dao: FakeDao) = SessionCacheRepository(
         dao,
         Json { ignoreUnknownKeys = true; explicitNulls = false },
@@ -139,6 +185,7 @@ class SessionCacheWriteTest {
 private class FakeDao : SessionCacheDao {
     val sessions = mutableListOf<CachedSessionEntity>()
     val messages = mutableListOf<CachedMessageEntity>()
+    val outbound = mutableListOf<CachedOutboundEntity>()
     var replaceCalls = 0
     var patchCalls = 0
     var upsertMessageCalls = 0
@@ -154,6 +201,9 @@ private class FakeDao : SessionCacheDao {
         return messages.filter { it.endpoint == endpoint && it.sessionId == sessionId }.sortedBy { it.ordinal }
     }
 
+    override suspend fun outbound(endpoint: String): List<CachedOutboundEntity> =
+        outbound.filter { it.endpoint == endpoint }.sortedWith(compareBy({ it.createdAt }, { it.clientMessageId }))
+
     override suspend fun upsertSession(entity: CachedSessionEntity) {
         sessions.removeAll { it.endpoint == entity.endpoint && it.sessionId == entity.sessionId }
         sessions += entity
@@ -167,6 +217,25 @@ private class FakeDao : SessionCacheDao {
             }
             messages += entity
         }
+    }
+
+    override suspend fun upsertOutbound(entity: CachedOutboundEntity) {
+        outbound.removeAll {
+            it.endpoint == entity.endpoint &&
+                it.sessionId == entity.sessionId &&
+                it.clientMessageId == entity.clientMessageId
+        }
+        outbound += entity
+    }
+
+    override suspend fun deleteOutbound(endpoint: String, sessionId: String, clientMessageId: String) {
+        outbound.removeAll {
+            it.endpoint == endpoint && it.sessionId == sessionId && it.clientMessageId == clientMessageId
+        }
+    }
+
+    override suspend fun deleteOutboundSession(endpoint: String, sessionId: String) {
+        outbound.removeAll { it.endpoint == endpoint && it.sessionId == sessionId }
     }
 
     override suspend fun deleteMessages(endpoint: String, sessionId: String) {

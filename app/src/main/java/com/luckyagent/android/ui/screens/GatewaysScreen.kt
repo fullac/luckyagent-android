@@ -144,14 +144,14 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                     telegramToken = ""
                 }
             },
-            title = { Text("Start Telegram") },
+            title = { Text("启动 Telegram") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Optional: enter a bot token to override the host config. It is sent only to the connected host and is not saved by the app.", style = MaterialTheme.typography.bodyMedium)
+                    Text("可以填一个机器人令牌，只发给已连接的电脑，手机不保存。不填就用电脑上已有的配置。", style = MaterialTheme.typography.bodyMedium)
                     OutlinedTextField(
                         value = telegramToken,
                         onValueChange = { telegramToken = it },
-                        label = { Text("Bot token") },
+                        label = { Text("机器人令牌") },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -166,7 +166,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                         telegramToken = ""
                     },
                     enabled = state.gatewayAction == null,
-                ) { Text("Start") }
+                ) { Text("启动") }
             },
             dismissButton = {
                 TextButton(
@@ -175,7 +175,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                         telegramToken = ""
                     },
                     enabled = state.gatewayAction == null,
-                ) { Text("Cancel") }
+                ) { Text("取消") }
             },
         )
     }
@@ -210,9 +210,9 @@ private fun GatewayCard(
             title = option.label,
             subtitle = listOfNotNull(
                 option.description,
-                if (gateway.connected == true) "connected" else null,
+                if (gateway.connected == true) "已接通" else null,
             ).joinToString(" · "),
-            trailing = { StatusChip(if (gateway.running) "running" else "stopped") },
+            trailing = { StatusChip(if (gateway.running) "运行中" else "已停止") },
         )
         Text(option.configHint, color = CloverText3, style = MaterialTheme.typography.bodySmall)
         gateway.stats?.let { stats ->
@@ -220,9 +220,9 @@ private fun GatewayCard(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Stat("Sent", stats.messagesSent?.toString() ?: "—")
-                Stat("Recv", stats.messagesReceived?.toString() ?: "—")
-                Stat("Errors", stats.errors?.toString() ?: "—")
+                Stat("发出", stats.messagesSent?.toString() ?: "—")
+                Stat("收到", stats.messagesReceived?.toString() ?: "—")
+                Stat("失败", stats.errors?.toString() ?: "—")
             }
         }
         if (!gateway.error.isNullOrBlank()) {
@@ -234,15 +234,15 @@ private fun GatewayCard(
             }
             if (gateway.running) {
                 OutlinedButton(onClick = onStop, enabled = !anyActionInFlight) {
-                    Text("Stop")
+                    Text("停止")
                 }
             } else {
                 Button(onClick = onStart, enabled = !anyActionInFlight) {
-                    Text("Start")
+                    Text("启动")
                 }
             }
             if (actionInFlight) {
-                Text("Working…", color = CloverText2, style = MaterialTheme.typography.labelSmall)
+                Text("正在处理", color = CloverText2, style = MaterialTheme.typography.labelSmall)
             }
         }
     }

@@ -106,14 +106,14 @@ private data class NavSpec(
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "聊天", Icons.Outlined.ChatBubbleOutline),
     NavSpec(AppDestination.Tasks, "任务", Icons.Outlined.Assignment),
-    NavSpec(AppDestination.Background, "后台任务", Icons.Outlined.Autorenew),
-    NavSpec(AppDestination.Cron, "定时任务 Cron", Icons.Outlined.Schedule),
+    NavSpec(AppDestination.Background, "后台黑板", Icons.Outlined.Autorenew),
+    NavSpec(AppDestination.Cron, "定时任务", Icons.Outlined.Schedule),
     NavSpec(AppDestination.Trajectory, "执行轨迹", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
     NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
     NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
     NavSpec(AppDestination.Gateways, "网关", Icons.Outlined.Hub),
-    NavSpec(AppDestination.RuntimeConfig, "config.json", Icons.Outlined.Code),
+    NavSpec(AppDestination.RuntimeConfig, "服务器配置", Icons.Outlined.Code),
     NavSpec(AppDestination.Settings, "基础设置", Icons.Outlined.Settings),
 )
 

@@ -3449,7 +3449,7 @@ class AppViewModel(
 
     private fun sendRuntimeCommand(rawText: String, command: ParsedRuntimeCommand) {
         if (isCurrentSessionRunActive()) {
-            _ui.update { it.copy(activityLine = "Agent 正在运行，请等待完成或发送 /stop") }
+            _ui.update { it.copy(activityLine = "正在回复。等这一轮结束，或发送 /stop。") }
             return
         }
         if (_ui.value.commandExecuting) return
@@ -3782,7 +3782,7 @@ class AppViewModel(
         val summary = _ui.value.tasks.firstOrNull { it.id == id }
             ?: container.api.getTaskRecord(id).getOrNull()?.toTaskSummary()
         if (summary == null) {
-            _ui.update { if (it.selectedTaskId != id) it else it.copy(taskDetailLoading = false, taskDetailError = "Task not found") }
+            _ui.update { if (it.selectedTaskId != id) it else it.copy(taskDetailLoading = false, taskDetailError = "没找到这个任务。回到聊天后重试这一条。") }
             return
         }
         val detailResult = if (summary.origin == TaskOrigin.Legacy) {

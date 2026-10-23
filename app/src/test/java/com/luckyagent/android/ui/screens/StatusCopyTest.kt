@@ -39,4 +39,11 @@ class StatusCopyTest {
         assertFalse(activityStatusLine("complete")!!.contains("complete"))
         assertFalse(activityStatusLine("tool done · 搜索")!!.contains("tool done"))
     }
+
+    @Test fun pageTitlesMatchNavigation() {
+        assertEquals(
+            listOf("聊天", "任务", "后台黑板", "定时任务", "执行轨迹", "技能", "插件", "记忆", "网关", "服务器配置", "基础设置"),
+            pageTitlesMatchingNavigation,
+        )
+    }
 }

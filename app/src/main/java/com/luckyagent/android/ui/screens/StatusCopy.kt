@@ -19,6 +19,21 @@ internal fun connectionStatusLabel(
     else -> "未连接"
 }
 
+/** Titles that navigation and the matching page must share. */
+internal val pageTitlesMatchingNavigation = listOf(
+    "聊天",
+    "任务",
+    "后台黑板",
+    "定时任务",
+    "执行轨迹",
+    "技能",
+    "插件",
+    "记忆",
+    "网关",
+    "服务器配置",
+    "基础设置",
+)
+
 internal fun connectionNeedsAction(socket: SocketState, addressMissing: Boolean = false): Boolean =
     addressMissing || socket == SocketState.Error || socket == SocketState.Idle || socket == SocketState.Closed
 

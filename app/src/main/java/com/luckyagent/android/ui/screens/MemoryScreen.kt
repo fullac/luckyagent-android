@@ -152,10 +152,10 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { vm.runMemoryTrace() }),
                         modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(CloverSurface2).padding(horizontal = 14.dp, vertical = 12.dp),
-                        decorationBox = { inner -> if (state.memoryTraceQuery.isEmpty()) Text("Trace a memory query…", color = CloverText3); inner() },
+                        decorationBox = { inner -> if (state.memoryTraceQuery.isEmpty()) Text("输入要召回的内容", color = CloverText3); inner() },
                     )
                     Button(onClick = { vm.runMemoryTrace() }, enabled = !state.memoryTraceLoading && state.memoryTraceQuery.isNotBlank()) {
-                        Text(if (state.memoryTraceLoading) "Tracing…" else "Trace")
+                        Text(if (state.memoryTraceLoading) "正在召回" else "召回")
                     }
                 }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -199,7 +199,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
         }
         item(key = "graph-search") {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BasicTextField(value = graphSearch, onValueChange = { graphSearch = it }, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (graphSearch.isBlank()) Text("Search title, category, tag", color = CloverText3); inner() })
+                BasicTextField(value = graphSearch, onValueChange = { graphSearch = it }, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (graphSearch.isBlank()) Text("搜索标题、分类或标签", color = CloverText3); inner() })
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(state.memoryGraphIsolated, vm::setMemoryGraphIsolated); Text("Isolated", style = MaterialTheme.typography.labelMedium) }
             }
         }
@@ -508,7 +508,7 @@ private fun LazyListScope.memoryRecallItems(state: AppUiState, vm: AppViewModel)
 
 @Composable private fun RecallSearchBar(query: String, count: Int, vm: AppViewModel) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
+        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("输入要召回的内容", color = CloverText3); inner() })
         IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Search, contentDescription = "Recall") }
         Text("$count results", style = MaterialTheme.typography.titleSmall, color = CloverText2)
     }

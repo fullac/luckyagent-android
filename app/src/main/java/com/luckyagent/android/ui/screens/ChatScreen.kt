@@ -2219,9 +2219,7 @@ private fun ComposerBar(
     val activityWorking = chatWorking || state.commandExecuting
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
-    val attachmentActivity = activityStatusLine(state.activityLine)?.takeIf {
-        it.contains("下载") || it.contains("附件") || it.contains("未连接") || it.contains("失败") || it.contains("重试")
-    }
+    val shownActivity = activityStatusLine(state.activityLine)
     LaunchedEffect(showContextSheet) {
         if (showContextSheet) vm.refreshContextInspect()
     }
@@ -2238,10 +2236,10 @@ private fun ComposerBar(
             )
             Spacer(Modifier.height(8.dp))
         }
-        if (!isRecordingVoice && !activityWorking && !attachmentActivity.isNullOrBlank()) {
+        if (!isRecordingVoice && !activityWorking && !shownActivity.isNullOrBlank()) {
             Text(
-                attachmentActivity,
-                color = if (attachmentActivity.contains("失败")) CloverError else CloverText3,
+                shownActivity,
+                color = if (shownActivity.contains("失败") || shownActivity.contains("未连接")) CloverError else CloverText3,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(start = 4.dp, bottom = 7.dp),
                 maxLines = 1,

@@ -108,12 +108,12 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                SummaryStat("Calls", (summary.totalCalls ?: summary.tools.size).toString(), Modifier.weight(1f))
-                SummaryStat("OK", (summary.successes ?: summary.tools.count { it.success }).toString(), Modifier.weight(1f))
-                SummaryStat("Fail", (summary.failures ?: summary.tools.count { !it.success }).toString(), Modifier.weight(1f))
+                SummaryStat("调用", (summary.totalCalls ?: summary.tools.size).toString(), Modifier.weight(1f))
+                SummaryStat("成功", (summary.successes ?: summary.tools.count { it.success }).toString(), Modifier.weight(1f))
+                SummaryStat("失败", (summary.failures ?: summary.tools.count { !it.success }).toString(), Modifier.weight(1f))
                 val rate = summary.successRate
                 SummaryStat(
-                    "Rate",
+                    "成功率",
                     if (rate != null) "${(rate * 100).toInt()}%" else "—",
                     Modifier.weight(1f),
                 )

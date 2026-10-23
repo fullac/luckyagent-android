@@ -259,14 +259,14 @@ private fun TaskOverviewCard(tasks: List<TaskSummary>) {
     val active = tasks.count { it.status.taskIsActive() }
     val finished = tasks.count { it.status.equals("completed", ignoreCase = true) }
     CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Text("Your run at a glance", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text("这一轮", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            OverviewMetric("Needs you", attention.toString(), if (attention > 0) CloverError else CloverText2)
-            OverviewMetric("Running", active.toString(), CloverAccent)
-            OverviewMetric("Completed", finished.toString(), CloverLeaf)
+            OverviewMetric("需要处理", attention.toString(), if (attention > 0) CloverError else CloverText2)
+            OverviewMetric("进行中", active.toString(), CloverAccent)
+            OverviewMetric("已完成", finished.toString(), CloverLeaf)
         }
     }
 }
@@ -316,11 +316,11 @@ private fun TaskSummaryCard(
             TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开对话")
             }
         }
         if (onOpenSession == null) {
-            Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
         LinearProgressIndicator(
             progress = { task.progress.coerceIn(0.0, 1.0).toFloat() },
@@ -374,11 +374,11 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     ) {
                         Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Open agent chat")
+                        Text("打开对话")
                     }
                 }
                 if (summary.executionSession() == null) {
-                    Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                    Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 }
                 Text(
                     summary.status.taskReadableAction(summary),
@@ -713,7 +713,7 @@ private fun TaskNodeCard(node: TaskNode, onOpenSession: (TaskSummary) -> Unit) {
             ) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开对话")
             }
         }
         node.summary.result?.takeIf { it.isNotBlank() }?.let { DetailPayload("Output", it) }
@@ -789,14 +789,14 @@ internal fun String.taskIsActive(): Boolean = when (lowercase()) {
 }
 
 internal fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
-    "pending", "queued" -> "Queued"
-    "running", "in_progress", "in-progress" -> "In progress"
-    "blocked", "waiting" -> "Needs attention"
-    "completed", "done" -> "Completed"
-    "failed", "error" -> "Failed"
-    "timeout" -> "Timed out"
-    "cancelled", "canceled" -> "Cancelled"
-    else -> status.ifBlank { "Unknown" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    "pending", "queued" -> "排队中"
+    "running", "in_progress", "in-progress" -> "进行中"
+    "blocked", "waiting" -> "需要处理"
+    "completed", "done" -> "已完成"
+    "failed", "error" -> "失败"
+    "timeout" -> "超时"
+    "cancelled", "canceled" -> "已取消"
+    else -> status.ifBlank { "未知" }
 }
 
 internal fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {

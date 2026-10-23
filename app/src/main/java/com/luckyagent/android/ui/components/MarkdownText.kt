@@ -56,7 +56,9 @@ fun MarkdownText(
             when (block) {
                 is MdBlock.Mermaid -> MermaidView(source = block.source)
                 is MdBlock.Html -> {
-                    if (block.showPreview || requiresHtmlPage(block.source)) {
+                    if (isStaticSvgDocument(block.source)) {
+                        InlineSvgPreview(block.source)
+                    } else if (block.showPreview || requiresHtmlPage(block.source)) {
                         InlineHtmlPreview(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
                     } else {
                         NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)

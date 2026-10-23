@@ -244,7 +244,7 @@ internal fun HtmlPreviewDialog(
                             Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                                 Text(renderFailed.orEmpty(), color = MaterialTheme.colorScheme.error)
                                 Spacer(Modifier.height(8.dp))
-                                CodeText(content.orEmpty().take(32_000))
+                                CodeText(content.orEmpty())
                             }
                         } else {
                             HtmlPageView(
@@ -261,8 +261,7 @@ internal fun HtmlPreviewDialog(
                         }
                         if (showSource) Surface(Modifier.fillMaxSize()) {
                             Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
-                                if (content.orEmpty().length > 32_000) Text("源码较长，此处显示前 32,000 字符；下载可保存完整文件")
-                                CodeText(content.orEmpty().take(32_000))
+                                CodeText(content.orEmpty())
                             }
                         }
                     }

@@ -89,9 +89,10 @@ class ModelsTest {
     }
 
     @Test
-    fun blankSuccessIsNotAnUnchangedPage() {
-        val error = runCatching { sessionHistoryFetch(200, "   ") { error("unused") } }.exceptionOrNull()
-        assertTrue(error?.message?.contains("empty body") == true)
+    fun blankSuccessEndsTheRefreshWithoutDecoding() {
+        val fetch = sessionHistoryFetch(200, "   ") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
     }
 
     @Test

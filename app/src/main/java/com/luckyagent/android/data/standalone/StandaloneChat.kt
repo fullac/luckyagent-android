@@ -1,11 +1,14 @@
 package com.luckyagent.android.data.standalone
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -37,6 +40,13 @@ data class StandaloneSession(
     val messages: List<StandaloneMessage> = emptyList(),
     val summary: String = "",
     val updatedAt: Long = 0L,
+)
+
+@Serializable
+private data class CompletionPayload(
+    val model: String,
+    val messages: List<Map<String, String>>,
+    @SerialName("max_tokens") val maxTokens: Int,
 )
 
 /** Rough token estimate. Chinese characters count as one token, Latin words as one. */
@@ -94,6 +104,12 @@ internal fun compactStandaloneSession(session: StandaloneSession, keepRecentToke
     return session.copy(summary = folded, messages = session.messages.drop(cut))
 }
 
+/**
+ * Build a request from completed history and the current user turn.
+ *
+ * [session] must not already contain [userText]. The caller persists the current
+ * turn separately so it can survive a failed request without sending it twice.
+ */
 internal fun buildStandaloneMessages(session: StandaloneSession, userText: String): List<Map<String, String>> {
     val system = buildString {
         append("你是手机上的独立聊天助手。回答使用用户所用的语言。")
@@ -102,16 +118,13 @@ internal fun buildStandaloneMessages(session: StandaloneSession, userText: Strin
             append(session.summary)
         }
     }
-    // The caller already stored this turn. Appending it again makes the model
-    // see the same user question twice.
-    val stored = session.messages.lastOrNull()?.role == "user" && session.messages.lastOrNull()?.content == userText
     return buildList {
         add(mapOf("role" to "system", "content" to system))
         session.messages.forEach { message ->
             val content = if (message.kind == "search") "搜索结果：\n${message.content}" else message.content
             add(mapOf("role" to message.role, "content" to content))
         }
-        if (!stored) add(mapOf("role" to "user", "content" to userText))
+        add(mapOf("role" to "user", "content" to userText))
     }
 }
 
@@ -122,36 +135,15 @@ class StandaloneChatClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     fun check(settings: StandaloneSettings): Result<String> = runCatching {
-        val resolved = resolveModel(settings).getOrThrow()
-        complete(resolved, listOf(mapOf("role" to "user", "content" to "Reply with ok")), maxTokens = 8)
-            .getOrThrow()
-        resolved.model
-    }
-
-    fun resolveModel(settings: StandaloneSettings): Result<StandaloneSettings> = runCatching {
-        require(settings.apiBase.isNotBlank()) { "模型 URL 还没填" }
-        require(settings.apiKey.isNotBlank()) { "模型 Key 还没填" }
-        val named = settings.model.trim()
-        if (named.isNotBlank()) return@runCatching settings.copy(model = named)
-        val discovered = listModelIds(settings).getOrThrow().firstOrNull()
-            ?: error("模型名是空的，网关也没有返回可用模型")
-        settings.copy(model = discovered)
-    }
-
-    fun listModelIds(settings: StandaloneSettings): Result<List<String>> = runCatching {
-        val endpoint = modelsUrl(settings.apiBase)
-        val request = Request.Builder()
-            .url(endpoint.url)
-            .header("Authorization", "Bearer ${settings.apiKey}")
-            .get()
-            .build()
-        http.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                error("${readableModelError(response.code, body)}（请求 ${endpoint.url}）")
-            }
-            extractModelIds(body).ifEmpty { error("模型名是空的，${endpoint.url} 没有返回可用模型") }
-        }
+        requireConnectionSettings(settings)
+        val model = settings.model.trim().ifBlank { discoverModel(settings) }
+        completeRequest(
+            settings = settings,
+            model = model,
+            messages = listOf(mapOf("role" to "user", "content" to "Reply with ok")),
+            maxTokens = 8,
+        )
+        model
     }
 
     fun complete(
@@ -159,25 +151,52 @@ class StandaloneChatClient(
         messages: List<Map<String, String>>,
         maxTokens: Int = 1024,
     ): Result<String> = runCatching {
-        val resolved = resolveModel(settings).getOrThrow()
-        val endpoint = chatCompletionsUrl(resolved.apiBase)
+        requireConnectionSettings(settings)
+        val model = settings.model.trim().ifBlank { discoverModel(settings) }
+        completeRequest(settings, model, messages, maxTokens)
+    }
+
+    private fun completeRequest(
+        settings: StandaloneSettings,
+        model: String,
+        messages: List<Map<String, String>>,
+        maxTokens: Int,
+    ): String {
         val payload = json.encodeToString(
-            mapOf(
-                "model" to resolved.model,
-                "messages" to messages,
-                "max_tokens" to maxTokens,
+            CompletionPayload(
+                model = model,
+                messages = messages,
+                maxTokens = maxTokens,
             ),
         )
         val request = Request.Builder()
-            .url(endpoint.url)
-            .header("Authorization", "Bearer ${resolved.apiKey}")
+            .url(chatCompletionsUrl(settings.apiBase))
+            .header("Authorization", "Bearer ${settings.apiKey}")
             .header("Content-Type", "application/json")
             .post(payload.toRequestBody(JSON))
             .build()
+        return http.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error(readableModelError(response.code, body))
+            extractCompletion(body)
+        }
+    }
+
+    private fun requireConnectionSettings(settings: StandaloneSettings) {
+        require(settings.apiBase.isNotBlank()) { "模型 URL 还没填" }
+        require(settings.apiKey.isNotBlank()) { "模型 Key 还没填" }
+    }
+
+    private fun discoverModel(settings: StandaloneSettings): String {
+        val request = Request.Builder()
+            .url(modelsUrl(settings.apiBase))
+            .header("Authorization", "Bearer ${settings.apiKey}")
+            .get()
+            .build()
         http.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error("${readableModelError(response.code, body)}（请求 ${endpoint.url}）")
-            extractCompletion(body)
+            if (!response.isSuccessful) error(readableModelError(response.code, body))
+            return extractFirstModel(body)
         }
     }
 
@@ -201,42 +220,43 @@ class StandaloneChatClient(
     }
 }
 
-internal data class StandaloneEndpoint(val url: String, val addedV1: Boolean)
+private const val CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+private const val MODELS_SUFFIX = "/models"
 
-internal fun chatCompletionsUrl(apiBase: String): StandaloneEndpoint = standaloneEndpoint(apiBase, "chat/completions")
-
-internal fun modelsUrl(apiBase: String): StandaloneEndpoint = standaloneEndpoint(apiBase, "models")
-
-/**
- * Join a model path onto the address the user typed. An existing path is kept,
- * query parameters stay in the query, and a bare host receives `/v1` once.
- */
-internal fun standaloneEndpoint(apiBase: String, leaf: String): StandaloneEndpoint {
-    val raw = apiBase.trim()
-    val parsed = raw.toHttpUrlOrNull() ?: error("模型 URL 不是完整地址，需要以 http:// 或 https:// 开头")
-    if (parsed.scheme != "http" && parsed.scheme != "https") error("模型 URL 需要以 http:// 或 https:// 开头")
-    val segments = parsed.pathSegments.filter { it.isNotEmpty() }
-    val completion = segments.takeLast(2) == listOf("chat", "completions")
-    val kept = when {
-        completion -> segments.dropLast(2)
-        segments.lastOrNull() == leaf -> segments.dropLast(1)
-        else -> segments
-    }
-    val addedV1 = kept.isEmpty()
-    val path = ((if (addedV1) listOf("v1") else kept) + leaf).joinToString("/")
-    val url = parsed.newBuilder()
-        .encodedPath("/$path")
+internal fun chatCompletionsUrl(apiBase: String): String {
+    val parsed = parseApiUrl(apiBase)
+    val path = parsed.encodedPath.trimEnd('/')
+    if (path.endsWith(CHAT_COMPLETIONS_SUFFIX)) return parsed.toString()
+    val basePath = normalizedApiBasePath(parsed)
+    return parsed.newBuilder()
+        .encodedPath(basePath.trimEnd('/') + CHAT_COMPLETIONS_SUFFIX)
         .build()
         .toString()
-    return StandaloneEndpoint(url, addedV1)
 }
 
-internal fun extractModelIds(body: String): List<String> {
-    val root = Json { ignoreUnknownKeys = true }.parseToJsonElement(body)
-    val values = root.jsonObject["data"]?.jsonArray ?: return emptyList()
-    return values.mapNotNull { item ->
-        item.jsonObject["id"]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotEmpty() }
-    }.distinct()
+internal fun modelsUrl(apiBase: String): String {
+    val parsed = parseApiUrl(apiBase)
+    val basePath = normalizedApiBasePath(parsed)
+    val modelsPath = if (basePath == "/") MODELS_SUFFIX else basePath.trimEnd('/') + MODELS_SUFFIX
+    return parsed.newBuilder()
+        .encodedPath(modelsPath)
+        .build()
+        .toString()
+}
+
+private fun parseApiUrl(apiBase: String): HttpUrl =
+    apiBase.trim().toHttpUrlOrNull()
+        ?: error("模型 URL 无效，请填写 http:// 或 https:// 地址")
+
+private fun normalizedApiBasePath(url: HttpUrl): String {
+    val path = url.encodedPath.trimEnd('/')
+    return when {
+        path.isEmpty() || path == "/" -> "/v1"
+        path.endsWith(CHAT_COMPLETIONS_SUFFIX) ->
+            path.removeSuffix(CHAT_COMPLETIONS_SUFFIX).ifBlank { "/" }
+        path.endsWith("/v1") -> path
+        else -> error("模型 URL 路径需以 /v1 或 /chat/completions 结尾")
+    }
 }
 
 internal fun extractCompletion(body: String): String {
@@ -255,6 +275,19 @@ internal fun extractCompletion(body: String): String {
         .orEmpty()
     if (content.isBlank()) error("模型没有返回正文")
     return content
+}
+
+internal fun extractFirstModel(body: String): String {
+    val root = runCatching { Json { ignoreUnknownKeys = true }.parseToJsonElement(body).jsonObject }
+        .getOrElse { error("模型列表响应无效") }
+    val model = root["data"]
+        ?.jsonArray
+        ?.asSequence()
+        ?.mapNotNull { item ->
+            item.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+        }
+        ?.firstOrNull()
+    return model ?: error("模型列表为空，请填写模型名")
 }
 
 internal fun formatSearch(query: String, body: String): String {

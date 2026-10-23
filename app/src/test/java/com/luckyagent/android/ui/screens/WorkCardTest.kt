@@ -50,6 +50,26 @@ class WorkCardTest {
         assertFalse(workCardCanCancel(card!!))
     }
 
+    @Test fun closingAFinishedCardKeepsTheNextRunningOne() {
+        val done = task("done", status = "completed")
+        val running = task("running", status = "running")
+        val cards = listOf(done.toCard(), running.toCard())
+
+        assertEquals("running", featuredWorkCard(cards, setOf("done"))?.id)
+        assertNull(featuredWorkCard(cards, setOf("done", "running")))
+        assertEquals(setOf("kept", "done"), dismissedWorkCardIds(setOf("kept"), "done"))
+    }
+
+    @Test fun aDismissedCardStaysHiddenUntilANotificationFocusesIt() {
+        val done = task("done", status = "completed")
+
+        assertNull(visibleWorkCard(null, false, listOf(done), emptyList(), "chat", setOf("done")))
+        assertEquals(
+            "done",
+            visibleWorkCard("done", false, listOf(done), emptyList(), "chat", setOf("done"))?.id,
+        )
+    }
+
     @Test fun notificationLandsOnTheCardWhenTheExecutionSessionIsMissing() {
         assertEquals("session:chat", notificationLanding("chat", "task", "tasks"))
         assertEquals("task-card:task", notificationLanding("", "task", "tasks"))

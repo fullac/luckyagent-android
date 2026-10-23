@@ -943,6 +943,7 @@ private fun ChatConversation(
             state.tasks,
             state.backgroundTasks,
             state.settings.sessionId,
+            state.dismissedWorkCardIds,
         ) {
             visibleWorkCard(
                 focusedId = state.focusedWorkCardId,
@@ -950,11 +951,13 @@ private fun ChatConversation(
                 tasks = state.tasks,
                 background = state.backgroundTasks,
                 sessionId = state.settings.sessionId,
+                dismissedIds = state.dismissedWorkCardIds,
             )
         }
         if (workCard != null) {
             WorkReturnCard(
                 card = workCard,
+                onClose = { vm.dismissWorkCard(workCard.id) },
                 onCancel = { vm.cancelWorkCard(workCard.id) },
                 onOpenResult = {
                     val session = workCard.sessionId
@@ -1274,6 +1277,7 @@ private fun ChatConversation(
 @Composable
 private fun WorkReturnCard(
     card: WorkCard,
+    onClose: () -> Unit,
     onCancel: () -> Unit,
     onOpenResult: () -> Unit,
     onOpenDetail: () -> Unit,
@@ -1295,6 +1299,9 @@ private fun WorkReturnCard(
                 )
             }
             if (!card.loading) StatusChip(workCardStatusLabel(card.status))
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.Close, contentDescription = "关闭卡片", tint = CloverText3)
+            }
         }
         if (card.terminal && card.sessionId.isNullOrBlank()) {
             Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)

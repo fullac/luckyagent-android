@@ -43,8 +43,10 @@ internal fun workCardsForSession(
     )
 }
 
-internal fun featuredWorkCard(cards: List<WorkCard>): WorkCard? =
-    cards.firstOrNull { it.active } ?: cards.firstOrNull { it.terminal }
+internal fun featuredWorkCard(cards: List<WorkCard>, dismissedIds: Set<String> = emptySet()): WorkCard? {
+    val visible = cards.filterNot { it.id in dismissedIds }
+    return visible.firstOrNull { it.active } ?: visible.firstOrNull { it.terminal }
+}
 
 /**
  * The card the user should see. A notification focus wins even when it belongs
@@ -57,6 +59,7 @@ internal fun visibleWorkCard(
     tasks: List<TaskSummary>,
     background: List<AutonomyTaskSummary>,
     sessionId: String,
+    dismissedIds: Set<String> = emptySet(),
 ): WorkCard? {
     val focus = focusedId?.trim().orEmpty()
     if (focus.isNotEmpty()) {
@@ -76,7 +79,14 @@ internal fun visibleWorkCard(
             loading = true,
         )
     }
-    return featuredWorkCard(workCardsForSession(tasks, background, sessionId))
+    return featuredWorkCard(workCardsForSession(tasks, background, sessionId), dismissedIds)
+}
+
+/** Closing hides the card on this device. It does not delete the task. */
+internal fun dismissedWorkCardIds(current: Set<String>, cardId: String): Set<String> {
+    val id = cardId.trim()
+    if (id.isEmpty()) return current
+    return current + id
 }
 
 /**

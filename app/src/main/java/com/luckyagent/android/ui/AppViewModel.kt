@@ -67,6 +67,7 @@ import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.ui.screens.dismissedWorkCardIds
 import com.luckyagent.android.data.api.toTaskNode
 import com.luckyagent.android.data.api.toTaskSummary
 import com.luckyagent.android.data.api.WsChatHandle
@@ -283,6 +284,7 @@ data class AppUiState(
     val backgroundTasks: List<AutonomyTaskSummary> = emptyList(),
     val focusedWorkCardId: String? = null,
     val focusedWorkCardBackground: Boolean = false,
+    val dismissedWorkCardIds: Set<String> = emptySet(),
     val backgroundLoading: Boolean = false,
     val backgroundError: String? = null,
     val backgroundFilter: BackgroundFilter = BackgroundFilter.All,
@@ -337,7 +339,12 @@ data class AppUiState(
 class AppViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
-    private val _ui = MutableStateFlow(AppUiState(settings = container.settingsRepository.snapshot()))
+    private val _ui = MutableStateFlow(
+        AppUiState(
+            settings = container.settingsRepository.snapshot(),
+            dismissedWorkCardIds = container.settingsRepository.dismissedWorkCardIds(),
+        ),
+    )
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
 
     private var eventsJob: Job? = null
@@ -1882,6 +1889,20 @@ class AppViewModel(
 
     fun clearFocusedWorkCard() {
         _ui.update { it.copy(focusedWorkCardId = null, focusedWorkCardBackground = false) }
+    }
+
+    /** Hides this card in chat. The task remains in the task list and on the computer. */
+    fun dismissWorkCard(taskId: String) {
+        val id = taskId.trim()
+        if (id.isBlank()) return
+        container.settingsRepository.dismissWorkCard(id)
+        _ui.update {
+            it.copy(
+                dismissedWorkCardIds = dismissedWorkCardIds(it.dismissedWorkCardIds, id),
+                focusedWorkCardId = if (it.focusedWorkCardId == id) null else it.focusedWorkCardId,
+                focusedWorkCardBackground = if (it.focusedWorkCardId == id) false else it.focusedWorkCardBackground,
+            )
+        }
     }
 
     fun openDestinationFromNotification(destination: String) {

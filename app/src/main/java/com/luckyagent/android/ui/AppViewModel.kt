@@ -72,13 +72,15 @@ import com.luckyagent.android.data.api.toTaskSummary
 import com.luckyagent.android.data.api.WsChatHandle
 import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
+import com.luckyagent.android.data.settings.RuntimeEndpoint
+import com.luckyagent.android.ui.screens.connectionHostLabel
+import com.luckyagent.android.ui.screens.manualConnection
 import com.luckyagent.android.data.standalone.StandaloneMessage
 import com.luckyagent.android.data.standalone.StandaloneSession
 import com.luckyagent.android.data.standalone.StandaloneSettings
 import com.luckyagent.android.data.standalone.buildStandaloneMessages
 import com.luckyagent.android.data.standalone.compactStandaloneSession
 import com.luckyagent.android.data.standalone.standaloneContextTokens
-import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.data.work.AgentTaskWork
 import com.luckyagent.android.BuildConfig
@@ -221,6 +223,8 @@ data class AppUiState(
     val reconnectInfo: String? = null,
     val healthText: String? = null,
     val healthOk: Boolean? = null,
+    /** Shown by the first-connection step. Null when that step has nothing new to say. */
+    val connectionNotice: String? = null,
     val memoryEntries: List<MemoryEntry> = emptyList(),
     val memoryStats: MemoryStats? = null,
     val memoryGraphNodes: List<MemoryGraphNode> = emptyList(),
@@ -2178,14 +2182,20 @@ class AppViewModel(
     }
 
     fun reportPairingScanFailed(message: String = "这张图里没有二维码") {
-        _ui.update { it.copy(activityLine = message) }
+        _ui.update { it.copy(activityLine = message, connectionNotice = message, healthOk = false) }
     }
 
     fun applyPairingQr(raw: String) {
         val endpoint = try {
             com.luckyagent.android.data.settings.PairingQr.parse(raw).toEndpoint()
         } catch (error: Exception) {
-            _ui.update { it.copy(activityLine = error.message ?: "这不是 LuckyAgent 配对码") }
+            _ui.update {
+                it.copy(
+                    activityLine = error.message ?: "这不是 LuckyAgent 配对码",
+                    connectionNotice = error.message ?: "这不是 LuckyAgent 配对码。可以重新扫码，或改成手动填写。",
+                    healthOk = false,
+                )
+            }
             return
         }
         updateSettings { settings ->
@@ -2193,7 +2203,39 @@ class AppViewModel(
             settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = endpoint.id)
         }
         refreshSessions()
-        _ui.update { it.copy(activityLine = "已写入 ${endpoint.apiBase}，临时 key 在 API 重启后失效") }
+        probeHealth(endpoint.name)
+    }
+
+    fun submitFirstConnection(address: String, key: String) {
+        val parsed = manualConnection(address, key)
+        if (parsed == null) {
+            _ui.update {
+                it.copy(
+                    healthOk = false,
+                    connectionNotice = "地址需要以 http:// 或 https:// 开头，并填写密钥。",
+                )
+            }
+            return
+        }
+        val label = connectionHostLabel(parsed.apiBase)
+        updateSettings { settings ->
+            val currentId = settings.activeRuntimeEndpointId.ifBlank { "endpoint-default" }
+            val endpoint = RuntimeEndpoint(
+                id = currentId,
+                name = label,
+                apiBase = parsed.apiBase,
+                apiKey = parsed.apiKey,
+                useBearer = parsed.useBearer,
+            )
+            val endpoints = if (settings.runtimeEndpoints.any { it.id == currentId }) {
+                settings.runtimeEndpoints.map { if (it.id == currentId) endpoint else it }
+            } else {
+                settings.runtimeEndpoints + endpoint
+            }
+            settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = currentId)
+        }
+        refreshSessions()
+        probeHealth(label)
     }
 
     fun saveRuntimeEndpoint(endpoint: RuntimeEndpoint) {
@@ -2332,14 +2374,21 @@ class AppViewModel(
         }
     }
 
-    fun probeHealth() {
+    fun probeHealth(connectedName: String? = null) {
+        val settings = container.settingsRepository.snapshot()
+        val name = connectionHostLabel(settings.apiBase, connectedName)
+        _ui.update { it.copy(healthOk = null, healthText = null, connectionNotice = "正在连接…") }
         viewModelScope.launch {
             val result = container.api.healthLive()
+            val connected = "已连接 $name"
+            val failed = "没能连上这台电脑。可以重试、改地址或重新扫码。"
             _ui.update {
                 it.copy(
                     healthOk = result.isSuccess,
-                    healthText = result.getOrElse { e -> e.message ?: "health failed" },
-                    activityLine = if (result.isSuccess) "health ok" else "health failed",
+                    healthText = result.getOrElse { error -> error.message ?: failed },
+                    connectionNotice = if (result.isSuccess) connected else failed,
+                    snackbarMessage = if (result.isSuccess) connected else it.snackbarMessage,
+                    activityLine = if (result.isSuccess) connected else failed,
                 )
             }
         }

@@ -9,9 +9,11 @@ import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.SessionHistory
 import com.luckyagent.android.data.api.TokenUsage
+import com.luckyagent.android.ui.replaceBubbleAt
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -146,6 +148,24 @@ class ChatTimelineTest {
         assertTrue(timeline.all { it.key.isNotBlank() })
         assertTrue(timeline.none { it.key == "chat-tail" || it.key == "pending-approvals" })
         assertEquals(timeline.map { it.key }, buildTimeline(bubbles).map { it.key })
+    }
+
+    @Test
+    fun streamingReplacementReusesEarlierTimelineItems() {
+        val initial = listOf(
+            ChatBubble(id = "question", role = "user", content = "Question"),
+            ChatBubble(id = "answer", role = "assistant", content = "one", streaming = true),
+        )
+        val cache = ChatTimelineCache()
+        val first = cache.update(initial)
+        val next = initial.replaceBubbleAt(1, initial[1].copy(content = "one two"))
+        val second = cache.update(next)
+        val third = next.replaceBubbleAt(1, next[1].copy(content = "one two three"))
+        val final = cache.update(third)
+
+        assertSame(first[0], second[0])
+        assertSame(second[0], final[0])
+        assertEquals("one two three", (final.last() as ChatTimelineItem.Message).bubble.content)
     }
 
     @Test

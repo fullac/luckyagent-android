@@ -34,6 +34,24 @@ data class RuntimeSession(
     @SerialName("updated_at") val updatedAt: String? = null,
 )
 
+/**
+ * A history fetch. [notModified] is set when the server answers 304 or an
+ * empty body for an unchanged page. The current API still returns 200, so
+ * callers must also compare the decoded page before writing cache.
+ */
+data class SessionHistoryFetch(
+    val history: SessionHistory? = null,
+    val notModified: Boolean = false,
+)
+
+internal fun sessionHistoryFetch(code: Int, body: String, decode: (String) -> SessionHistory): SessionHistoryFetch {
+    if (code == 304 || (code in 200..299 && body.isBlank())) {
+        return SessionHistoryFetch(notModified = true)
+    }
+    if (code !in 200..299) error("session history $code: $body")
+    return SessionHistoryFetch(history = decode(body))
+}
+
 @Serializable
 data class SessionHistory(
     val id: String? = null,

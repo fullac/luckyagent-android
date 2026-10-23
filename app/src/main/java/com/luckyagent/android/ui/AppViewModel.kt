@@ -210,6 +210,8 @@ data class AppUiState(
     val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
     val historyLoading: Boolean = false,
+    /** True while a pull-to-refresh is in flight, including when bubbles are already shown. */
+    val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
     val historyHasMore: Boolean = false,
     val composer: String = "",
@@ -2474,12 +2476,14 @@ class AppViewModel(
             historySessionId = target
         }
         val loadingMore = !reset
+        val refreshing = reset && _ui.value.bubbles.isNotEmpty()
         _ui.update {
             it.copy(
                 historyLoading = reset && it.bubbles.isEmpty(),
+                historyRefreshing = refreshing,
                 historyLoadingMore = loadingMore,
                 activityLine = if (reset) {
-                    if (it.bubbles.isEmpty()) "loading history…" else it.activityLine
+                    if (it.bubbles.isEmpty()) "loading history…" else "正在刷新"
                 } else {
                     "loading older history…"
                 },
@@ -2559,7 +2563,12 @@ class AppViewModel(
         // so never skip the latest-page fetch based on it; the merge keeps this cheap.
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = 0)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
-        result.onSuccess { history ->
+        result.onSuccess { fetch ->
+            if (fetch.notModified || fetch.history == null) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
+            val history = fetch.history
             val remoteCount = history.messageCount ?: (historyMessages.size + history.messages.size)
             val cachedPage = currentHistoryPage().takeIf { historyMessages.isNotEmpty() }
             when (val merged = mergeLatestPage(cachedPage, history.messages, remoteCount)) {
@@ -2579,6 +2588,7 @@ class AppViewModel(
                 _ui.update {
                     it.copy(
                         historyLoading = false,
+                        historyRefreshing = false,
                         historyLoadingMore = false,
                         activityLine = "history: ${error.message}",
                     )
@@ -2587,12 +2597,26 @@ class AppViewModel(
                 _ui.update {
                     it.copy(
                         historyLoading = false,
+                        historyRefreshing = false,
                         historyLoadingMore = false,
                         showingOfflineCache = true,
-                        activityLine = SessionCachePolicy.OFFLINE_LABEL,
+                        activityLine = SessionCachePolicy.REFRESH_FAILED_LABEL,
                     )
                 }
             }
+        }
+    }
+
+    private fun finishHistoryRefresh(sessionId: String, offline: Boolean, activity: String) {
+        if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        _ui.update {
+            it.copy(
+                historyLoading = false,
+                historyRefreshing = false,
+                historyLoadingMore = false,
+                showingOfflineCache = offline,
+                activityLine = activity,
+            )
         }
     }
 
@@ -2631,7 +2655,12 @@ class AppViewModel(
         }
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = offset)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
-        result.onSuccess { history ->
+        result.onSuccess { fetch ->
+            if (fetch.notModified || fetch.history == null) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
+            val history = fetch.history
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
             val cached = currentHistoryPage()
             when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {
@@ -2654,9 +2683,10 @@ class AppViewModel(
             _ui.update {
                 it.copy(
                     historyLoading = false,
+                    historyRefreshing = false,
                     historyLoadingMore = false,
                     activityLine = if (historyMessages.isNotEmpty()) {
-                        SessionCachePolicy.OFFLINE_LABEL
+                        SessionCachePolicy.REFRESH_FAILED_LABEL
                     } else {
                         "history: ${error.message}"
                     },
@@ -2738,6 +2768,7 @@ class AppViewModel(
                 activityLine = if (running && !offline) "Agent running · history loaded" else activity,
                 isResponding = running,
                 historyLoading = false,
+                historyRefreshing = false,
                 historyLoadingMore = false,
                 historyHasMore = historyStartIndex > 0,
                 showingOfflineCache = offline,

@@ -126,6 +126,51 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun unchangedPageDoesNotRewriteCachedMessages() {
+        val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
+        assertEquals(HistoryCacheWrite.Unchanged, historyCacheWrite(stored, stored.copy()))
+    }
+
+    @Test
+    fun grownTailInsertsOnlyNewOrdinals() {
+        val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
+        val incoming = page(start = 10, count = 16, messages = (10 until 16).map { msg("m$it", created = "c$it") })
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(14, 15), write.inserts.map { it.ordinal })
+        assertEquals(listOf("m14", "m15"), write.inserts.map { it.message.content })
+        assertEquals(10, write.deleteBefore)
+        assertEquals(16, write.deleteFrom)
+    }
+
+    @Test
+    fun windowSlideKeepsTheStillValidPrefix() {
+        val stored = page(start = 0, count = 4, messages = (0 until 4).map { msg("m$it", created = "c$it") })
+        val incoming = page(start = 2, count = 6, messages = (2 until 6).map { msg("m$it", created = "c$it") })
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(4, 5), write.inserts.map { it.ordinal })
+        assertEquals(2, write.deleteBefore)
+        assertEquals(6, write.deleteFrom)
+    }
+
+    @Test
+    fun changedOverlapStillReplacesThePage() {
+        val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
+        val incoming = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("edited")))
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun disjointWindowReplacesInsteadOfAppendingAGap() {
+        val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
+        val incoming = page(start = 4, count = 6, messages = listOf(msg("new-a"), msg("new-b")))
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
     fun capKeepsTheNewest200AndMarksOldestMissing() {
         val page = page(
             start = 0,

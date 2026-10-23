@@ -8,19 +8,22 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
 
-class SessionCacheRepository(
-    context: Context,
-    private val database: SessionCacheDatabase = Room.databaseBuilder(
-        context.applicationContext,
-        SessionCacheDatabase::class.java,
-        "luckyagent_session_cache.db",
-    ).fallbackToDestructiveMigration().build(),
-    private val json: Json = Json {
-        ignoreUnknownKeys = true
-        explicitNulls = false
-    },
+class SessionCacheRepository internal constructor(
+    private val dao: SessionCacheDao,
+    private val json: Json,
 ) {
-    private val dao = database.dao()
+    constructor(
+        context: Context,
+        database: SessionCacheDatabase = Room.databaseBuilder(
+            context.applicationContext,
+            SessionCacheDatabase::class.java,
+            "luckyagent_session_cache.db",
+        ).fallbackToDestructiveMigration().build(),
+        json: Json = Json {
+            ignoreUnknownKeys = true
+            explicitNulls = false
+        },
+    ) : this(database.dao(), json)
 
     /**
      * Isolate cached data by both runtime URL and credential. The same runtime
@@ -126,38 +129,102 @@ class SessionCacheRepository(
         val endpoint = cacheKey(apiBase, apiKey)
         val capped = capLatestMessages(page)
         val existing = dao.session(endpoint, sessionId)
-        val entities = capped.messages.mapIndexed { index, message ->
-            CachedMessageEntity(
-                endpoint = endpoint,
-                sessionId = sessionId,
-                ordinal = capped.startIndex + index,
-                role = message.role,
-                content = message.content,
-                createdAt = message.createdAt,
-                toolCallId = message.toolCallId,
-                rawJson = json.encodeToString(message),
-            )
+        val stored = loadStoredPage(endpoint, existing)
+        val session = sessionEntity(endpoint, sessionId, title, updatedAt, createdAt, capped, existing, opened, now)
+        when (val write = historyCacheWrite(stored, capped)) {
+            HistoryCacheWrite.Unchanged -> {
+                if (existing == null || sessionRowChanged(existing, session)) dao.upsertSession(session)
+            }
+            is HistoryCacheWrite.Patch -> {
+                dao.patchMessages(
+                    session = session,
+                    inserts = write.inserts.map { item ->
+                        messageEntity(endpoint, sessionId, item.ordinal, item.message)
+                    },
+                    deleteBefore = write.deleteBefore,
+                    deleteFrom = write.deleteFrom,
+                )
+            }
+            HistoryCacheWrite.Replace -> {
+                dao.replaceMessages(
+                    session = session,
+                    messages = capped.messages.mapIndexed { index, message ->
+                        messageEntity(endpoint, sessionId, capped.startIndex + index, message)
+                    },
+                    minOrdinal = capped.startIndex,
+                )
+            }
         }
-        dao.replaceMessages(
-            session = CachedSessionEntity(
-                endpoint = endpoint,
-                sessionId = sessionId,
-                title = title ?: existing?.title,
-                pinned = existing?.pinned ?: false,
-                project = existing?.project,
-                messageCount = capped.messageCount,
-                createdAt = createdAt ?: existing?.createdAt,
-                updatedAt = updatedAt ?: existing?.updatedAt,
-                cachedAt = now,
-                lastOpenedAt = if (opened) now else existing?.lastOpenedAt ?: 0L,
-                reachedOldest = capped.reachedOldest,
-                startIndex = capped.startIndex,
-            ),
-            messages = entities,
-            minOrdinal = capped.startIndex,
-        )
         evictClosedSessions(endpoint)
     }
+
+    private suspend fun loadStoredPage(endpoint: String, session: CachedSessionEntity?): MessagePage? {
+        if (session == null || session.startIndex < 0) return null
+        val stored = dao.messages(endpoint, session.sessionId)
+        if (stored.isEmpty()) return null
+        val messages = stored.map { entity -> decodeMessage(entity.rawJson) ?: return null }
+        if (stored.zip(messages.indices).any { (entity, index) -> entity.ordinal != session.startIndex + index }) {
+            return null
+        }
+        return MessagePage(
+            messages = messages,
+            startIndex = session.startIndex,
+            messageCount = session.messageCount,
+            reachedOldest = session.reachedOldest,
+        )
+    }
+
+    private fun sessionRowChanged(existing: CachedSessionEntity, next: CachedSessionEntity): Boolean =
+        existing.title != next.title ||
+            existing.pinned != next.pinned ||
+            existing.project != next.project ||
+            existing.messageCount != next.messageCount ||
+            existing.createdAt != next.createdAt ||
+            existing.updatedAt != next.updatedAt ||
+            existing.lastOpenedAt != next.lastOpenedAt ||
+            existing.reachedOldest != next.reachedOldest ||
+            existing.startIndex != next.startIndex
+
+    private fun sessionEntity(
+        endpoint: String,
+        sessionId: String,
+        title: String?,
+        updatedAt: String?,
+        createdAt: String?,
+        page: MessagePage,
+        existing: CachedSessionEntity?,
+        opened: Boolean,
+        now: Long,
+    ) = CachedSessionEntity(
+        endpoint = endpoint,
+        sessionId = sessionId,
+        title = title ?: existing?.title,
+        pinned = existing?.pinned ?: false,
+        project = existing?.project,
+        messageCount = page.messageCount,
+        createdAt = createdAt ?: existing?.createdAt,
+        updatedAt = updatedAt ?: existing?.updatedAt,
+        cachedAt = now,
+        lastOpenedAt = if (opened) now else existing?.lastOpenedAt ?: 0L,
+        reachedOldest = page.reachedOldest,
+        startIndex = page.startIndex,
+    )
+
+    private fun messageEntity(
+        endpoint: String,
+        sessionId: String,
+        ordinal: Int,
+        message: ProviderMessage,
+    ) = CachedMessageEntity(
+        endpoint = endpoint,
+        sessionId = sessionId,
+        ordinal = ordinal,
+        role = message.role,
+        content = message.content,
+        createdAt = message.createdAt,
+        toolCallId = message.toolCallId,
+        rawJson = json.encodeToString(message),
+    )
 
     suspend fun removeSession(apiBase: String, sessionId: String, apiKey: String = "") {
         val endpoint = cacheKey(apiBase, apiKey)

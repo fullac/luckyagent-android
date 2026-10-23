@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -101,13 +102,16 @@ internal fun buildStandaloneMessages(session: StandaloneSession, userText: Strin
             append(session.summary)
         }
     }
+    // The caller already stored this turn. Appending it again makes the model
+    // see the same user question twice.
+    val stored = session.messages.lastOrNull()?.role == "user" && session.messages.lastOrNull()?.content == userText
     return buildList {
         add(mapOf("role" to "system", "content" to system))
         session.messages.forEach { message ->
             val content = if (message.kind == "search") "搜索结果：\n${message.content}" else message.content
             add(mapOf("role" to message.role, "content" to content))
         }
-        add(mapOf("role" to "user", "content" to userText))
+        if (!stored) add(mapOf("role" to "user", "content" to userText))
     }
 }
 
@@ -118,10 +122,36 @@ class StandaloneChatClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     fun check(settings: StandaloneSettings): Result<String> = runCatching {
-        val model = settings.model.ifBlank { "model" }
-        complete(settings, listOf(mapOf("role" to "user", "content" to "Reply with ok")), maxTokens = 8)
+        val resolved = resolveModel(settings).getOrThrow()
+        complete(resolved, listOf(mapOf("role" to "user", "content" to "Reply with ok")), maxTokens = 8)
             .getOrThrow()
-        model
+        resolved.model
+    }
+
+    fun resolveModel(settings: StandaloneSettings): Result<StandaloneSettings> = runCatching {
+        require(settings.apiBase.isNotBlank()) { "模型 URL 还没填" }
+        require(settings.apiKey.isNotBlank()) { "模型 Key 还没填" }
+        val named = settings.model.trim()
+        if (named.isNotBlank()) return@runCatching settings.copy(model = named)
+        val discovered = listModelIds(settings).getOrThrow().firstOrNull()
+            ?: error("模型名是空的，网关也没有返回可用模型")
+        settings.copy(model = discovered)
+    }
+
+    fun listModelIds(settings: StandaloneSettings): Result<List<String>> = runCatching {
+        val endpoint = modelsUrl(settings.apiBase)
+        val request = Request.Builder()
+            .url(endpoint.url)
+            .header("Authorization", "Bearer ${settings.apiKey}")
+            .get()
+            .build()
+        http.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                error("${readableModelError(response.code, body)}（请求 ${endpoint.url}）")
+            }
+            extractModelIds(body).ifEmpty { error("模型名是空的，${endpoint.url} 没有返回可用模型") }
+        }
     }
 
     fun complete(
@@ -129,24 +159,24 @@ class StandaloneChatClient(
         messages: List<Map<String, String>>,
         maxTokens: Int = 1024,
     ): Result<String> = runCatching {
-        require(settings.apiBase.isNotBlank()) { "模型 URL 还没填" }
-        require(settings.apiKey.isNotBlank()) { "模型 Key 还没填" }
+        val resolved = resolveModel(settings).getOrThrow()
+        val endpoint = chatCompletionsUrl(resolved.apiBase)
         val payload = json.encodeToString(
             mapOf(
-                "model" to settings.model.ifBlank { "gpt-4o-mini" },
+                "model" to resolved.model,
                 "messages" to messages,
                 "max_tokens" to maxTokens,
             ),
         )
         val request = Request.Builder()
-            .url(chatCompletionsUrl(settings.apiBase))
-            .header("Authorization", "Bearer ${settings.apiKey}")
+            .url(endpoint.url)
+            .header("Authorization", "Bearer ${resolved.apiKey}")
             .header("Content-Type", "application/json")
             .post(payload.toRequestBody(JSON))
             .build()
         http.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error(readableModelError(response.code, body))
+            if (!response.isSuccessful) error("${readableModelError(response.code, body)}（请求 ${endpoint.url}）")
             extractCompletion(body)
         }
     }
@@ -171,9 +201,42 @@ class StandaloneChatClient(
     }
 }
 
-internal fun chatCompletionsUrl(apiBase: String): String {
-    val base = apiBase.trim().trimEnd('/')
-    return if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+internal data class StandaloneEndpoint(val url: String, val addedV1: Boolean)
+
+internal fun chatCompletionsUrl(apiBase: String): StandaloneEndpoint = standaloneEndpoint(apiBase, "chat/completions")
+
+internal fun modelsUrl(apiBase: String): StandaloneEndpoint = standaloneEndpoint(apiBase, "models")
+
+/**
+ * Join a model path onto the address the user typed. An existing path is kept,
+ * query parameters stay in the query, and a bare host receives `/v1` once.
+ */
+internal fun standaloneEndpoint(apiBase: String, leaf: String): StandaloneEndpoint {
+    val raw = apiBase.trim()
+    val parsed = raw.toHttpUrlOrNull() ?: error("模型 URL 不是完整地址，需要以 http:// 或 https:// 开头")
+    if (parsed.scheme != "http" && parsed.scheme != "https") error("模型 URL 需要以 http:// 或 https:// 开头")
+    val segments = parsed.pathSegments.filter { it.isNotEmpty() }
+    val completion = segments.takeLast(2) == listOf("chat", "completions")
+    val kept = when {
+        completion -> segments.dropLast(2)
+        segments.lastOrNull() == leaf -> segments.dropLast(1)
+        else -> segments
+    }
+    val addedV1 = kept.isEmpty()
+    val path = ((if (addedV1) listOf("v1") else kept) + leaf).joinToString("/")
+    val url = parsed.newBuilder()
+        .encodedPath("/$path")
+        .build()
+        .toString()
+    return StandaloneEndpoint(url, addedV1)
+}
+
+internal fun extractModelIds(body: String): List<String> {
+    val root = Json { ignoreUnknownKeys = true }.parseToJsonElement(body)
+    val values = root.jsonObject["data"]?.jsonArray ?: return emptyList()
+    return values.mapNotNull { item ->
+        item.jsonObject["id"]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotEmpty() }
+    }.distinct()
 }
 
 internal fun extractCompletion(body: String): String {

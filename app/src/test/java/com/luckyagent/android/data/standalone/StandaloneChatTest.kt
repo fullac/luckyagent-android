@@ -10,12 +10,51 @@ class StandaloneChatTest {
     fun chatUrlAppendsCompletionsOnce() {
         assertEquals(
             "https://api.example.test/v1/chat/completions",
-            chatCompletionsUrl("https://api.example.test/v1"),
+            chatCompletionsUrl("https://api.example.test/v1").url,
         )
         assertEquals(
             "https://api.example.test/v1/chat/completions",
-            chatCompletionsUrl("https://api.example.test/v1/chat/completions"),
+            chatCompletionsUrl("https://api.example.test/v1/chat/completions").url,
         )
+    }
+
+    @Test
+    fun chatUrlKeepsQueryAndAddsMissingV1() {
+        assertEquals(
+            "https://api.example.test/v1/chat/completions?foo=1",
+            chatCompletionsUrl("https://api.example.test/v1/chat/completions?foo=1").url,
+        )
+        assertEquals(
+            "https://api.example.test/v1/chat/completions?key=1",
+            chatCompletionsUrl("https://api.example.test/v1?key=1").url,
+        )
+        assertEquals(
+            "https://api.example.test/v1/chat/completions",
+            chatCompletionsUrl("https://api.example.test").url,
+        )
+        assertTrue(chatCompletionsUrl("https://api.example.test").addedV1)
+        assertEquals(
+            "https://api.example.test/v1/models",
+            modelsUrl("https://api.example.test").url,
+        )
+        val rejected = runCatching { chatCompletionsUrl("api.example.test/v1") }
+        assertTrue(rejected.exceptionOrNull()?.message.orEmpty().contains("http"))
+    }
+
+    @Test
+    fun modelListReadsIdsWithoutInventingOne() {
+        val body = """{"data":[{"id":"alpha"},{"id":" beta "},{"id":""}]}"""
+        assertEquals(listOf("alpha", "beta"), extractModelIds(body))
+    }
+
+    @Test
+    fun storedUserTurnIsNotAppendedAgain() {
+        val session = StandaloneSession(
+            id = "s",
+            messages = listOf(StandaloneMessage("user", "同一句")),
+        )
+        val prompt = buildStandaloneMessages(session, "同一句")
+        assertEquals(1, prompt.count { it["role"] == "user" && it["content"] == "同一句" })
     }
 
     @Test

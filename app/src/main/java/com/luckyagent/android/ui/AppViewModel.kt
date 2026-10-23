@@ -76,6 +76,7 @@ import com.luckyagent.android.data.standalone.StandaloneMessage
 import com.luckyagent.android.data.standalone.StandaloneSession
 import com.luckyagent.android.data.standalone.StandaloneSettings
 import com.luckyagent.android.data.standalone.buildStandaloneMessages
+import com.luckyagent.android.data.standalone.chatCompletionsUrl
 import com.luckyagent.android.data.standalone.compactStandaloneSession
 import com.luckyagent.android.data.standalone.standaloneContextTokens
 import com.luckyagent.android.data.settings.RuntimeEndpoint
@@ -436,18 +437,21 @@ class AppViewModel(
             }
         }
         observeWs()
-        ensureRuntimeWatch()
         if (container.settingsRepository.snapshot().connectionMode == "standalone") {
+            // A cached computer session must not replace the standalone transcript,
+            // and a stopped computer must not surface as a model connection error.
             showStandaloneSession()
+        } else {
+            ensureRuntimeWatch()
+            restoreCachedSession()
+            refreshSessions()
+            refreshPersona()
+            connectSocket()
+            startApprovalPolling()
+            // Keep the composer chip useful as soon as the runtime is reachable; this is
+            // asynchronous and never gates sending a chat message.
+            loadModels()
         }
-        restoreCachedSession()
-        refreshSessions()
-        refreshPersona()
-        connectSocket()
-        startApprovalPolling()
-        // Keep the composer chip useful as soon as the runtime is reachable; this is
-        // asynchronous and never gates sending a chat message.
-        loadModels()
     }
 
     /** Drop the previous runtime's in-memory history before loading the new namespace. */
@@ -2322,7 +2326,7 @@ class AppViewModel(
                 )
             }
         }
-        if (settingsChanged) {
+        if (settingsChanged && next.connectionMode != "standalone") {
             settingsReconnectJob?.cancel()
             settingsReconnectJob = viewModelScope.launch {
                 kotlinx.coroutines.delay(450)
@@ -2333,6 +2337,7 @@ class AppViewModel(
     }
 
     fun probeHealth() {
+        if (container.settingsRepository.snapshot().connectionMode == "standalone") return
         viewModelScope.launch {
             val result = container.api.healthLive()
             _ui.update {
@@ -2346,6 +2351,7 @@ class AppViewModel(
     }
 
     private fun refreshPersona() {
+        if (container.settingsRepository.snapshot().connectionMode == "standalone") return
         viewModelScope.launch {
             container.api.soul().onSuccess { info ->
                 val name = info.name.trim().ifBlank { personaNameFromPrompt(info.systemPrompt) }
@@ -2355,6 +2361,7 @@ class AppViewModel(
     }
 
     fun refreshSessions() {
+        if (container.settingsRepository.snapshot().connectionMode == "standalone") return
         viewModelScope.launch {
             val connection = container.settingsRepository.snapshot()
             val apiBase = connection.apiBase
@@ -2536,6 +2543,7 @@ class AppViewModel(
     }
 
     private fun restoreCachedSession() {
+        if (container.settingsRepository.snapshot().connectionMode == "standalone") return
         viewModelScope.launch {
             val settings = container.settingsRepository.snapshot()
             val target = settings.sessionId.ifBlank { return@launch }
@@ -3083,7 +3091,13 @@ class AppViewModel(
 
     fun useRuntimeConnection() {
         updateSettings { it.copy(connectionMode = "runtime") }
+        ensureRuntimeWatch()
+        restoreCachedSession()
         refreshSessions()
+        refreshPersona()
+        connectSocket(force = true)
+        startApprovalPolling()
+        loadModels()
     }
 
     fun useStandaloneConnection() {
@@ -3107,8 +3121,13 @@ class AppViewModel(
     private fun checkStandalone() {
         val settings = standaloneSettings()
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            container.standalone.check(settings).onSuccess {
-                _ui.update { it.copy(standaloneNotice = "模型已连通", healthOk = true) }
+            container.standalone.check(settings).onSuccess { model ->
+                if (settings.model.isBlank() && model.isNotBlank()) {
+                    updateSettings { it.copy(standaloneModel = model) }
+                }
+                val endpoint = chatCompletionsUrl(settings.apiBase)
+                val where = if (endpoint.addedV1) "，已补上 /v1：${endpoint.url}" else ""
+                _ui.update { it.copy(standaloneNotice = "模型已连通：$model$where", healthOk = true) }
             }.onFailure { error ->
                 _ui.update { it.copy(standaloneNotice = error.message ?: "模型没有连通", healthOk = false) }
             }
@@ -3149,7 +3168,11 @@ class AppViewModel(
                     },
                 )
             }
-            val prompt = buildStandaloneMessages(session, if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text)
+            val prompt = if (search != null) {
+                buildStandaloneMessages(session, "请结合这次搜索结果回答")
+            } else {
+                buildStandaloneMessages(session, text)
+            }
             val reply = container.standalone.complete(settings, prompt).fold(
                 onSuccess = { it },
                 onFailure = { error ->

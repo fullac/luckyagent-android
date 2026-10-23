@@ -40,13 +40,37 @@ fun MarkdownText(
     imageBaseUrl: String = "",
     streaming: Boolean = false,
 ) {
-    val blocks = remember(markdown, streaming) { splitMarkdownBlocks(markdown, hideIncompleteTables = streaming) }
-    val htmlNodes = remember(blocks) {
-        blocks.map { block ->
-            if (block is MdBlock.Html && !requiresHtmlPage(block.source)) parseHtml(block.source).orEmpty()
-            else emptyList()
+    // Streaming output is intentionally plain text until the turn finishes.
+    // Re-parsing a growing body every 40 ms costs more than the transient
+    // formatting is worth; the completed body is projected off the UI thread
+    // below.
+    if (streaming) {
+        Text(
+            text = markdown,
+            color = color,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = modifier,
+        )
+        return
+    }
+    val parsed by produceState<ParsedMarkdown?>(null, markdown) {
+        value = withContext(Dispatchers.Default) {
+            MarkdownParseCache.getOrParse(markdown, streaming = false)
         }
     }
+    val parsedMarkdown = parsed
+    if (parsedMarkdown == null) {
+        Text(
+            text = markdown,
+            color = color,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = modifier,
+        )
+        return
+    }
+    val blocks = parsedMarkdown.blocks
+    val htmlNodes = parsedMarkdown.htmlNodes
+    val richNodes = parsedMarkdown.richNodes
     val detailsState = rememberSaveable(saver = HtmlDetailsState.Saver) { HtmlDetailsState() }
     val detailsContext = remember(htmlNodes, detailsState) {
         HtmlDetailsContext(detailsState, detailsState.identities(htmlNodes.flatten()))
@@ -76,6 +100,7 @@ fun MarkdownText(
                                 RichMarkdownText(cell, color,
                                     modifier = Modifier.width(widths[col]).border(1.dp, CloverLine).padding(8.dp),
                                     baseUrl = imageBaseUrl, headers = imageHeaders,
+                                    precomputedNodes = richNodes[cell],
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = color,
                                         fontWeight = if (row == 0) FontWeight.SemiBold else FontWeight.Normal,
@@ -94,6 +119,7 @@ fun MarkdownText(
                 is MdBlock.Math -> LatexView(block.latex, block.display, color, Modifier.fillMaxWidth())
                 is MdBlock.Heading -> RichMarkdownText(block.text, color,
                     baseUrl = imageBaseUrl, headers = imageHeaders,
+                    precomputedNodes = richNodes[block.text],
                     modifier = Modifier.padding(vertical = 4.dp),
                     style = when (block.level) {
                         1 -> MaterialTheme.typography.titleLarge
@@ -103,9 +129,23 @@ fun MarkdownText(
                     }.copy(color = color, fontWeight = FontWeight.SemiBold))
                 is MdBlock.ListItem -> Row(Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp)) {
                     Text("${block.marker} ", color = color)
-                    RichMarkdownText(block.text, color, baseUrl = imageBaseUrl, headers = imageHeaders, modifier = Modifier.weight(1f))
+                    RichMarkdownText(
+                        block.text,
+                        color,
+                        baseUrl = imageBaseUrl,
+                        headers = imageHeaders,
+                        precomputedNodes = richNodes[block.text],
+                        modifier = Modifier.weight(1f),
+                    )
                 }
-                is MdBlock.Paragraph -> RichMarkdownText(block.text, color, baseUrl = imageBaseUrl, headers = imageHeaders, modifier = Modifier.padding(vertical = 2.dp))
+                is MdBlock.Paragraph -> RichMarkdownText(
+                    block.text,
+                    color,
+                    baseUrl = imageBaseUrl,
+                    headers = imageHeaders,
+                    precomputedNodes = richNodes[block.text],
+                    modifier = Modifier.padding(vertical = 2.dp),
+                )
             }
         } }
     }
@@ -170,10 +210,17 @@ internal fun htmlColorPalette(): Map<String, Color> = mapOf(
 )
 
 @Composable
-private fun RichMarkdownText(text: String, color: Color, modifier: Modifier = Modifier,
-    baseUrl: String = "", headers: Map<String, String> = emptyMap(), style: TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color)) {
+private fun RichMarkdownText(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    baseUrl: String = "",
+    headers: Map<String, String> = emptyMap(),
+    precomputedNodes: List<HtmlNode>? = null,
+    style: TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color),
+) {
     val colors = htmlColorPalette()
-    val nodes = remember(text) { richTextNodes(text) }
+    val nodes = precomputedNodes ?: remember(text) { richTextNodes(text) }
     fun hasMedia(nodes: List<HtmlNode>): Boolean = nodes.any { it is HtmlNode.Element &&
         (it.tag in setOf("img", "details", "table", "ul", "ol", "pre") || hasMedia(it.children)) }
     if (hasMedia(nodes)) {

@@ -21,6 +21,7 @@ import com.luckyagent.android.data.cache.HistorySync
 import com.luckyagent.android.data.cache.LatestMerge
 import com.luckyagent.android.data.cache.MessagePage
 import com.luckyagent.android.data.cache.SessionCachePolicy
+import com.luckyagent.android.data.cache.latestPageAlreadyStored
 import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
 import com.luckyagent.android.data.cache.olderHistoryOffset
@@ -2494,19 +2495,27 @@ class AppViewModel(
             val connection = container.settingsRepository.snapshot()
             val apiBase = connection.apiBase
             val apiKey = connection.apiKey
-            if (reset) {
-                val painted = paintCachedHistory(apiBase, apiKey, target)
-                if (!painted && currentSessionId() == target) {
-                    historyMessages = emptyList()
-                    historyStartIndex = 0
-                    _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
+            try {
+                if (reset) {
+                    val painted = paintCachedHistory(apiBase, apiKey, target)
+                    if (!painted && currentSessionId() == target) {
+                        historyMessages = emptyList()
+                        historyStartIndex = 0
+                        _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
+                    }
                 }
-            }
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) return@launch
-            if (reset) {
-                syncLatestHistory(apiBase, apiKey, target)
-            } else {
-                syncOlderHistory(apiBase, apiKey, target)
+                if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) return@launch
+                if (reset) {
+                    syncLatestHistory(apiBase, apiKey, target)
+                } else {
+                    syncOlderHistory(apiBase, apiKey, target)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (currentSessionId() == target && historySessionId == target) {
+                    failHistoryRefresh(target, error.message)
+                }
             }
         }
     }
@@ -2564,13 +2573,18 @@ class AppViewModel(
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = 0)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { fetch ->
-            if (fetch.notModified || fetch.history == null) {
+            if (fetch.notModified) {
                 finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
                 return@onSuccess
             }
-            val history = fetch.history
+            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
             val remoteCount = history.messageCount ?: (historyMessages.size + history.messages.size)
             val cachedPage = currentHistoryPage().takeIf { historyMessages.isNotEmpty() }
+            val stored = runCatching { container.sessionCache.loadPage(apiBase, sessionId, apiKey) }.getOrNull()
+            if (stored != null && latestPageAlreadyStored(stored, history.messages, remoteCount)) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
             when (val merged = mergeLatestPage(cachedPage, history.messages, remoteCount)) {
                 is LatestMerge.Invalidate -> replaceHistoryFromServer(apiBase, apiKey, sessionId, history.messages, remoteCount, history.title)
                 is LatestMerge.Appended -> {
@@ -2584,25 +2598,30 @@ class AppViewModel(
             }
         }.onFailure { error ->
             if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
-            if (historyMessages.isEmpty()) {
-                _ui.update {
-                    it.copy(
-                        historyLoading = false,
-                        historyRefreshing = false,
-                        historyLoadingMore = false,
-                        activityLine = "history: ${error.message}",
-                    )
-                }
-            } else {
-                _ui.update {
-                    it.copy(
-                        historyLoading = false,
-                        historyRefreshing = false,
-                        historyLoadingMore = false,
-                        showingOfflineCache = true,
-                        activityLine = SessionCachePolicy.REFRESH_FAILED_LABEL,
-                    )
-                }
+            failHistoryRefresh(sessionId, error.message)
+        }
+    }
+
+    private fun failHistoryRefresh(sessionId: String, message: String?) {
+        if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (historyMessages.isEmpty()) {
+            _ui.update {
+                it.copy(
+                    historyLoading = false,
+                    historyRefreshing = false,
+                    historyLoadingMore = false,
+                    activityLine = "history: $message",
+                )
+            }
+        } else {
+            _ui.update {
+                it.copy(
+                    historyLoading = false,
+                    historyRefreshing = false,
+                    historyLoadingMore = false,
+                    showingOfflineCache = true,
+                    activityLine = SessionCachePolicy.REFRESH_FAILED_LABEL,
+                )
             }
         }
     }
@@ -2656,11 +2675,11 @@ class AppViewModel(
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = offset)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { fetch ->
-            if (fetch.notModified || fetch.history == null) {
+            if (fetch.notModified) {
                 finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
                 return@onSuccess
             }
-            val history = fetch.history
+            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
             val cached = currentHistoryPage()
             when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {

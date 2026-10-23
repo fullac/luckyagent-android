@@ -233,6 +233,22 @@ private fun messagesEquivalent(left: ProviderMessage, right: ProviderMessage): B
     messageIdentity(left) == messageIdentity(right)
 
 /**
+ * The fetched latest page is already present at the tail of [stored].
+ * Older cached rows outside that page are left untouched. Identity overlap is
+ * not enough: attachments and other fields must also be unchanged.
+ */
+internal fun latestPageAlreadyStored(
+    stored: MessagePage,
+    latest: List<ProviderMessage>,
+    remoteCount: Int,
+): Boolean {
+    if (latest.isEmpty() || stored.messages.isEmpty() || remoteCount < latest.size) return false
+    if (stored.startIndex + stored.messages.size != remoteCount) return false
+    if (stored.messages.size < latest.size) return false
+    return stored.messages.takeLast(latest.size) == latest
+}
+
+/**
  * Length of the prefix of [incoming] that already sits at the tail of [cached].
  * Returns -1 when the pages do not touch.
  */

@@ -1108,7 +1108,7 @@ private fun ChatConversation(
                     item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
             }
-            if (state.showingOfflineCache && state.bubbles.isNotEmpty()) {
+            if ((state.showingOfflineCache || state.activityLine == SessionCachePolicy.REFRESH_FAILED_LABEL) && state.bubbles.isNotEmpty()) {
                 Text(
                     state.activityLine ?: SessionCachePolicy.OFFLINE_LABEL,
                     color = CloverText3,

@@ -126,6 +126,22 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun latestPageAlreadyAtTheTailSkipsRewrite() {
+        val stored = page(start = 0, count = 80, messages = (0 until 80).map { msg("m$it", created = "c$it") })
+        val latest = (40 until 80).map { msg("m$it", created = "c$it") }
+        assertTrue(latestPageAlreadyStored(stored, latest, remoteCount = 80))
+    }
+
+    @Test
+    fun attachmentChangeOnTheTailRequiresRewrite() {
+        val stored = page(start = 0, count = 1, messages = listOf(msg("a")))
+        val latest = listOf(msg("a").copy(attachments = listOf(
+            com.luckyagent.android.data.api.MediaAttachment(fileName = "note.txt"),
+        )))
+        assertEquals(false, latestPageAlreadyStored(stored, latest, remoteCount = 1))
+    }
+
+    @Test
     fun unchangedPageDoesNotRewriteCachedMessages() {
         val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
         assertEquals(HistoryCacheWrite.Unchanged, historyCacheWrite(stored, stored.copy()))

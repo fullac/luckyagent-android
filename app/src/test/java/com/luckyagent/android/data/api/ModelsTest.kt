@@ -82,10 +82,16 @@ class ModelsTest {
     }
 
     @Test
-    fun sessionHistory304AndEmptyBodyAreNotModified() {
-        val decode: (String) -> SessionHistory = { error("body must not be decoded") }
-        assertTrue(sessionHistoryFetch(304, "", decode).notModified)
-        assertTrue(sessionHistoryFetch(200, "   ", decode).notModified)
+    fun sessionHistory304SkipsDecoding() {
+        val fetch = sessionHistoryFetch(304, "") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun blankSuccessIsNotAnUnchangedPage() {
+        val error = runCatching { sessionHistoryFetch(200, "   ") { error("unused") } }.exceptionOrNull()
+        assertTrue(error?.message?.contains("empty body") == true)
     }
 
     @Test

@@ -54,4 +54,4 @@ internal fun sessionNavigationBackground(tasks: List<AutonomyTaskSummary>): Auto
  * Phone drawer and wide rail share this list. Session progress is a card on
  * chat, so tasks, traces, memory, and the background board are not peers here.
  */
-internal val computerNavDestinations = listOf("定时", "渠道", "插件", "技能")
+internal val computerNavDestinations = listOf("定时", "渠道", "插件", "技能", "服务器配置")

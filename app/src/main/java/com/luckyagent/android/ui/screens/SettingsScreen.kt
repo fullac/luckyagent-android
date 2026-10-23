@@ -61,7 +61,6 @@ import java.util.UUID
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
-import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.UpdatePhase
@@ -106,13 +105,8 @@ fun SettingsScreen(
         )
 
         if (!showDetails) {
-            Column(
-                Modifier.padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+            Column(Modifier.padding(horizontal = 16.dp)) {
                 SettingsConnectionSummary(s, state.socketState, onOpen = { showDetails = true })
-                SettingsSectionTitle("这台电脑")
-                SettingsServerConfigCard { vm.navigate(AppDestination.RuntimeConfig) }
             }
             Spacer(Modifier.height(24.dp))
             return@Column
@@ -135,8 +129,6 @@ fun SettingsScreen(
                     SettingsSectionTitle("状态与外观")
                     SettingsLiveCard(state, vm)
                     SettingsAppearanceCard(state, vm)
-                    SettingsSectionTitle("这台电脑")
-                    SettingsServerConfigCard { vm.navigate(AppDestination.RuntimeConfig) }
                     SettingsSectionTitle("通知与版本")
                     SettingsNotificationsCard(state, vm)
                     SettingsUpdateCard(state, vm)
@@ -155,8 +147,6 @@ fun SettingsScreen(
                 SettingsSectionTitle("状态与外观")
                 SettingsLiveCard(state, vm)
                 SettingsAppearanceCard(state, vm)
-                SettingsSectionTitle("这台电脑")
-                SettingsServerConfigCard { vm.navigate(AppDestination.RuntimeConfig) }
                 SettingsSectionTitle("通知与版本")
                 SettingsNotificationsCard(state, vm)
                 SettingsUpdateCard(state, vm)
@@ -224,19 +214,6 @@ private fun StandaloneConnectionCard(settings: ClientSettings, vm: AppViewModel)
         ) { Text("保存并检查") }
         val notice = vm.ui.collectAsStateWithLifecycle().value.standaloneNotice
         notice?.let { Text(it, color = CloverText2, style = MaterialTheme.typography.bodySmall) }
-    }
-}
-
-@Composable
-private fun SettingsServerConfigCard(onOpen: () -> Unit) {
-    CloverCard {
-        Text("服务器配置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text(
-            "这里改的是已连接电脑上的服务配置。保存后会影响这台电脑的全部渠道，需要重启的项不会自动重启。",
-            color = CloverText2,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("打开服务器配置") }
     }
 }
 

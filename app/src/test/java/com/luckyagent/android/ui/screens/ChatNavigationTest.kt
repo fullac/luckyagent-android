@@ -52,12 +52,11 @@ class ChatNavigationTest {
     }
 
     @Test fun navigationKeepsSessionProgressOffTheModuleList() {
-        assertEquals(listOf("定时", "渠道", "插件", "技能"), computerNavDestinations)
+        assertEquals(listOf("定时", "渠道", "插件", "技能", "服务器配置"), computerNavDestinations)
         assertFalse(computerNavDestinations.contains("任务"))
         assertFalse(computerNavDestinations.contains("本轮轨迹"))
         assertFalse(computerNavDestinations.contains("记忆"))
         assertFalse(computerNavDestinations.contains("后台黑板"))
-        assertFalse(computerNavDestinations.contains("服务器配置"))
         assertFalse(computerNavDestinations.contains("聊天"))
     }
 

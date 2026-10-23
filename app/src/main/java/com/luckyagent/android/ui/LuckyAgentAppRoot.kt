@@ -35,6 +35,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material.icons.outlined.Hub
@@ -113,6 +114,7 @@ private val navItems = listOf(
     NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
     NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
     NavSpec(AppDestination.Background, "后台黑板", Icons.Outlined.Autorenew),
+    NavSpec(AppDestination.RuntimeConfig, "服务器配置", Icons.Outlined.Code),
     NavSpec(AppDestination.Settings, "基础设置", Icons.Outlined.Settings),
 )
 
@@ -120,8 +122,8 @@ private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 
 /**
  * Phone home is chat. Progress, traces, memory, and the background board grow
- * out of the current session card. Host controls stay under one computer.
- * Server config is opened from Settings, not from this list.
+ * out of the current session card. Host controls — including the server config —
+ * stay under one computer, not beside chat.
  */
 private val computerNavItems = computerNavDestinations.map { name -> navItems.first { it.label == name } }
 
@@ -343,7 +345,7 @@ private fun AppScaffold(
                             AppDestination.RuntimeConfig -> RuntimeConfigScreen(
                                 state = state,
                                 vm = vm,
-                                onBack = { vm.navigate(AppDestination.Settings) },
+                                onBack = { vm.navigate(AppDestination.Chat) },
                             )
                             AppDestination.Settings -> SettingsScreen(
                                 state = state,

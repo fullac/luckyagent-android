@@ -711,6 +711,7 @@ class AppViewModel(
                                 // Anything visibly working is proof enough; an id alone
                                 // is not, or a replayed old error would invent a failure.
                                 clearRuns(event.sessionId)
+                                if (requestId == null) failInFlightOutbound(event.sessionId, msg)
                             } else if (!matched) {
                                 return@collect
                             }
@@ -1183,6 +1184,21 @@ class AppViewModel(
 
     private fun ownsOutboundLease(sessionId: String): Boolean =
         activeRuns[sessionId]?.values?.any { it.handle.ownsLease } == true
+
+    /**
+     * An error frame without a request id cannot close its queue item by lookup,
+     * so the message the user just sent would stay on 「发送中」 while the composer
+     * already says the request failed. Fail whatever is still in flight by id.
+     */
+    private fun failInFlightOutbound(sessionId: String, message: String) {
+        val stuck = outboundChatQueue.items(sessionId)
+            .filter { it.status == OutboundQueueStatus.Sending }
+        if (stuck.isEmpty()) return
+        stuck.forEach { item ->
+            outboundChatQueue.update(item.id, status = OutboundQueueStatus.Failed, error = message)
+        }
+        publishOutboundQueue(sessionId)
+    }
 
     private fun prepareNextForeground(sessionId: String) {
         if (sessionId != currentSessionId() || activeRuns[sessionId].isNullOrEmpty()) return

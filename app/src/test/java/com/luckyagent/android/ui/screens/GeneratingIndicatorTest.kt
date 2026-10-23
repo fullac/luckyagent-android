@@ -130,12 +130,12 @@ class GeneratingIndicatorTest {
     @Test
     fun assistantTurnWaitingOnToolsDoesNotSettle() {
         // A reply that still owes a tool result is not final, so the replayed
-        // run must survive history refresh.
+        // run must survive history refresh. The text alone would look final.
         val page = listOf(
             ProviderMessage(role = "user", content = "查一下"),
             ProviderMessage(
                 role = "assistant",
-                content = "",
+                content = "我先查一下库存",
                 toolCalls = listOf(HistoryToolCall(id = "call-1", name = "search")),
             ),
         )

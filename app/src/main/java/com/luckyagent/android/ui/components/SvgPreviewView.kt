@@ -8,7 +8,6 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.os.Build
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -53,12 +52,14 @@ import java.io.ByteArrayInputStream
  * created only while the card is on screen, and destroyed when it leaves.
  */
 @Composable
-internal fun InlineSvgPreview(source: String) {
+internal fun InlineSvgPreview(source: String, svg: SvgDocument) {
     var show by remember(source) { mutableStateOf(false) }
     var crashed by remember(source) { mutableStateOf(false) }
     var widthPx by remember(source) { mutableIntStateOf(0) }
     var measured by remember(source) { mutableStateOf<SvgFrame?>(null) }
-    val frame = svgFrame(source) ?: measured
+    // A declared frame is exact. Without one the square card holds the drawing
+    // until the laid-out size comes back from the WebView.
+    val frame = svg.frame ?: measured
     val density = LocalDensity.current
     val viewport = LocalConfiguration.current.screenHeightDp.toFloat()
     val widthDp = with(density) { widthPx.toDp().value }.takeIf { it > 0f } ?: 320f
@@ -78,11 +79,13 @@ internal fun InlineSvgPreview(source: String) {
             )
         } else if (!show) {
             SvgPage(
-                source = source,
+                svg = svg,
                 fit = !svgCardScrolls(frame, widthDp, viewport),
                 modifier = Modifier.fillMaxSize(),
                 zoomable = false,
-                onSize = { w, h -> if (w > 0 && h > 0) measured = SvgFrame(w.toFloat(), h.toFloat()) },
+                onSize = { w, h ->
+                    if (svg.frame == null && w > 0 && h > 0) measured = SvgFrame(w.toFloat(), h.toFloat())
+                },
                 onCrashed = { crashed = true },
             )
         }
@@ -94,12 +97,12 @@ internal fun InlineSvgPreview(source: String) {
         }
     }
     if (show) {
-        SvgPreviewDialog(source = source, onDismiss = { show = false }, onCrashed = { crashed = true })
+        SvgPreviewDialog(source = source, svg = svg, onDismiss = { show = false }, onCrashed = { crashed = true })
     }
 }
 
 @Composable
-private fun SvgPreviewDialog(source: String, onDismiss: () -> Unit, onCrashed: () -> Unit) {
+private fun SvgPreviewDialog(source: String, svg: SvgDocument, onDismiss: () -> Unit, onCrashed: () -> Unit) {
     var showSource by remember(source) { mutableStateOf(false) }
     var failed by remember(source) { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -118,7 +121,8 @@ private fun SvgPreviewDialog(source: String, onDismiss: () -> Unit, onCrashed: (
                     if (failed && !showSource) {
                         Text(HTML_RENDER_CRASH_MESSAGE, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
                     } else if (!showSource) {
-                        SvgPage(source, fit = false, Modifier.fillMaxSize(), zoomable = true, onSize = { _, _ -> }, onCrashed = {
+                        // Full width, natural height, scroll and zoom: the whole drawing is reachable.
+                        SvgPage(svg, fit = false, Modifier.fillMaxSize(), zoomable = true, onSize = { _, _ -> }, onCrashed = {
                             failed = true
                             onCrashed()
                         })
@@ -150,14 +154,14 @@ private class SvgSizeBridge(private val onSize: (Int, Int) -> Unit) {
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun SvgPage(
-    source: String,
+    svg: SvgDocument,
     fit: Boolean,
     modifier: Modifier,
     zoomable: Boolean,
     onSize: (Int, Int) -> Unit,
     onCrashed: () -> Unit,
 ) {
-    val document = remember(source, fit) { svgPreviewDocument(source, fit).orEmpty() }
+    val document = remember(svg, fit) { svgPreviewDocument(svg, fit) }
     val reportSize by rememberUpdatedState(onSize)
     val reportCrash by rememberUpdatedState(onCrashed)
     val bridge = remember { SvgSizeBridge { w, h -> reportSize(w, h) } }
@@ -166,6 +170,8 @@ private fun SvgPage(
         factory = { context ->
             WebView(context).apply {
                 setBackgroundColor(0)
+                // The injected size probe is the only script this page needs; the
+                // document policy in svgPreviewDocument allows none from the source.
                 settings.javaScriptEnabled = true
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
@@ -187,7 +193,6 @@ private fun SvgPage(
                     }
 
                     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
                         view.stopLoading()
                         reportCrash()
                         return true

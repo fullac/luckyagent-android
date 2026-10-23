@@ -161,15 +161,33 @@ class SessionCacheMergeTest {
     }
 
     @Test
-    fun windowSlideKeepsTheStillValidPrefix() {
+    fun narrowerWindowReplacesInsteadOfDroppingThePrefix() {
         val stored = page(start = 0, count = 4, messages = (0 until 4).map { msg("m$it", created = "c$it") })
         val incoming = page(start = 2, count = 6, messages = (2 until 6).map { msg("m$it", created = "c$it") })
 
+        // Rows 0 and 1 are still valid and the window is not at the 200 cap, so
+        // sliding the start forward must not delete them piecemeal.
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun fullWindowDropsTheHeadRowAndKeepsTheRest() {
+        val stored = page(
+            start = 0,
+            count = 200,
+            messages = (0 until 200).map { msg("m$it", created = "c$it") },
+        )
+        val incoming = page(
+            start = 1,
+            count = 201,
+            messages = (1 until 201).map { msg("m$it", created = "c$it") },
+        )
+
         val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
 
-        assertEquals(listOf(4, 5), write.inserts.map { it.ordinal })
-        assertEquals(2, write.deleteBefore)
-        assertEquals(6, write.deleteFrom)
+        assertEquals(listOf(200), write.inserts.map { it.ordinal })
+        assertEquals(1, write.deleteBefore)
+        assertEquals(201, write.deleteFrom)
     }
 
     @Test

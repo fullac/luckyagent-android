@@ -65,6 +65,32 @@ class SessionCacheWriteTest {
     }
 
     @Test
+    fun callerSuppliedStoredPageIsNotReadAgain() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val first = page(start = 3, count = 5, messages = listOf(msg("a"), msg("b")))
+        cache.savePage("http://127.0.0.1:9090", "s", "title", "t1", null, first, opened = true, now = 10)
+        val stored = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("cache should be readable")
+        dao.messageReads = 0
+
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            "title",
+            "t2",
+            null,
+            page(start = 3, count = 6, messages = listOf(msg("a"), msg("b"), msg("c"))),
+            opened = true,
+            now = 20,
+            stored = stored,
+        )
+
+        // Refresh already decoded the cache once; the write must not decode it again.
+        assertEquals(0, dao.messageReads)
+        assertEquals(listOf(3, 4, 5), dao.messages.map { it.ordinal })
+    }
+
+    @Test
     fun disjointPageStillReplaces() = kotlinx.coroutines.runBlocking {
         val dao = FakeDao()
         val cache = cache(dao)
@@ -116,14 +142,17 @@ private class FakeDao : SessionCacheDao {
     var replaceCalls = 0
     var patchCalls = 0
     var upsertMessageCalls = 0
+    var messageReads = 0
 
     override suspend fun listSessions(endpoint: String): List<CachedSessionRow> = emptyList()
 
     override suspend fun session(endpoint: String, sessionId: String): CachedSessionEntity? =
         sessions.firstOrNull { it.endpoint == endpoint && it.sessionId == sessionId }
 
-    override suspend fun messages(endpoint: String, sessionId: String): List<CachedMessageEntity> =
-        messages.filter { it.endpoint == endpoint && it.sessionId == sessionId }.sortedBy { it.ordinal }
+    override suspend fun messages(endpoint: String, sessionId: String): List<CachedMessageEntity> {
+        messageReads += 1
+        return messages.filter { it.endpoint == endpoint && it.sessionId == sessionId }.sortedBy { it.ordinal }
+    }
 
     override suspend fun upsertSession(entity: CachedSessionEntity) {
         sessions.removeAll { it.endpoint == entity.endpoint && it.sessionId == entity.sessionId }

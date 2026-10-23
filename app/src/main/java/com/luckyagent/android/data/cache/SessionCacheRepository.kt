@@ -64,12 +64,20 @@ class SessionCacheRepository internal constructor(
 
     suspend fun loadPage(apiBase: String, sessionId: String, apiKey: String = ""): MessagePage? {
         val endpoint = cacheKey(apiBase, apiKey)
-        val session = dao.session(endpoint, sessionId) ?: return null
-        if (session.startIndex < 0) return null
-        val stored = dao.messages(endpoint, sessionId)
+        return readPage(endpoint, dao.session(endpoint, sessionId))
+    }
+
+    /**
+     * The stored page, or null when the cache is missing, undecodable, or no
+     * longer a contiguous run from [CachedSessionEntity.startIndex]. Diffing
+     * against a page with gaps would patch the wrong ordinals.
+     */
+    private suspend fun readPage(endpoint: String, session: CachedSessionEntity?): MessagePage? {
+        if (session == null || session.startIndex < 0) return null
+        val stored = dao.messages(endpoint, session.sessionId)
         if (stored.isEmpty() && session.messageCount > 0) return null
-        val messages = stored.mapNotNull { entity -> decodeMessage(entity.rawJson) }
-        if (messages.size != stored.size) return null
+        val messages = stored.map { entity -> decodeMessage(entity.rawJson) ?: return null }
+        if (stored.withIndex().any { (index, entity) -> entity.ordinal != session.startIndex + index }) return null
         return MessagePage(
             messages = messages,
             startIndex = session.startIndex,
@@ -125,13 +133,15 @@ class SessionCacheRepository internal constructor(
         opened: Boolean,
         now: Long = System.currentTimeMillis(),
         apiKey: String = "",
+        /** A page the caller already read via [loadPage]; avoids decoding the cache twice. */
+        stored: MessagePage? = null,
     ) {
         val endpoint = cacheKey(apiBase, apiKey)
         val capped = capLatestMessages(page)
         val existing = dao.session(endpoint, sessionId)
-        val stored = loadStoredPage(endpoint, existing)
+        val storedPage = stored ?: readPage(endpoint, existing)
         val session = sessionEntity(endpoint, sessionId, title, updatedAt, createdAt, capped, existing, opened, now)
-        when (val write = historyCacheWrite(stored, capped)) {
+        when (val write = historyCacheWrite(storedPage, capped)) {
             HistoryCacheWrite.Unchanged -> {
                 if (existing == null || sessionRowChanged(existing, session)) dao.upsertSession(session)
             }
@@ -156,22 +166,6 @@ class SessionCacheRepository internal constructor(
             }
         }
         evictClosedSessions(endpoint)
-    }
-
-    private suspend fun loadStoredPage(endpoint: String, session: CachedSessionEntity?): MessagePage? {
-        if (session == null || session.startIndex < 0) return null
-        val stored = dao.messages(endpoint, session.sessionId)
-        if (stored.isEmpty()) return null
-        val messages = stored.map { entity -> decodeMessage(entity.rawJson) ?: return null }
-        if (stored.zip(messages.indices).any { (entity, index) -> entity.ordinal != session.startIndex + index }) {
-            return null
-        }
-        return MessagePage(
-            messages = messages,
-            startIndex = session.startIndex,
-            messageCount = session.messageCount,
-            reachedOldest = session.reachedOldest,
-        )
     }
 
     private fun sessionRowChanged(existing: CachedSessionEntity, next: CachedSessionEntity): Boolean =

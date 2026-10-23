@@ -352,6 +352,8 @@ class AppViewModel(
     private var progressWatchReady = false
     private var approvalPollingJob: Job? = null
     private var historyJob: Job? = null
+    /** Identifies the latest pull-to-refresh, so an older job cannot clear its indicator. */
+    private var historyRefreshTicket = 0
     private var contextInspectJob: Job? = null
     private var historySessionId: String? = null
     private var historyMessages: List<ProviderMessage> = emptyList()
@@ -2476,6 +2478,9 @@ class AppViewModel(
             historyJob?.cancel()
             historySessionId = target
         }
+        // A newer reset owns the refresh indicator; only the job holding this
+        // ticket may clear it.
+        val refreshTicket = if (reset) ++historyRefreshTicket else historyRefreshTicket
         val loadingMore = !reset
         val refreshing = reset && _ui.value.bubbles.isNotEmpty()
         _ui.update {
@@ -2504,7 +2509,10 @@ class AppViewModel(
                         _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
                     }
                 }
-                if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) return@launch
+                if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) {
+                    stopHistoryRefresh(target, refreshTicket)
+                    return@launch
+                }
                 if (reset) {
                     syncLatestHistory(apiBase, apiKey, target)
                 } else {
@@ -2591,7 +2599,7 @@ class AppViewModel(
                     val page = merged.page.copy(
                         reachedOldest = merged.page.reachedOldest || history.hasMore != true && merged.page.startIndex == 0,
                     )
-                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page)
+                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page, stored = stored)
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, page, offline = false)
                 }
@@ -2635,6 +2643,21 @@ class AppViewModel(
                 historyLoadingMore = false,
                 showingOfflineCache = offline,
                 activityLine = activity,
+            )
+        }
+    }
+
+    /**
+     * Drop this refresh's indicator when it cannot finish normally, for example
+     * when the connection changed under it. A newer refresh keeps its own.
+     */
+    private fun stopHistoryRefresh(sessionId: String, ticket: Int) {
+        if (ticket != historyRefreshTicket || currentSessionId() != sessionId) return
+        _ui.update {
+            it.copy(
+                historyLoading = false,
+                historyRefreshing = false,
+                historyLoadingMore = false,
             )
         }
     }
@@ -2806,6 +2829,7 @@ class AppViewModel(
         title: String?,
         updatedAt: String?,
         page: MessagePage,
+        stored: MessagePage? = null,
     ) {
         val known = _ui.value.sessions.firstOrNull { it.id == sessionId }
         runCatching {
@@ -2818,6 +2842,7 @@ class AppViewModel(
                 createdAt = known?.createdAt,
                 page = page,
                 opened = true,
+                stored = stored,
             )
         }
     }

@@ -179,6 +179,11 @@ fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCache
     val nextStart = capped.startIndex
     val nextEnd = nextStart + capped.messages.size
     if (nextStart < 0 || nextEnd < nextStart) return HistoryCacheWrite.Replace
+    // Head rows may only fall out because the 200-message window is full. A page
+    // that merely starts later must not delete a prefix that is still valid.
+    if (nextStart > storedStart && capped.messages.size < SessionCachePolicy.MAX_MESSAGES) {
+        return HistoryCacheWrite.Replace
+    }
     val overlapStart = maxOf(storedStart, nextStart)
     val overlapEnd = minOf(storedEnd, nextEnd)
     if (overlapStart >= overlapEnd) return HistoryCacheWrite.Replace

@@ -30,11 +30,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Widgets
@@ -105,24 +104,33 @@ private data class NavSpec(
 
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "聊天", Icons.Outlined.ChatBubbleOutline),
-    NavSpec(AppDestination.Tasks, "任务", Icons.Outlined.Assignment),
-    NavSpec(AppDestination.Background, "后台任务", Icons.Outlined.Autorenew),
-    NavSpec(AppDestination.Cron, "定时任务 Cron", Icons.Outlined.Schedule),
-    NavSpec(AppDestination.Trajectory, "执行轨迹", Icons.Outlined.Timeline),
-    NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
-    NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
+    NavSpec(AppDestination.Tasks, "任务", Icons.AutoMirrored.Outlined.Assignment),
+    NavSpec(AppDestination.Trajectory, "本轮轨迹", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
-    NavSpec(AppDestination.Gateways, "网关", Icons.Outlined.Hub),
-    NavSpec(AppDestination.RuntimeConfig, "config.json", Icons.Outlined.Code),
+    NavSpec(AppDestination.Cron, "定时", Icons.Outlined.Schedule),
+    NavSpec(AppDestination.Gateways, "渠道", Icons.Outlined.Hub),
+    NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
+    NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
+    NavSpec(AppDestination.Background, "后台黑板", Icons.Outlined.Autorenew),
     NavSpec(AppDestination.Settings, "基础设置", Icons.Outlined.Settings),
 )
 
 private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 
-/** Chat and Settings are pinned top/bottom; the rest are grouped by what the user is checking. */
+/**
+ * Phone home is chat. Progress, traces, and memory grow out of the current
+ * session. Host controls stay under one computer, not beside chat.
+ * Server config is opened from Settings, not from this list.
+ */
 private val navGroups = listOf(
-    "运行与自动化" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
-    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Plugins, AppDestination.Memory, AppDestination.Gateways, AppDestination.RuntimeConfig).map(::nav),
+    "当前会话" to listOf(AppDestination.Tasks, AppDestination.Trajectory, AppDestination.Memory).map(::nav),
+    "这台电脑" to listOf(
+        AppDestination.Cron,
+        AppDestination.Gateways,
+        AppDestination.Plugins,
+        AppDestination.Skills,
+        AppDestination.Background,
+    ).map(::nav),
 )
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
@@ -320,7 +328,7 @@ private fun AppScaffold(
                                         Icon(item.icon, contentDescription = item.label)
                                     }
                                 },
-                                label = { Text(if (item.dest == AppDestination.Cron) "Cron" else item.label, maxLines = 1) },
+                                label = { Text(item.label, maxLines = 1) },
                             )
                         }
                     }
@@ -432,7 +440,7 @@ private fun NavigationPage(
                 )
             }
             IconButton(onClick = onClose) {
-                Icon(Icons.Outlined.Close, contentDescription = "关闭功能导航")
+                Icon(Icons.Outlined.Close, contentDescription = "关闭导航")
             }
         }
         Surface(

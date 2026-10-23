@@ -4,13 +4,13 @@ Source of truth for UX: `lucky-agent/UI/GUI`.
 
 | GUI | Android |
 |-----|---------|
-| `App.tsx` shell / sidebar nav | `LuckyAgentAppRoot` + bottom bar / rail |
+| `App.tsx` shell / sidebar nav | `LuckyAgentAppRoot`。手机导航分「当前会话」和「这台电脑」；服务器配置从基础设置进入 |
 | Chat view + composer + bubbles | `ChatScreen` |
 | Sessions list / search | `SessionDrawerContent` |
 | WebSocket `/api/v1/ws` | `LuckyAgentWsClient` |
 | `fetchRuntime('/v1/sessions')` | `LuckyAgentApi.listSessions` |
 | Settings (server addr, models…) | `SettingsScreen` overview by default; hosts/tokens/session open via **Open connection details** |
-| Memory graph | `MemoryScreen` + force-directed graph panel |
+| Memory graph | `MemoryScreen`，导航和页标题为「记忆」 |
 | Skills / Gateways / Trajectory | 同名 Screen，JSON 只读骨架 |
 | clover CSS tokens | `ui/theme/Color.kt` + `res/values/colors.xml` |
 

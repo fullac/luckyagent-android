@@ -71,6 +71,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Assignment
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -89,6 +91,7 @@ import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Info
@@ -196,6 +199,7 @@ import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
+import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -1091,6 +1095,20 @@ private fun ChatConversation(
                             )
                         }
                     }
+                    if (timeline.isNotEmpty()) {
+                        item(key = "session-navigation") {
+                            SessionNavigationCard(
+                                sessionId = state.settings.sessionId,
+                                tasks = state.tasks,
+                                onOpenTask = { taskId ->
+                                    vm.selectTask(taskId)
+                                    vm.navigate(AppDestination.Tasks)
+                                },
+                                onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+                                onOpenMemory = { vm.navigate(AppDestination.Memory) },
+                            )
+                        }
+                    }
                     if (state.pendingApprovals.isNotEmpty()) {
                         item(key = "pending-approvals") {
                             ApprovalCards(
@@ -1227,6 +1245,51 @@ private fun ChatConversation(
 }
 
 @Composable
+private fun SessionNavigationCard(
+    sessionId: String,
+    tasks: List<TaskSummary>,
+    onOpenTask: (String) -> Unit,
+    onOpenTrace: () -> Unit,
+    onOpenMemory: () -> Unit,
+) {
+    val mine = remember(tasks, sessionId) { tasksForSession(tasks, sessionId) }
+    val featured = remember(mine) { sessionNavigationTask(mine) }
+    CloverCard {
+        Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
+        if (featured == null) {
+            Text("这轮还没有单独的任务。轨迹和记忆从这里进入。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        } else {
+            Text(
+                featured.description.ifBlank { "正在处理的任务" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onOpenTrace) {
+                Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("轨迹")
+            }
+            TextButton(onClick = onOpenMemory) {
+                Icon(Icons.Outlined.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("记忆")
+            }
+            if (featured != null) {
+                TextButton(onClick = { onOpenTask(featured.id) }) {
+                    Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("任务")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ChatTopBar(
     state: AppUiState,
     onMenu: () -> Unit,
@@ -1276,7 +1339,7 @@ private fun ChatTopBar(
                 ) {
                     openNavigation?.let { onOpen ->
                         DropdownMenuItem(
-                            text = { Text("功能导航") },
+                            text = { Text("这台电脑") },
                             onClick = {
                                 moreExpanded = false
                                 onOpen()
@@ -4082,7 +4145,7 @@ private fun SessionDrawer(
             )
             openNavigation?.let { onOpen ->
                 IconButton(onClick = onOpen) {
-                    Icon(Icons.Outlined.Apps, contentDescription = "功能导航", tint = CloverText2)
+                    Icon(Icons.Outlined.Apps, contentDescription = "这台电脑", tint = CloverText2)
                 }
             }
             IconButton(onClick = onCreate) {

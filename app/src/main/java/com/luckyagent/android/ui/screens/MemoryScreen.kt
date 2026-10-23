@@ -126,7 +126,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
         item(key = "header") {
             ScreenHeader(
                 eyebrow = "Vault",
-                title = "Memory graph",
+                title = "记忆",
                 subtitle = "Knowledge graph and recall paths",
                 actions = { IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Refresh, "Refresh") } },
             )

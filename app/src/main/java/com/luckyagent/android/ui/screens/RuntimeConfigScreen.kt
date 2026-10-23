@@ -17,8 +17,8 @@ fun RuntimeConfigScreen(state: AppUiState, vm: AppViewModel) {
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = "config.json",
-            subtitle = "服务器配置 · ${state.settings.apiBase}",
+            title = "服务器配置",
+            subtitle = "保存后会影响这台电脑上的服务 · ${state.settings.apiBase}",
         )
         Column(
             Modifier

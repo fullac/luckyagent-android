@@ -114,11 +114,11 @@ fun TasksScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = if (detail == null) "Tasks" else "Task details",
+            title = if (detail == null) "任务" else "任务详情",
             subtitle = if (detail == null) {
-                if (state.taskPolling) "Watching active tasks" else "Multi-agent task center"
+                if (state.taskPolling) "正在看进行中的任务" else "从当前会话长出来的任务"
             } else {
-                detail.root.summary.id
+                detail.root.summary.description.ifBlank { detail.root.summary.id }
             },
             onBack = if (detail != null) vm::clearSelectedTask else null,
             actions = {

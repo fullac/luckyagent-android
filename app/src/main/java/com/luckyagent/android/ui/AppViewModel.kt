@@ -1733,7 +1733,10 @@ class AppViewModel(
                 (safeFull.isNullOrBlank() || list[lastAssistantIndex].content == safeFull) &&
                 (safeAttachments.isEmpty() || list[lastAssistantIndex].attachments.map(::mediaKey) == safeAttachments.map(::mediaKey))
             if (duplicateHistoryAnswer) {
-                return@update st.copy(isResponding = false)
+                return@update st.copy(
+                    bubbles = list.filterNot(::isEmptyTurnStatusPlaceholder),
+                    isResponding = false,
+                )
             }
             if (id != null) {
                 val idx = list.indexOfLast { it.id == id }
@@ -1769,11 +1772,20 @@ class AppViewModel(
                     attachments = safeAttachments,
                 )
             }
-            st.copy(bubbles = list, isResponding = false, liveSummary = null, processNotice = null)
+            st.copy(
+                bubbles = list.filterNot(::isEmptyTurnStatusPlaceholder),
+                isResponding = false,
+                liveSummary = null,
+                processNotice = null,
+            )
         }
         assistantBufferId = null
         assistantBufferIndex = null
     }
+
+    /** The status box opened before any reasoning arrived. It is not a stored step. */
+    private fun isEmptyTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+        bubble.role == "reasoning" && !bubble.reasoningHasContent && bubble.content.isBlank()
 
     private fun mediaKey(media: ChatMedia): String {
         val descriptor = media.descriptor

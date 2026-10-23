@@ -86,6 +86,9 @@ import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.util.bubbleCopyText
 import com.luckyagent.android.ui.util.buildOutboundMessage
+import com.luckyagent.android.ui.screens.historyPageEndsWithFinalAssistant
+import com.luckyagent.android.ui.screens.historySettlesUnownedTurn
+import com.luckyagent.android.ui.screens.replayRegistersLiveRun
 import com.luckyagent.android.ui.util.quoteFromBubble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -692,14 +695,27 @@ class AppViewModel(
                         }
                         "error" -> {
                             val requestId = eventRequestId(event)
-                            if (!completeRun(event)) return@collect
-                            val msg = env.error
-                                ?: extractField(env.data, "message")
-                                ?: extractText(env.data)
-                                ?: "Unknown error"
+                            val msg = errorText(env)
+                            val matched = completeRun(event)
+                            val visibleStuck = !matched &&
+                                event.sessionId == currentSessionId() &&
+                                (
+                                    isCurrentSessionRunActive() ||
+                                        _ui.value.isResponding ||
+                                        _ui.value.bubbles.any { it.streaming } ||
+                                        requestId != null
+                                    )
+                            if (visibleStuck) {
+                                // The frame may omit the request id after a journal
+                                // gap. The visible session still has to leave 「生成中」.
+                                clearRuns(event.sessionId)
+                            } else if (!matched) {
+                                return@collect
+                            }
                             finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
-                            if (foreground) {
+                            if (foreground || visibleStuck) {
                                 finishAssistant(null)
+                                clearStreamingBubbles()
                                 pushBubble(
                                     ChatBubble(
                                         id = "err-${System.currentTimeMillis()}",
@@ -709,7 +725,7 @@ class AppViewModel(
                                 )
                                 _ui.update {
                                     it.copy(
-                                        activityLine = "error · $msg",
+                                        activityLine = "请求失败 · ${failureNextStep(msg)}",
                                         isResponding = false,
                                         liveSummary = null,
                                         processNotice = "请求失败",
@@ -1124,8 +1140,39 @@ class AppViewModel(
         val requestId = event.envelope.parentId ?: return
         if (event.envelope.runId.isNullOrBlank()) return
         if (activeRuns[event.sessionId]?.containsKey(requestId) == true) return
+        // Replay updates records. Only an explicit still-executing mark may
+        // light 「生成中」. A historical status or reasoning frame must not.
+        if (!replayRegistersLiveRun(event.envelope)) return
         registerRun(container.wsClient.replayHandle(event.sessionId, requestId, event.connectionId))
     }
+
+    private fun errorText(env: com.luckyagent.android.data.api.WsEnvelope): String =
+        env.error
+            ?: extractField(env.data, "message")
+            ?: extractText(env.data)
+            ?: "Unknown error"
+
+    /** Shown after a failed turn so 「生成中」 is replaced by a next step. */
+    private fun failureNextStep(message: String): String = when {
+        message.contains("journal sequence gap", ignoreCase = true) -> "这次回复没有送达，请再发一次"
+        message.contains("too large", ignoreCase = true) -> "消息过大，缩短后再发"
+        else -> "请再发一次"
+    }
+
+    private fun clearStreamingBubbles() {
+        _ui.update { current ->
+            if (current.bubbles.none { it.streaming }) return@update current
+            current.copy(
+                bubbles = current.bubbles.map { bubble ->
+                    if (bubble.streaming) bubble.copy(streaming = false) else bubble
+                },
+                isResponding = false,
+            )
+        }
+    }
+
+    private fun ownsOutboundLease(sessionId: String): Boolean =
+        activeRuns[sessionId]?.values?.any { it.handle.ownsLease } == true
 
     private fun prepareNextForeground(sessionId: String) {
         if (sessionId != currentSessionId() || activeRuns[sessionId].isNullOrEmpty()) return
@@ -2712,11 +2759,31 @@ class AppViewModel(
         }
         historyMessages = page.messages
         historyStartIndex = page.startIndex
+        val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
         val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
         // History fetches run off the main thread. Bubble ids are only touched on main.
         withContext(Dispatchers.Main.immediate) {
             if (currentSessionId() != sessionId || historySessionId != sessionId) return@withContext
-            publishHistory(sessionId, offline, activity, preserveLiveTurn = keepLiveTurn)
+            if (
+                historySettlesUnownedTurn(
+                    settleUnowned,
+                    ownsOutboundLease(sessionId),
+                )
+            ) {
+                // The page already has the final reply and this phone did not
+                // send the turn. Drop the replayed run so history cannot keep 「生成中」.
+                clearRuns(sessionId)
+                resetAssistantStream()
+            }
+            val stillOwned = ownsOutboundLease(sessionId) && activeRuns[sessionId]?.isNotEmpty() == true
+            val shownActivity = if (offline) {
+                activity
+            } else if (activeRuns[sessionId]?.isNotEmpty() == true) {
+                "Agent running · history loaded"
+            } else {
+                "loaded ${historyMessages.size} messages"
+            }
+            publishHistory(sessionId, offline, shownActivity, preserveLiveTurn = keepLiveTurn && stillOwned)
         }
     }
 

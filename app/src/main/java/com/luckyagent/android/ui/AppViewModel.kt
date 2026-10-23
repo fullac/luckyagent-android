@@ -1785,7 +1785,7 @@ class AppViewModel(
 
     /** The status box opened before any reasoning arrived. It is not a stored step. */
     private fun isEmptyTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
-        bubble.role == "reasoning" && !bubble.reasoningHasContent && bubble.content.isBlank()
+        com.luckyagent.android.ui.screens.isTurnStatusPlaceholder(bubble)
 
     private fun mediaKey(media: ChatMedia): String {
         val descriptor = media.descriptor
@@ -3027,6 +3027,7 @@ class AppViewModel(
     /**
      * Stamp the current turn with the server ordinal of the user message that
      * opened it, then give every later live row the ordinal history will use.
+     * One server message shares one ordinal, matching [historyToBubbles].
      * [baseline] is the message count known before this turn, so an older copy
      * of the same text is not this turn.
      */
@@ -3044,12 +3045,11 @@ class AppViewModel(
             turnBaselineCount = userOrdinal
         }
         if (userOrdinal == null) return
-        var next = userOrdinal
+        val ordinals = com.luckyagent.android.ui.screens.anchorLiveTurnOrdinals(turn, userOrdinal)
+        val byId = turn.mapIndexed { index, bubble -> bubble.id to ordinals[index] }.toMap()
         val stamped = bubbles.map { bubble ->
-            if (turn.none { it.id == bubble.id }) return@map bubble
-            val ordinal = bubble.serverOrdinal ?: next
-            if (bubble.serverOrdinal == null) next += 1
-            bubble.copy(serverOrdinal = ordinal)
+            val ordinal = byId[bubble.id] ?: return@map bubble
+            if (bubble.serverOrdinal == ordinal) bubble else bubble.copy(serverOrdinal = ordinal)
         }
         if (stamped != bubbles) {
             _ui.update { it.copy(bubbles = stamped) }
@@ -3544,7 +3544,7 @@ class AppViewModel(
                 pendingMedia = if (clearComposer) emptyList() else it.pendingMedia,
                 pendingQuote = if (clearComposer) null else it.pendingQuote,
                 isResponding = true,
-                liveSummary = if (wasRunning) it.liveSummary else "Thinking through the request",
+                liveSummary = if (wasRunning) it.liveSummary else "正在思考",
                 processNotice = null,
                 outboundQueue = outboundChatQueue.items(sessionId),
                 activityLine = if (wasRunning) {
@@ -3552,7 +3552,7 @@ class AppViewModel(
                 } else {
                     it.activityLine
                 },
-                progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
+                progressSteps = listOf(ChatProgressStep("phase-thinking", "正在思考", ProgressStatus.Active)),
             )
         }
         // Only the dispatcher sends. Subsequent messages remain local Queue

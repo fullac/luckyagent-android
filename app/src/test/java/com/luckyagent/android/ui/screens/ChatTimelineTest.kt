@@ -280,6 +280,67 @@ class ChatTimelineTest {
     }
 
     @Test
+    fun anchorSharesOneOrdinalPerServerMessage() {
+        val turn = "turn-9"
+        val live = listOf(
+            ChatBubble("u-live", "user", "what is in the file"),
+            ChatBubble("reasoning-$turn-0", "reasoning", "reading", reasoningHasContent = true),
+            ChatBubble("tool-$turn:1", "tool", "file_read", toolName = "file_read", toolArgs = "{}", stepId = "$turn:1"),
+            ChatBubble("a-round", "assistant", "looking", isIntermediate = true),
+            ChatBubble("tool-$turn:1-result", "tool", "file contents", toolName = "file_read", toolOutput = "file contents", toolDone = true, stepId = "$turn:1"),
+            ChatBubble("a-live", "assistant", "still streaming", streaming = true),
+        )
+        assertEquals(listOf(40, 41, 41, 41, 42, 43), anchorLiveTurnOrdinals(live, 40))
+
+        val start = 40
+        val history = listOf(
+            ProviderMessage(role = "user", content = "what is in the file").toHistoryBubbles(start),
+            ProviderMessage(
+                role = "assistant",
+                content = "looking",
+                reasoningContent = "reading",
+                toolCalls = listOf(HistoryToolCall(id = "$turn:1", name = "file_read", arguments = "{}")),
+            ).toHistoryBubbles(start + 1),
+            ProviderMessage(role = "tool", name = "file_read", content = "file contents", toolCallId = "$turn:1")
+                .toHistoryBubbles(start + 2),
+            ProviderMessage(role = "assistant", content = "the stored answer").toHistoryBubbles(start + 3),
+        ).flatten().mapIndexed { index, bubble ->
+            val ordinal = when (index) {
+                0 -> start
+                in 1..3 -> start + 1
+                4 -> start + 2
+                else -> start + 3
+            }
+            bubble.copy(serverOrdinal = ordinal)
+        }
+        val stamped = live.zip(anchorLiveTurnOrdinals(live, start)) { bubble, ordinal ->
+            bubble.copy(serverOrdinal = ordinal)
+        }
+        assertEquals(emptyList<String>(), dedupeLiveTurn(history, stamped).map { it.id })
+    }
+
+    @Test
+    fun aHistoryOnlyFoldDoesNotOwnTheNewTurn() {
+        val history = listOf(
+            ChatBubble("u-old", "user", "earlier"),
+            ChatBubble("reasoning-old", "reasoning", "old thought", reasoningHasContent = true),
+            ChatBubble("a-old", "assistant", "earlier answer"),
+        )
+        val items = buildTimeline(history)
+        val fold = items.filterIsInstance<ChatTimelineItem.Process>().single()
+        assertFalse(processOwnsTurn(fold.steps, items))
+        val sameText = history + listOf(
+            ChatBubble("u-new", "user", "earlier"),
+            ChatBubble("reasoning-new", "reasoning", "old thought", reasoningHasContent = true),
+        )
+        val both = buildTimeline(sameText)
+        val folds = both.filterIsInstance<ChatTimelineItem.Process>()
+        assertEquals(2, folds.size)
+        assertFalse(processOwnsTurn(folds[0].steps, both))
+        assertTrue(processOwnsTurn(folds[1].steps, both))
+    }
+
+    @Test
     fun newTurnStatusStartsInItsOwnFold() {
         val previous = listOf(
             ChatBubble("u-old", "user", "earlier"),

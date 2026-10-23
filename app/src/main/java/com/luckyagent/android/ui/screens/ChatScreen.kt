@@ -283,18 +283,28 @@ internal fun visibleProcessSteps(steps: List<ChatBubble>): List<ChatBubble> {
 }
 
 /**
- * A fold owns the live turn when it is the latest process and a user message
- * sits between it and the previous process. An older fold must not take the
- * new turn's status.
+ * A fold owns the live turn only while that turn is still open: it is the
+ * latest process, a user message opened it, and no assistant answer has closed
+ * it yet. A stored history fold, even when it is the only one, does not.
  */
 internal fun processOwnsTurn(steps: List<ChatBubble>, timeline: List<ChatTimelineItem>): Boolean {
-    val processes = timeline.filterIsInstance<ChatTimelineItem.Process>()
-    val index = processes.indexOfFirst { it.steps === steps || it.steps == steps }
-    if (index < 0 || index != processes.lastIndex) return false
-    if (index == 0) return true
-    val itemIndex = timeline.indexOfFirst { it is ChatTimelineItem.Process && it.steps == steps }
-    val previous = timeline.subList(0, itemIndex).indexOfLast { it is ChatTimelineItem.Process }
-    return timeline.subList(previous + 1, itemIndex).any { item ->
+    val foldKey = timeline.lastOrNull { item ->
+        item is ChatTimelineItem.Process && item.steps === steps
+    }?.key ?: timeline.lastOrNull { item ->
+        item is ChatTimelineItem.Process && item.steps.map { it.id } == steps.map { it.id }
+    }?.key
+    val index = timeline.indexOfLast { it.key == foldKey }
+    if (foldKey == null || index < 0) return false
+    if (timeline.asSequence().drop(index + 1).any { it is ChatTimelineItem.Process }) return false
+    val after = timeline.subList(index + 1, timeline.size)
+    if (after.any { item ->
+            item is ChatTimelineItem.Message &&
+                item.bubble.role.equals("assistant", ignoreCase = true) &&
+                !item.bubble.isIntermediate
+        }
+    ) return false
+    val previous = timeline.subList(0, index).indexOfLast { it is ChatTimelineItem.Process }
+    return timeline.subList(previous + 1, index).any { item ->
         item is ChatTimelineItem.Message && item.bubble.role.equals("user", ignoreCase = true)
     }
 }
@@ -337,6 +347,51 @@ internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: 
  * confirmed index drops the whole live projection of that message. Rows past
  * the stored tail stay, including a second user message with the same text.
  */
+/**
+ * Session ordinals history will assign to one live turn.
+ *
+ * History stamps every bubble of one server message with that message's index.
+ * A live turn has to use the same groups: the user message, then each assistant
+ * round (reasoning, tool calls, and that round's commentary), then a tool
+ * result, then the final answer. An empty status box shares the next ordinal
+ * but does not consume it, because history never stores that box.
+ */
+internal fun anchorLiveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<Int> {
+    val ordinals = MutableList(turn.size) { userOrdinal }
+    var next = userOrdinal
+    var groupOpen = false
+    turn.forEachIndexed { index, bubble ->
+        val role = bubble.role.lowercase()
+        when {
+            role == "user" -> {
+                ordinals[index] = userOrdinal
+                next = userOrdinal + 1
+                groupOpen = false
+            }
+            isTurnStatusPlaceholder(bubble) -> {
+                ordinals[index] = next
+            }
+            role == "tool" && bubble.toolOutput != null && bubble.toolArgs == null -> {
+                if (groupOpen) next += 1
+                ordinals[index] = next
+                next += 1
+                groupOpen = false
+            }
+            role == "reasoning" || role == "tool" || (role == "assistant" && bubble.isIntermediate) -> {
+                if (!groupOpen) groupOpen = true
+                ordinals[index] = next
+            }
+            else -> {
+                if (groupOpen) next += 1
+                ordinals[index] = next
+                next += 1
+                groupOpen = false
+            }
+        }
+    }
+    return ordinals
+}
+
 internal fun dedupeLiveTurn(history: List<ChatBubble>, live: List<ChatBubble>): List<ChatBubble> {
     if (live.isEmpty()) return emptyList()
     val storedThrough = history.mapNotNull { it.serverOrdinal }.maxOrNull() ?: return live
@@ -2042,7 +2097,7 @@ private fun ProcessTimeline(
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
-                    steps.all(::isTurnStatusPlaceholder) -> "Thinking through the request"
+                    steps.all(::isTurnStatusPlaceholder) -> "正在思考"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
                     else -> "思考了 ${steps.count { !isTurnStatusPlaceholder(it) }} 步"
                 },

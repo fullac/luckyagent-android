@@ -86,6 +86,7 @@ import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.util.bubbleCopyText
 import com.luckyagent.android.ui.util.buildOutboundMessage
+import com.luckyagent.android.ui.screens.connectionStatusLightsTurn
 import com.luckyagent.android.ui.screens.historyPageEndsWithFinalAssistant
 import com.luckyagent.android.ui.screens.historySettlesUnownedTurn
 import com.luckyagent.android.ui.screens.replayRegistersLiveRun
@@ -974,9 +975,17 @@ class AppViewModel(
         event.envelope.parentId
             ?: event.envelope.runId?.takeIf { id -> activeRuns[event.sessionId]?.containsKey(id) == true }
 
-    private fun isForegroundEvent(event: WsEvent): Boolean =
-        event.sessionId == currentSessionId() &&
-            eventRequestId(event) == foregroundRequestIds[event.sessionId]
+    private fun isForegroundEvent(event: WsEvent): Boolean {
+        if (event.sessionId != currentSessionId()) return false
+        val requestId = eventRequestId(event)
+        // A reconnect notice has no request id. Comparing it with a missing
+        // foreground id used to treat "connected" as the live turn.
+        if (connectionStatusLightsTurn(event.envelope.type, extractField(event.envelope.data, "state"), requestId)) {
+            return false
+        }
+        if (requestId == null) return false
+        return requestId == foregroundRequestIds[event.sessionId]
+    }
 
     private fun completeRun(event: WsEvent): Boolean {
         val runs = activeRuns[event.sessionId] ?: return false

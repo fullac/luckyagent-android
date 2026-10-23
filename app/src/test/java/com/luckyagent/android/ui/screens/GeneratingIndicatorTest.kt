@@ -48,6 +48,14 @@ class GeneratingIndicatorTest {
     }
 
     @Test
+    fun connectedStatusWithoutRequestDoesNotLightTurn() {
+        assertTrue(connectionStatusLightsTurn("status", "connected", null))
+        assertTrue(connectionStatusLightsTurn("status", "reconnected", ""))
+        assertFalse(connectionStatusLightsTurn("status", "connected", "req-1"))
+        assertFalse(connectionStatusLightsTurn("status", "executing", null))
+    }
+
+    @Test
     fun replayWithoutExecutingMarkDoesNotRegister() {
         val status = envelope(type = "status", state = "thinking")
         val reasoning = envelope(type = "reasoning")

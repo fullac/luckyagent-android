@@ -5,6 +5,7 @@
 - 本机发出、还没收到结束、取消或错误的回合，会显示「生成中」。
 - 服务端在同一帧上明确写出 `executing`、`running` 或 `in_progress` 时，重连回放也可以点亮它。
 - 历史 `status`、`reasoning`、`tool_call` 只更新记录，不登记新的运行，也不能把指示重新点亮。
+- 没有请求号的 `connected` / `reconnected` 只是连接通知。切换会话时它不能匹配前台回合，也不能点亮「生成中」。
 - `error`，包括 `websocket journal sequence gap`，会清掉当前会话的运行、`isResponding` 和仍标着 `streaming` 的气泡，并显示失败和下一步。
 - 历史页已经以最终助手回复结尾，且本机没有这条回合的发送租约时，清掉回放登记和「生成中」。
 - 斜杠命令仍显示「执行中」。任务卡片、通知落点和导航不由这条指示负责。

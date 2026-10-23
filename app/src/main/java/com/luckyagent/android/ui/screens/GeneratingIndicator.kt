@@ -38,6 +38,16 @@ internal fun replayRegistersLiveRun(envelope: WsEnvelope): Boolean {
     return explicitExecutingMark(envelope, requestId)
 }
 
+/**
+ * Connection notices are not a turn. A status frame with no request id used to
+ * match a missing foreground id and re-light 「生成中」 on session switch.
+ */
+internal fun connectionStatusLightsTurn(type: String, state: String?, requestId: String?): Boolean {
+    if (!requestId.isNullOrBlank()) return false
+    if (type != "status" && type != "info") return false
+    return state.equals("connected", ignoreCase = true) || state.equals("reconnected", ignoreCase = true)
+}
+
 /** End, cancel, and error close the turn. A later status frame must not reopen it. */
 internal fun isTerminalAgentEvent(envelope: WsEnvelope): Boolean {
     if (!envelope.error.isNullOrBlank() && envelope.type !in setOf("status", "info", "compact")) {

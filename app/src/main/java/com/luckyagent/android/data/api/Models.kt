@@ -34,6 +34,24 @@ data class RuntimeSession(
     @SerialName("updated_at") val updatedAt: String? = null,
 )
 
+/**
+ * A history fetch. [notModified] means the refresh has nothing to apply: the
+ * server answered 304, or it answered 200 with an empty body on its unchanged
+ * check. Until the server sends validators, callers still decode the body and
+ * compare it with the stored page before writing cache.
+ */
+data class SessionHistoryFetch(
+    val history: SessionHistory? = null,
+    val notModified: Boolean = false,
+)
+
+internal fun sessionHistoryFetch(code: Int, body: String, decode: (String) -> SessionHistory): SessionHistoryFetch {
+    if (code == 304) return SessionHistoryFetch(notModified = true)
+    if (code !in 200..299) error("session history $code: $body")
+    if (body.isBlank()) return SessionHistoryFetch(notModified = true)
+    return SessionHistoryFetch(history = decode(body))
+}
+
 @Serializable
 data class SessionHistory(
     val id: String? = null,

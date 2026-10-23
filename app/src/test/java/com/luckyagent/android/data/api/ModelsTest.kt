@@ -82,6 +82,26 @@ class ModelsTest {
     }
 
     @Test
+    fun sessionHistory304SkipsDecoding() {
+        val fetch = sessionHistoryFetch(304, "") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun blankSuccessEndsTheRefreshWithoutDecoding() {
+        val fetch = sessionHistoryFetch(200, "   ") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun sessionHistoryErrorDoesNotLookUnchanged() {
+        val error = runCatching { sessionHistoryFetch(500, "boom") { error("unused") } }.exceptionOrNull()
+        assertTrue(error?.message?.contains("500") == true)
+    }
+
+    @Test
     fun sessionHistoryDecodesStorageAndTruncationFields() {
         val raw = """
             {

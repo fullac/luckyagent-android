@@ -114,6 +114,14 @@ interface SessionCacheDao {
 
     @Query(
         """
+        DELETE FROM cached_messages
+        WHERE endpoint = :endpoint AND sessionId = :sessionId AND ordinal >= :fromOrdinal
+        """,
+    )
+    suspend fun deleteMessagesFrom(endpoint: String, sessionId: String, fromOrdinal: Int)
+
+    @Query(
+        """
         SELECT sessionId FROM cached_sessions
         WHERE endpoint = :endpoint
         ORDER BY CASE WHEN lastOpenedAt > 0 THEN 0 ELSE 1 END,
@@ -133,6 +141,23 @@ interface SessionCacheDao {
         deleteMessages(session.endpoint, session.sessionId)
         if (messages.isNotEmpty()) upsertMessages(messages)
         deleteMessagesBefore(session.endpoint, session.sessionId, minOrdinal)
+    }
+
+    /**
+     * Insert [inserts] and drop rows outside the new window. Rows already stored
+     * inside that window stay in place.
+     */
+    @Transaction
+    suspend fun patchMessages(
+        session: CachedSessionEntity,
+        inserts: List<CachedMessageEntity>,
+        deleteBefore: Int,
+        deleteFrom: Int,
+    ) {
+        upsertSession(session)
+        deleteMessagesFrom(session.endpoint, session.sessionId, deleteFrom)
+        deleteMessagesBefore(session.endpoint, session.sessionId, deleteBefore)
+        if (inserts.isNotEmpty()) upsertMessages(inserts)
     }
 }
 

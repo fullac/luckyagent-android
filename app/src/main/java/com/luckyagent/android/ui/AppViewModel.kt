@@ -21,6 +21,7 @@ import com.luckyagent.android.data.cache.HistorySync
 import com.luckyagent.android.data.cache.LatestMerge
 import com.luckyagent.android.data.cache.MessagePage
 import com.luckyagent.android.data.cache.SessionCachePolicy
+import com.luckyagent.android.data.cache.latestPageAlreadyStored
 import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
 import com.luckyagent.android.data.cache.olderHistoryOffset
@@ -210,6 +211,8 @@ data class AppUiState(
     val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
     val historyLoading: Boolean = false,
+    /** True while a pull-to-refresh is in flight, including when bubbles are already shown. */
+    val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
     val historyHasMore: Boolean = false,
     val composer: String = "",
@@ -349,6 +352,8 @@ class AppViewModel(
     private var progressWatchReady = false
     private var approvalPollingJob: Job? = null
     private var historyJob: Job? = null
+    /** Identifies the latest pull-to-refresh, so an older job cannot clear its indicator. */
+    private var historyRefreshTicket = 0
     private var contextInspectJob: Job? = null
     private var historySessionId: String? = null
     private var historyMessages: List<ProviderMessage> = emptyList()
@@ -2473,13 +2478,18 @@ class AppViewModel(
             historyJob?.cancel()
             historySessionId = target
         }
+        // A newer reset owns the refresh indicator; only the job holding this
+        // ticket may clear it.
+        val refreshTicket = if (reset) ++historyRefreshTicket else historyRefreshTicket
         val loadingMore = !reset
+        val refreshing = reset && _ui.value.bubbles.isNotEmpty()
         _ui.update {
             it.copy(
                 historyLoading = reset && it.bubbles.isEmpty(),
+                historyRefreshing = refreshing,
                 historyLoadingMore = loadingMore,
                 activityLine = if (reset) {
-                    if (it.bubbles.isEmpty()) "loading history…" else it.activityLine
+                    if (it.bubbles.isEmpty()) "loading history…" else "正在刷新"
                 } else {
                     "loading older history…"
                 },
@@ -2490,19 +2500,30 @@ class AppViewModel(
             val connection = container.settingsRepository.snapshot()
             val apiBase = connection.apiBase
             val apiKey = connection.apiKey
-            if (reset) {
-                val painted = paintCachedHistory(apiBase, apiKey, target)
-                if (!painted && currentSessionId() == target) {
-                    historyMessages = emptyList()
-                    historyStartIndex = 0
-                    _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
+            try {
+                if (reset) {
+                    val painted = paintCachedHistory(apiBase, apiKey, target)
+                    if (!painted && currentSessionId() == target) {
+                        historyMessages = emptyList()
+                        historyStartIndex = 0
+                        _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
+                    }
                 }
-            }
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) return@launch
-            if (reset) {
-                syncLatestHistory(apiBase, apiKey, target)
-            } else {
-                syncOlderHistory(apiBase, apiKey, target)
+                if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) {
+                    stopHistoryRefresh(target, refreshTicket)
+                    return@launch
+                }
+                if (reset) {
+                    syncLatestHistory(apiBase, apiKey, target)
+                } else {
+                    syncOlderHistory(apiBase, apiKey, target)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (currentSessionId() == target && historySessionId == target) {
+                    failHistoryRefresh(target, error.message)
+                }
             }
         }
     }
@@ -2559,40 +2580,85 @@ class AppViewModel(
         // so never skip the latest-page fetch based on it; the merge keeps this cheap.
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = 0)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
-        result.onSuccess { history ->
+        result.onSuccess { fetch ->
+            if (fetch.notModified) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
+            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
             val remoteCount = history.messageCount ?: (historyMessages.size + history.messages.size)
             val cachedPage = currentHistoryPage().takeIf { historyMessages.isNotEmpty() }
+            val stored = runCatching { container.sessionCache.loadPage(apiBase, sessionId, apiKey) }.getOrNull()
+            if (stored != null && latestPageAlreadyStored(stored, history.messages, remoteCount)) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
             when (val merged = mergeLatestPage(cachedPage, history.messages, remoteCount)) {
                 is LatestMerge.Invalidate -> replaceHistoryFromServer(apiBase, apiKey, sessionId, history.messages, remoteCount, history.title)
                 is LatestMerge.Appended -> {
                     val page = merged.page.copy(
                         reachedOldest = merged.page.reachedOldest || history.hasMore != true && merged.page.startIndex == 0,
                     )
-                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page)
+                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page, stored = stored)
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, page, offline = false)
                 }
             }
         }.onFailure { error ->
             if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
-            if (historyMessages.isEmpty()) {
-                _ui.update {
-                    it.copy(
-                        historyLoading = false,
-                        historyLoadingMore = false,
-                        activityLine = "history: ${error.message}",
-                    )
-                }
-            } else {
-                _ui.update {
-                    it.copy(
-                        historyLoading = false,
-                        historyLoadingMore = false,
-                        showingOfflineCache = true,
-                        activityLine = SessionCachePolicy.OFFLINE_LABEL,
-                    )
-                }
+            failHistoryRefresh(sessionId, error.message)
+        }
+    }
+
+    private fun failHistoryRefresh(sessionId: String, message: String?) {
+        if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (historyMessages.isEmpty()) {
+            _ui.update {
+                it.copy(
+                    historyLoading = false,
+                    historyRefreshing = false,
+                    historyLoadingMore = false,
+                    activityLine = "history: $message",
+                )
             }
+        } else {
+            _ui.update {
+                it.copy(
+                    historyLoading = false,
+                    historyRefreshing = false,
+                    historyLoadingMore = false,
+                    showingOfflineCache = true,
+                    activityLine = SessionCachePolicy.REFRESH_FAILED_LABEL,
+                )
+            }
+        }
+    }
+
+    private fun finishHistoryRefresh(sessionId: String, offline: Boolean, activity: String) {
+        if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        _ui.update {
+            it.copy(
+                historyLoading = false,
+                historyRefreshing = false,
+                historyLoadingMore = false,
+                showingOfflineCache = offline,
+                activityLine = activity,
+            )
+        }
+    }
+
+    /**
+     * Drop this refresh's indicator when it cannot finish normally, for example
+     * when the connection changed under it. A newer refresh keeps its own.
+     */
+    private fun stopHistoryRefresh(sessionId: String, ticket: Int) {
+        if (ticket != historyRefreshTicket || currentSessionId() != sessionId) return
+        _ui.update {
+            it.copy(
+                historyLoading = false,
+                historyRefreshing = false,
+                historyLoadingMore = false,
+            )
         }
     }
 
@@ -2631,7 +2697,12 @@ class AppViewModel(
         }
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = offset)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
-        result.onSuccess { history ->
+        result.onSuccess { fetch ->
+            if (fetch.notModified) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
+            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
             val cached = currentHistoryPage()
             when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {
@@ -2654,9 +2725,10 @@ class AppViewModel(
             _ui.update {
                 it.copy(
                     historyLoading = false,
+                    historyRefreshing = false,
                     historyLoadingMore = false,
                     activityLine = if (historyMessages.isNotEmpty()) {
-                        SessionCachePolicy.OFFLINE_LABEL
+                        SessionCachePolicy.REFRESH_FAILED_LABEL
                     } else {
                         "history: ${error.message}"
                     },
@@ -2738,6 +2810,7 @@ class AppViewModel(
                 activityLine = if (running && !offline) "Agent running · history loaded" else activity,
                 isResponding = running,
                 historyLoading = false,
+                historyRefreshing = false,
                 historyLoadingMore = false,
                 historyHasMore = historyStartIndex > 0,
                 showingOfflineCache = offline,
@@ -2756,6 +2829,7 @@ class AppViewModel(
         title: String?,
         updatedAt: String?,
         page: MessagePage,
+        stored: MessagePage? = null,
     ) {
         val known = _ui.value.sessions.firstOrNull { it.id == sessionId }
         runCatching {
@@ -2768,6 +2842,7 @@ class AppViewModel(
                 createdAt = known?.createdAt,
                 page = page,
                 opened = true,
+                stored = stored,
             )
         }
     }

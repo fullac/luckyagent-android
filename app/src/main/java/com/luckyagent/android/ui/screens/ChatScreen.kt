@@ -170,6 +170,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
@@ -1014,13 +1015,13 @@ private fun ChatConversation(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
                 state = refreshState,
-                isRefreshing = state.historyLoading,
+                isRefreshing = state.historyLoading || state.historyRefreshing,
                 onRefresh = { vm.loadHistory(reset = true) },
                 modifier = Modifier.fillMaxSize(),
                 indicator = {
                     PullToRefreshDefaults.Indicator(
                         state = refreshState,
-                        isRefreshing = state.historyLoading,
+                        isRefreshing = state.historyLoading || state.historyRefreshing,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
                 },
@@ -1107,7 +1108,20 @@ private fun ChatConversation(
                     item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
             }
-            if (state.historyLoading || state.historyLoadingMore) {
+            if ((state.showingOfflineCache || state.activityLine == SessionCachePolicy.REFRESH_FAILED_LABEL) && state.bubbles.isNotEmpty()) {
+                Text(
+                    state.activityLine ?: SessionCachePolicy.OFFLINE_LABEL,
+                    color = CloverText3,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 36.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(CloverSurface.copy(alpha = .94f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+            if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
                 CircularProgressIndicator(
                     modifier = Modifier
                         .align(Alignment.TopCenter)

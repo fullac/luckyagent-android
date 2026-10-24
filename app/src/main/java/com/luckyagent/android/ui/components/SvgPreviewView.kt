@@ -3,6 +3,7 @@ package com.luckyagent.android.ui.components
 import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceResponse
@@ -151,7 +152,7 @@ private class SvgSizeBridge(private val onSize: (Int, Int) -> Unit) {
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
+@SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
 private fun SvgPage(
     svg: SvgDocument,
@@ -177,6 +178,9 @@ private fun SvgPage(
                 settings.allowContentAccess = false
                 settings.blockNetworkLoads = true
                 settings.domStorageEnabled = false
+                // Nested scrolling fights the chat list. The touch listener, installed in
+                // update so it follows `fit`, decides which one owns each drag.
+                isNestedScrollingEnabled = false
                 addJavascriptInterface(bridge, "LuckySvgBridge")
                 if (zoomable) {
                     settings.setSupportZoom(true)
@@ -184,8 +188,13 @@ private fun SvgPage(
                     settings.displayZoomControls = false
                 }
                 webViewClient = object : WebViewClient() {
-                    override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): WebResourceResponse {
-                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                    override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): WebResourceResponse? {
+                        if (request.method != "GET") return blockedHtmlResource()
+                        val scheme = request.url?.scheme?.lowercase()
+                        // data:/about: stay in the WebView. CSP already allows data: images;
+                        // handing them an empty 200 body makes an embedded image look blank.
+                        if (scheme == "data" || scheme == "about") return null
+                        return blockedHtmlResource()
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
@@ -198,7 +207,34 @@ private fun SvgPage(
                         return true
                     }
                 }
-                loadDataWithBaseURL(null, document, "text/html", "utf-8", null)
+            }
+        },
+        update = { view ->
+            // fit flips after the first measurement of an undeclared frame, and the
+            // card width changes on rotation. Either one needs a new document.
+            val loaded = view.tag as? String
+            if (loaded != document) {
+                view.tag = document
+                view.loadDataWithBaseURL(null, document, "text/html", "utf-8", null)
+            }
+            // fit: the drawing fills the card, so a drag belongs to the chat list.
+            // scrolling: keep the drag while the drawing can still move that way.
+            var lastY = 0f
+            view.setOnTouchListener { touched, event ->
+                val keep = when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        lastY = event.y
+                        !fit
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val goingDown = event.y - lastY > 0f
+                        lastY = event.y
+                        !fit && touched.canScrollVertically(if (goingDown) -1 else 1)
+                    }
+                    else -> false
+                }
+                touched.parent?.requestDisallowInterceptTouchEvent(keep)
+                false
             }
         },
         onRelease = { it.stopLoading(); it.destroy() },

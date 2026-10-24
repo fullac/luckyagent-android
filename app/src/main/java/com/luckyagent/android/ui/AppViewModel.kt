@@ -374,6 +374,12 @@ class AppViewModel(
     private var historyMessages: List<ProviderMessage> = emptyList()
     private var historyStartIndex = 0
     private var historyMessageCount = 0
+    /**
+     * True only after a history refresh for [historySessionId] finished with a
+     * real count. An empty in-memory page is not that: a failed or still-running
+     * load also leaves the count at 0, and that 0 must not anchor a live turn.
+     */
+    private var historyCountConfirmed = false
     private var assistantBufferId: String? = null
     private var assistantBufferIndex: Int? = null
     private val assistantPending = StringBuilder()
@@ -497,6 +503,7 @@ class AppViewModel(
         historyMessages = emptyList()
         historyStartIndex = 0
         historyMessageCount = 0
+        historyCountConfirmed = false
         outboundRestored = false
         outboundChatQueue.clear()
         turnSendBaseline = null
@@ -1460,9 +1467,19 @@ class AppViewModel(
      * has been stored.
      */
     private fun anchorForegroundTurn() {
-        turnSendBaseline = historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size)
+        turnSendBaseline = confirmedTurnBaseline()
         turnUserOrdinal = null
         toolStepIndex.clear()
+    }
+
+    /**
+     * Count of messages already stored when this turn starts, or null while that
+     * count is still unknown. Zero is valid only after a successful load of an
+     * empty session. A failed or unfinished load also reports zero in memory.
+     */
+    private fun confirmedTurnBaseline(): Int? {
+        if (!historyCountConfirmed || historySessionId != currentSessionId()) return null
+        return historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size)
     }
 
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
@@ -2799,6 +2816,7 @@ class AppViewModel(
         historyMessages = emptyList()
         historyStartIndex = 0
         historyMessageCount = 0
+        historyCountConfirmed = false
         viewModelScope.launch {
             runCatching { container.sessionCache.touchOpened(connection.apiBase, target, apiKey = connection.apiKey) }
         }
@@ -2890,6 +2908,7 @@ class AppViewModel(
                         historyMessages = emptyList()
                         historyStartIndex = 0
                         historyMessageCount = 0
+                        historyCountConfirmed = false
                         _ui.update {
                             it.copy(
                                 bubbles = pendingOutboundBubbles(target),
@@ -3164,6 +3183,7 @@ class AppViewModel(
                     historyMessages = emptyList()
                     historyStartIndex = 0
                     historyMessageCount = 0
+                    historyCountConfirmed = false
                     syncFullHistory(apiBase, apiKey, sessionId)
                 }
                 is LatestMerge.Appended -> {
@@ -3243,6 +3263,9 @@ class AppViewModel(
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         historyMessageCount = page.messageCount
+        // A cache paint can happen before the server answers. It is a real local
+        // count, so a turn may anchor on it; a later server page replaces it.
+        historyCountConfirmed = true
         val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
         val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
         // History projection runs off the main thread. Bubble ids are only touched on main.
@@ -3302,17 +3325,33 @@ class AppViewModel(
         if (offset < 0 || offset >= page.messages.size) return null
         val candidate = page.messages[offset]
         if (!candidate.role.equals("user", ignoreCase = true)) return null
+        val outboundId = foregroundOutboundId()
+        val sameRequest = !candidate.clientMessageId.isNullOrBlank() &&
+            candidate.clientMessageId == outboundId
+        if (sameRequest) return baseline
+        // A command or continuation has no user bubble. Text equality cannot
+        // prove it is this request, so leave the live rows in place.
+        if (outboundId != null && _ui.value.bubbles.none { it.outboundId == outboundId && it.role.equals("user", ignoreCase = true) }) {
+            return null
+        }
         val live = com.luckyagent.android.ui.screens.liveTurnBubbles(
             _ui.value.bubbles,
             currentTurnId,
             assistantBufferId,
         ).firstOrNull { it.role.equals("user", ignoreCase = true) } ?: return null
         val storedText = candidate.content?.trim().orEmpty()
-        val sameRequest = !candidate.clientMessageId.isNullOrBlank() &&
-            candidate.clientMessageId == live.outboundId
-        if (!sameRequest && storedText != live.content.trim()) return null
+        if (storedText != live.content.trim()) return null
         return baseline
     }
+
+    /** Client id of the outbound item this phone is currently sending. */
+    private fun foregroundOutboundId(): String? =
+        outboundChatQueue.items(currentSessionId()).firstOrNull { item ->
+            item.status == OutboundQueueStatus.Sending || item.status == OutboundQueueStatus.Running
+        }?.id
+            ?: outboundChatQueue.items(currentSessionId()).lastOrNull { item ->
+                item.status == OutboundQueueStatus.Accepted || item.status == OutboundQueueStatus.ServerQueued
+            }?.id
 
     private fun publishHistory(
         sessionId: String,
@@ -3868,7 +3907,7 @@ class AppViewModel(
         val persisted = persistOutbound(item)
         if (!wasRunning) {
             currentTurnId = "turn-${System.currentTimeMillis()}"
-            turnSendBaseline = historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size)
+            turnSendBaseline = confirmedTurnBaseline()
             turnUserOrdinal = null
             toolStepIndex.clear()
             resetAssistantStream()
@@ -4657,6 +4696,8 @@ class AppViewModel(
                 historyMessages = emptyList()
                 historyStartIndex = 0
                 historyMessageCount = 0
+                // The server just created this session, so zero is a real count.
+                historyCountConfirmed = true
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
                 foregroundRequestIds.remove(session.id)
                 resetAssistantStream()
@@ -4758,6 +4799,9 @@ class AppViewModel(
                             historyJob?.cancel()
                             historySessionId = ""
                             historyMessages = emptyList()
+                            historyStartIndex = 0
+                            historyMessageCount = 0
+                            historyCountConfirmed = false
                             container.settingsRepository.update { it.copy(sessionId = "") }
                             _ui.update {
                                 it.copy(

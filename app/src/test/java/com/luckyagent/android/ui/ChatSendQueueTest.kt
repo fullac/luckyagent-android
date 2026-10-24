@@ -116,9 +116,36 @@ class ChatSendQueueTest {
             item("first", message = "status?", createdAt = 1),
             item("second", message = "status?", createdAt = 2),
         )
-        val history = listOf(userMessage("status?"))
+        val history = listOf(userMessage("status?", createdAt = "1970-01-01T00:00:00.001Z"))
 
         assertEquals(setOf("first"), confirmedOutboundIds(pending, history))
+    }
+
+    @Test
+    fun earlierIdenticalHistoryDoesNotRetireALaterUnsentRow() {
+        val pending = listOf(item("later", message = "好", createdAt = 2_000))
+        val history = listOf(userMessage("好", createdAt = "1970-01-01T00:00:00.001Z"))
+
+        assertTrue(confirmedOutboundIds(pending, history).isEmpty())
+    }
+
+    @Test
+    fun storedTextWithoutATimestampStillConfirmsUntilTheServerEchoesIds() {
+        val pending = listOf(item("outbound-1", message = "status?", createdAt = 5_000))
+        val history = listOf(userMessage("status?"))
+
+        assertEquals(setOf("outbound-1"), confirmedOutboundIds(pending, history))
+    }
+
+    @Test
+    fun anIdClaimedHistoryLineCannotAlsoConfirmAnotherRowByText() {
+        val pending = listOf(
+            item("claimed", message = "好", createdAt = 1),
+            item("later", message = "好", createdAt = 2),
+        )
+        val history = listOf(userMessage("好", clientMessageId = "claimed", createdAt = "1970-01-01T00:00:02Z"))
+
+        assertEquals(setOf("claimed"), confirmedOutboundIds(pending, history))
     }
 
     @Test
@@ -137,10 +164,15 @@ class ChatSendQueueTest {
         assertTrue(confirmedOutboundIds(pending, history).isEmpty())
     }
 
-    private fun userMessage(content: String, clientMessageId: String? = null) = ProviderMessage(
+    private fun userMessage(
+        content: String,
+        clientMessageId: String? = null,
+        createdAt: String? = null,
+    ) = ProviderMessage(
         role = "user",
         content = content,
         clientMessageId = clientMessageId,
+        createdAt = createdAt,
     )
 
     private fun item(

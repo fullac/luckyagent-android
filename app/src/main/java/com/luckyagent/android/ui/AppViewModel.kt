@@ -3247,7 +3247,7 @@ class AppViewModel(
     }
 
     /**
-     * Outbox rows the server already stored, by request id or identical text.
+     * Outbox rows the server already stored, by request id or a later identical text.
      */
     private fun confirmedOutbound(sessionId: String, messages: List<ProviderMessage>): Set<String> =
         confirmedOutboundIds(outboundChatQueue.items(sessionId), messages)

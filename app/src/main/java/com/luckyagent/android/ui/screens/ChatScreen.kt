@@ -71,6 +71,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Assignment
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -89,6 +92,7 @@ import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Info
@@ -175,6 +179,7 @@ import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
 import com.luckyagent.android.data.api.isSecureCredentialForm
@@ -198,6 +203,7 @@ import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
+import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -989,6 +995,24 @@ private fun ChatConversation(
             onOpenModel = { showModelSheet = true },
             onReconnect = { vm.connectSocket(force = true) },
         )
+        SessionNavigationCard(
+            sessionId = state.settings.sessionId,
+            tasks = state.tasks,
+            background = state.backgroundTasks,
+            tasksError = state.tasksError,
+            backgroundError = state.backgroundError,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            onOpenTask = { taskId ->
+                if (taskId != null) vm.selectTask(taskId)
+                vm.navigate(AppDestination.Tasks)
+            },
+            onOpenBackground = { taskId ->
+                if (taskId != null) vm.selectBackgroundTask(taskId)
+                vm.navigate(AppDestination.Background)
+            },
+            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+            onOpenMemory = { vm.navigate(AppDestination.Memory) },
+        )
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
@@ -1114,6 +1138,7 @@ private fun ChatConversation(
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
                                 onRetry = vm::retryLastResponse,
+                                onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
                                 onExpand = vm::expandTruncatedMessage,
                                 expanding = state.expandingHistoryIndex >= 0 &&
@@ -1302,6 +1327,100 @@ private fun ChatConversation(
 }
 
 @Composable
+private fun SessionNavigationCard(
+    sessionId: String,
+    tasks: List<TaskSummary>,
+    background: List<AutonomyTaskSummary>,
+    tasksError: String? = null,
+    backgroundError: String? = null,
+    modifier: Modifier = Modifier,
+    onOpenTask: (String?) -> Unit,
+    onOpenBackground: (String?) -> Unit,
+    onOpenTrace: () -> Unit,
+    onOpenMemory: () -> Unit,
+) {
+    val mine = remember(tasks, sessionId) { tasksForSession(tasks, sessionId) }
+    val board = remember(background, sessionId) { backgroundForSession(background, sessionId) }
+    val featured = remember(mine) { sessionNavigationTask(mine) }
+    val featuredBoard = remember(board) { sessionNavigationBackground(board) }
+    val quiet = featured == null && featuredBoard == null
+    // The task and background entries are gone from the drawer, so this card must
+    // open them unconditionally. Otherwise a session with no task of its own has
+    // no way to reach the global task list or the board.
+    val failure = when {
+        tasksError != null && backgroundError != null -> "任务和后台列表读取失败"
+        tasksError != null -> "任务列表读取失败"
+        backgroundError != null -> "后台列表读取失败"
+        else -> null
+    }
+    CloverCard(modifier = modifier) {
+        Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
+        when {
+            featured != null -> Text(
+                featured.description.ifBlank { "正在处理的任务" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            featuredBoard != null -> Text(
+                featuredBoard.title.ifBlank { featuredBoard.description.ifBlank { "后台还在处理" } },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            else -> Text("这轮还没有单独的任务。轨迹和记忆从这里进入。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        }
+        if (failure != null) {
+            Text(failure, color = CloverWarning, style = MaterialTheme.typography.labelMedium)
+        }
+        if (!quiet) {
+            val tone = when {
+                featured?.status?.taskNeedsAttention() == true || featuredBoard?.state?.taskNeedsAttention() == true -> CloverWarning
+                else -> CloverLeaf
+            }
+            Text(
+                sessionProgressLabel(featured, featuredBoard),
+                color = tone,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { onOpenTask(featured?.id) }) {
+                Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("任务")
+            }
+            TextButton(onClick = { onOpenBackground(featuredBoard?.id) }) {
+                Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("后台")
+            }
+            TextButton(onClick = onOpenTrace) {
+                Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("轨迹")
+            }
+            TextButton(onClick = onOpenMemory) {
+                Icon(Icons.Outlined.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("记忆")
+            }
+        }
+    }
+}
+
+private fun sessionProgressLabel(task: TaskSummary?, background: AutonomyTaskSummary?): String {
+    val taskLabel = task?.let { friendlyTaskStatus(it.status) }
+    val boardLabel = background?.let { friendlyTaskStatus(it.state) }
+    return listOfNotNull(
+        taskLabel?.let { "任务 · $it" },
+        boardLabel?.let { "后台 · $it" },
+    ).joinToString(" · ")
+}
+
+@Composable
 private fun ChatTopBar(
     state: AppUiState,
     onMenu: () -> Unit,
@@ -1351,7 +1470,7 @@ private fun ChatTopBar(
                 ) {
                     openNavigation?.let { onOpen ->
                         DropdownMenuItem(
-                            text = { Text("功能导航") },
+                            text = { Text("这台电脑") },
                             onClick = {
                                 moreExpanded = false
                                 onOpen()
@@ -1464,6 +1583,7 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
+    onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
     onExpand: (ChatBubble) -> Unit = {},
     expanding: Boolean = false,
@@ -1565,6 +1685,35 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     onDownload = onDownload,
                                 )
+                            }
+                        }
+                        bubble.outboundStatus?.let { status ->
+                            val (label, tint) = when (status) {
+                                OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+                                OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+                                OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+                                OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+                                OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+                                OutboundQueueStatus.Failed -> "未送达" to CloverError
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(top = 5.dp),
+                            ) {
+                                Text(
+                                    bubble.outboundError?.let { "$label · $it" } ?: label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = tint,
+                                )
+                                if (status == OutboundQueueStatus.Failed && bubble.outboundId != null) {
+                                    TextButton(
+                                        onClick = { onRetryOutbound(bubble.outboundId) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                    ) {
+                                        Text("重试")
+                                    }
+                                }
                             }
                         }
                         if (showActions && !isUser && bubble.content.isNotBlank()) {
@@ -2587,7 +2736,9 @@ private fun ComposerBar(
                     onDismiss = { showLuckyCommands = false },
                 )
             }
-            if (state.commandExecuting && !chatWorking) {
+            // Same source of truth as the label above; recomputing the condition
+            // here is how the text and the spinner drift apart.
+            if (activityLabel == ComposerActivityLabel.Executing) {
                 Box(
                     Modifier.size(44.dp).clip(CircleShape).background(CloverSurface2),
                     contentAlignment = Alignment.Center,
@@ -2812,9 +2963,12 @@ private fun OutboundQueueChip(
     onRetry: () -> Unit,
 ) {
     val (label, tint) = when (item.status) {
-        OutboundQueueStatus.Sending -> "发送中" to CloverAccent
-        OutboundQueueStatus.Queued -> "排队中" to CloverText3
-        OutboundQueueStatus.Failed -> "失败" to CloverError
+        OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+        OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+        OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+        OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+        OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+        OutboundQueueStatus.Failed -> "未送达" to CloverError
     }
     Surface(
         shape = RoundedCornerShape(999.dp),
@@ -4204,7 +4358,7 @@ private fun SessionDrawer(
             )
             openNavigation?.let { onOpen ->
                 IconButton(onClick = onOpen) {
-                    Icon(Icons.Outlined.Apps, contentDescription = "功能导航", tint = CloverText2)
+                    Icon(Icons.Outlined.Apps, contentDescription = "这台电脑", tint = CloverText2)
                 }
             }
             IconButton(onClick = onCreate) {

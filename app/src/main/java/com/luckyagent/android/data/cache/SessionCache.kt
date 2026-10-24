@@ -9,6 +9,8 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Entity(
     tableName = "cached_sessions",
@@ -54,6 +56,26 @@ data class CachedMessageEntity(
     val rawJson: String,
 )
 
+@Entity(
+    tableName = "cached_outbox",
+    primaryKeys = ["endpoint", "sessionId", "clientMessageId"],
+    indices = [Index(value = ["endpoint", "sessionId", "createdAt"])],
+)
+data class CachedOutboundEntity(
+    val endpoint: String,
+    val sessionId: String,
+    /** Stable id sent as the WebSocket chat frame id and server idempotency key. */
+    val clientMessageId: String,
+    val preview: String,
+    val message: String,
+    val attachmentsJson: String,
+    val status: String,
+    val requestId: String?,
+    val error: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
 data class CachedSessionRow(
     val sessionId: String,
     val title: String?,
@@ -97,11 +119,34 @@ interface SessionCacheDao {
     )
     suspend fun messages(endpoint: String, sessionId: String): List<CachedMessageEntity>
 
+    @Query(
+        """
+        SELECT * FROM cached_outbox
+        WHERE endpoint = :endpoint
+        ORDER BY createdAt ASC, clientMessageId ASC
+        """,
+    )
+    suspend fun outbound(endpoint: String): List<CachedOutboundEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSession(entity: CachedSessionEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessages(entities: List<CachedMessageEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertOutbound(entity: CachedOutboundEntity)
+
+    @Query(
+        """
+        DELETE FROM cached_outbox
+        WHERE endpoint = :endpoint AND sessionId = :sessionId AND clientMessageId = :clientMessageId
+        """,
+    )
+    suspend fun deleteOutbound(endpoint: String, sessionId: String, clientMessageId: String)
+
+    @Query("DELETE FROM cached_outbox WHERE endpoint = :endpoint AND sessionId = :sessionId")
+    suspend fun deleteOutboundSession(endpoint: String, sessionId: String)
 
     @Query("DELETE FROM cached_messages WHERE endpoint = :endpoint AND sessionId = :sessionId")
     suspend fun deleteMessages(endpoint: String, sessionId: String)
@@ -167,10 +212,41 @@ interface SessionCacheDao {
 }
 
 @Database(
-    entities = [CachedSessionEntity::class, CachedMessageEntity::class],
-    version = 2,
+    entities = [CachedSessionEntity::class, CachedMessageEntity::class, CachedOutboundEntity::class],
+    version = 3,
     exportSchema = false,
 )
 abstract class SessionCacheDatabase : RoomDatabase() {
     abstract fun dao(): SessionCacheDao
+
+    companion object {
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cached_outbox (
+                        endpoint TEXT NOT NULL,
+                        sessionId TEXT NOT NULL,
+                        clientMessageId TEXT NOT NULL,
+                        preview TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        attachmentsJson TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        requestId TEXT,
+                        error TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(endpoint, sessionId, clientMessageId)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS index_cached_outbox_endpoint_sessionId_createdAt
+                    ON cached_outbox(endpoint, sessionId, createdAt)
+                    """.trimIndent(),
+                )
+            }
+        }
+    }
 }

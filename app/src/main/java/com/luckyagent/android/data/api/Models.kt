@@ -70,6 +70,8 @@ data class SessionHistory(
     val offset: Int? = null,
     val returned: Int? = null,
     @SerialName("has_more") val hasMore: Boolean? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 /** POST /api/v1/sessions/{id}/compact response. */
@@ -135,6 +137,8 @@ data class ProviderMessage(
     /** Present when large tool/assistant bodies are externalized server-side. */
     @SerialName("blob_hash") val blobHash: String? = null,
     @SerialName("blob_bytes") val blobBytes: Int? = null,
+    /** Stable client id used to reconcile a local outbox bubble with server history. */
+    @SerialName("client_message_id") val clientMessageId: String? = null,
 )
 
 @Serializable

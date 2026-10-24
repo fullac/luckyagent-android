@@ -116,6 +116,18 @@ class ChatTaskProjectionTest {
     }
 
     @Test
+    fun clientMessageIdBecomesTheStableHistoryBubbleId() {
+        val bubbles = ProviderMessage(
+            role = "user",
+            content = "queued",
+            clientMessageId = "outbound-123",
+        ).toHistoryBubbles(7)
+
+        assertEquals("outbound-123", bubbles.single().id)
+        assertEquals("outbound-123", bubbles.single().outboundId)
+    }
+
+    @Test
     fun existingGroupRepresentsItsChildrenAndKeepsItsExecutionMode() {
         for (mode in listOf("parallel", "pipeline", "debate")) {
             val root = task("root").copy(mode = mode, childCount = 2, completedChildren = 2)

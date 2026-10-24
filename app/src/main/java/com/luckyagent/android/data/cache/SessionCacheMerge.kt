@@ -190,7 +190,7 @@ fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCache
     for (ordinal in overlapStart until overlapEnd) {
         val previous = stored.messages[ordinal - storedStart]
         val next = capped.messages[ordinal - nextStart]
-        if (!messagesEquivalent(previous, next)) return HistoryCacheWrite.Replace
+        if (previous != next) return HistoryCacheWrite.Replace
     }
     val inserts = capped.messages.mapIndexedNotNull { index, message ->
         val ordinal = nextStart + index
@@ -211,7 +211,10 @@ private fun pagesMatch(stored: MessagePage, incoming: MessagePage): Boolean =
         stored.messageCount == incoming.messageCount &&
         stored.reachedOldest == incoming.reachedOldest &&
         stored.messages.size == incoming.messages.size &&
-        stored.messages.zip(incoming.messages).all { (left, right) -> messagesEquivalent(left, right) }
+        // Structural equality: an attachment, content part, or blob field that
+        // changed on an otherwise identical message still has to be written.
+        // Identity equality is only for locating overlap below.
+        stored.messages == incoming.messages
 
 fun capLatestMessages(page: MessagePage, max: Int = SessionCachePolicy.MAX_MESSAGES): MessagePage {
     if (page.messages.size <= max) return page

@@ -198,6 +198,23 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun attachmentOnlyChangeStillRewritesTheRow() {
+        // Identity is unchanged (same role/content/created_at); only the
+        // attachment list differs. The stored raw_json must not survive that.
+        val stored = page(start = 0, count = 1, messages = listOf(msg("a", created = "c0")))
+        val incoming = page(
+            start = 0,
+            count = 1,
+            messages = listOf(
+                msg("a", created = "c0").copy(
+                    attachments = listOf(com.luckyagent.android.data.api.MediaAttachment(fileName = "note.txt")),
+                ),
+            ),
+        )
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
     fun disjointWindowReplacesInsteadOfAppendingAGap() {
         val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
         val incoming = page(start = 4, count = 6, messages = listOf(msg("new-a"), msg("new-b")))

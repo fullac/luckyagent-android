@@ -2538,7 +2538,9 @@ private fun ComposerBar(
                     onDismiss = { showLuckyCommands = false },
                 )
             }
-            if (state.commandExecuting && !chatWorking) {
+            // Same source of truth as the label above; recomputing the condition
+            // here is how the text and the spinner drift apart.
+            if (activityLabel == ComposerActivityLabel.Executing) {
                 Box(
                     Modifier.size(44.dp).clip(CircleShape).background(CloverSurface2),
                     contentAlignment = Alignment.Center,

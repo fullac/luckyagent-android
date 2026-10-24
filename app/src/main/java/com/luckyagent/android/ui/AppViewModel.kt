@@ -68,6 +68,7 @@ import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.ui.screens.dismissedWorkCardIds
+import com.luckyagent.android.ui.screens.visibleWorkCard
 import com.luckyagent.android.data.api.toTaskNode
 import com.luckyagent.android.data.api.toTaskSummary
 import com.luckyagent.android.data.api.WsChatHandle
@@ -1849,7 +1850,7 @@ class AppViewModel(
         clearSelectedTask()
         clearSelectedBackgroundTask()
         navigate(AppDestination.Chat)
-        selectSession(target)
+        selectSession(target, keepWorkCard = true)
     }
 
     /** Opens the execution conversation associated with a unified or legacy task. */
@@ -1888,6 +1889,8 @@ class AppViewModel(
         }
     }
 
+    private enum class CancelSurface { Card, Detail }
+
     fun clearFocusedWorkCard() {
         _ui.update { it.copy(focusedWorkCardId = null, focusedWorkCardBackground = false) }
     }
@@ -1896,6 +1899,19 @@ class AppViewModel(
     fun dismissWorkCard(taskId: String) {
         val id = taskId.trim()
         if (id.isBlank()) return
+        val state = _ui.value
+        val placeholder = state.focusedWorkCardId == id && visibleWorkCard(
+            id,
+            state.focusedWorkCardBackground,
+            state.tasks,
+            state.backgroundTasks,
+            state.settings.sessionId,
+            state.dismissedWorkCardIds,
+        )?.loading == true
+        if (placeholder) {
+            clearFocusedWorkCard()
+            return
+        }
         container.settingsRepository.dismissWorkCard(id)
         _ui.update {
             it.copy(
@@ -2467,7 +2483,7 @@ class AppViewModel(
         }
     }
 
-    fun selectSession(id: String) {
+    fun selectSession(id: String, keepWorkCard: Boolean = false) {
         val target = id.ifBlank { "android-main" }
         val leaving = currentSessionId()
         if (leaving != target) parkCurrentTurn(leaving)
@@ -2481,6 +2497,7 @@ class AppViewModel(
             runCatching { container.sessionCache.touchOpened(connection.apiBase, target, apiKey = connection.apiKey) }
         }
         container.settingsRepository.update { it.copy(sessionId = target) }
+        if (leaving != target && !keepWorkCard) clearFocusedWorkCard()
         resetAssistantStream()
         toolStepIndex.clear()
         val parked = parkedTurns.remove(target)
@@ -3881,19 +3898,34 @@ class AppViewModel(
 
     /** Cancels the task behind the pinned chat card. Detail pages stay closed. */
     fun cancelWorkCard(taskId: String) {
-        val task = _ui.value.tasks.firstOrNull { it.id == taskId } ?: return
-        cancelTask(task)
+        val task = _ui.value.tasks.firstOrNull { it.id == taskId }
+        if (task == null) {
+            _ui.update { it.copy(snackbarMessage = "列表里已经没有这条，没法从卡片取消。") }
+            return
+        }
+        cancelTask(task, surface = CancelSurface.Card)
     }
 
     fun cancelTask(task: TaskSummary) {
+        cancelTask(task, surface = CancelSurface.Detail)
+    }
+
+    private fun cancelTask(task: TaskSummary, surface: CancelSurface) {
         if (task.status.isTerminalTaskStatus()) return
         viewModelScope.launch {
             _ui.update { it.copy(taskDetailError = null) }
             val result = container.api.cancelTask(task.id, task.origin)
             if (result.isSuccess) {
                 refreshTasksNow()
+                if (surface == CancelSurface.Card) {
+                    _ui.update { it.copy(snackbarMessage = "已取消") }
+                }
             } else {
-                _ui.update { it.copy(taskDetailError = result.exceptionOrNull()?.message ?: "没能取消。重试这一条。") }
+                val message = result.exceptionOrNull()?.message ?: "没能取消。重试这一条。"
+                _ui.update {
+                    if (surface == CancelSurface.Card) it.copy(snackbarMessage = message)
+                    else it.copy(taskDetailError = message)
+                }
             }
         }
     }

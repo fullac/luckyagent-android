@@ -1292,13 +1292,15 @@ private fun WorkReturnCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    if (card.loading) "正在读取这件事" else workCardStatusLabel(card.status),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = CloverText2,
-                )
+                if (card.loading) {
+                    Text(
+                        "列表还没回来。可以打开详情，或先关掉这张卡。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CloverText2,
+                    )
+                }
             }
-            if (!card.loading) StatusChip(card.status)
+            if (!card.loading) StatusChip(card.status, workCardStatusLabel(card.status))
             IconButton(onClick = onClose) {
                 Icon(Icons.Outlined.Close, contentDescription = "关闭卡片", tint = CloverText3)
             }
@@ -1306,16 +1308,14 @@ private fun WorkReturnCard(
         if (card.terminal && card.sessionId.isNullOrBlank()) {
             Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
-        if (!card.loading) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (workCardCanCancel(card)) {
-                    OutlinedButton(onClick = onCancel) { Text("取消") }
-                }
-                if (card.terminal) {
-                    Button(onClick = onOpenResult) { Text("打开结果") }
-                }
-                TextButton(onClick = onOpenDetail) { Text("打开详情") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!card.loading && workCardCanCancel(card)) {
+                OutlinedButton(onClick = onCancel) { Text("取消") }
             }
+            if (!card.loading && card.terminal && !card.sessionId.isNullOrBlank()) {
+                Button(onClick = onOpenResult) { Text("打开结果") }
+            }
+            TextButton(onClick = onOpenDetail) { Text("打开详情") }
         }
     }
 }

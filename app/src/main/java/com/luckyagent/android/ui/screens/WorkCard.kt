@@ -21,6 +21,7 @@ internal data class WorkCard(
     val active: Boolean,
     val terminal: Boolean,
     val loading: Boolean = false,
+    val updatedAt: String = "",
 )
 
 internal fun workCardsForSession(
@@ -36,15 +37,16 @@ internal fun workCardsForSession(
     val boardCards = background
         .filter { taskBelongsToSession(owner, it.parentSessionId, it.sessionId, it.executionSession(), it.metadata) }
         .map { it.toWorkCard() }
-    return (taskCards + boardCards).sortedWith(
-        compareByDescending<WorkCard> { it.active }
-            .thenByDescending { it.terminal }
-            .thenBy { it.title },
-    )
+    return (taskCards + boardCards).sortedWith(workCardOrder)
 }
 
+private val workCardOrder = compareByDescending<WorkCard> { it.active }
+    .thenByDescending { it.terminal }
+    .thenByDescending { it.updatedAt }
+    .thenBy { it.title }
+
 internal fun featuredWorkCard(cards: List<WorkCard>, dismissedIds: Set<String> = emptySet()): WorkCard? {
-    val visible = cards.filterNot { it.id in dismissedIds }
+    val visible = cards.filterNot { it.id in dismissedIds }.sortedWith(workCardOrder)
     return visible.firstOrNull { it.active } ?: visible.firstOrNull { it.terminal }
 }
 
@@ -73,10 +75,10 @@ internal fun visibleWorkCard(
         } else {
             background.filter { it.id == focus }.map { it.toWorkCard() }
         }
-        return preferred.firstOrNull() ?: fallback.firstOrNull() ?: WorkCard(
+        return (preferred + fallback).sortedWith(workCardOrder).firstOrNull() ?: WorkCard(
             id = focus,
             kind = if (focusedBackground) WorkCardKind.Background else WorkCardKind.Task,
-            title = "正在读取这件事",
+            title = "这件事",
             status = "",
             sessionId = null,
             active = true,
@@ -92,20 +94,6 @@ internal fun dismissedWorkCardIds(current: Set<String>, cardId: String): Set<Str
     val id = cardId.trim()
     if (id.isEmpty()) return current
     return current + id
-}
-
-/**
- * Where a notification should land. A linked session opens that chat. A task
- * without one stays on its card. A bare module name is not a landing target.
- */
-internal fun notificationLanding(sessionId: String?, taskId: String?, destination: String): String {
-    val session = sessionId?.trim().orEmpty()
-    if (session.isNotEmpty()) return "session:$session"
-    val task = taskId?.trim().orEmpty()
-    if (task.isNotEmpty()) {
-        return if (destination == "background") "background-card:$task" else "task-card:$task"
-    }
-    return "none"
 }
 
 internal fun workCardStatusLabel(status: String): String = when (status.lowercase()) {
@@ -133,6 +121,7 @@ private fun TaskSummary.toWorkCard(): WorkCard {
         sessionId = executionSession(),
         active = !terminal,
         terminal = terminal,
+        updatedAt = lastActivityAt.orEmpty(),
     )
 }
 
@@ -148,6 +137,7 @@ private fun AutonomyTaskSummary.toWorkCard(): WorkCard {
         sessionId = executionSession(),
         active = !terminal,
         terminal = terminal,
+        updatedAt = lastActivityAt.orEmpty(),
     )
 }
 

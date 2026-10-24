@@ -61,8 +61,8 @@ class MainActivity : ComponentActivity() {
             // A linked execution session opens that chat. The task id still
             // rides along so the card stays the return target.
             sessionId.isNotBlank() && taskId.isNotBlank() -> {
+                appViewModel.openWorkCardFromNotification(taskId, destination == "background")
                 appViewModel.openSessionFromNotification(sessionId)
-                appViewModel.focusWorkCard(taskId, destination == "background")
             }
             sessionId.isNotBlank() -> appViewModel.openSessionFromNotification(sessionId)
             taskId.isNotBlank() -> appViewModel.openWorkCardFromNotification(taskId, destination == "background")

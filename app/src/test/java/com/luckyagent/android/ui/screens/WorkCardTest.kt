@@ -80,20 +80,28 @@ class WorkCardTest {
         )
     }
 
-    @Test fun notificationLandsOnTheCardWhenTheExecutionSessionIsMissing() {
-        assertEquals("session:chat", notificationLanding("chat", "task", "tasks"))
-        assertEquals("task-card:task", notificationLanding("", "task", "tasks"))
-        assertEquals("background-card:board", notificationLanding(null, "board", "background"))
-        assertEquals("none", notificationLanding("", "", "tasks"))
+    @Test fun finishedCardUsesTheLatestActivityInsteadOfTitleOrder() {
+        val older = task("older", status = "completed", lastActivityAt = "2026-10-23T01:00:00Z")
+        val newer = task("newer", status = "completed", lastActivityAt = "2026-10-23T02:00:00Z")
+
+        val card = featuredWorkCard(listOf(older.toCard(), newer.toCard()))
+
+        assertEquals("newer", card?.id)
     }
 
-    private fun task(id: String, parentSessionId: String? = "chat", status: String = "running") = TaskSummary(
+    private fun task(
+        id: String,
+        parentSessionId: String? = "chat",
+        status: String = "running",
+        lastActivityAt: String? = null,
+    ) = TaskSummary(
         id = id,
         parentSessionId = parentSessionId,
         source = "tool",
         mode = "single",
         status = status,
         description = id,
+        lastActivityAt = lastActivityAt,
     )
 
     private fun TaskSummary.toCard() = workCardsForSession(listOf(this), emptyList(), parentSessionId.orEmpty()).single()

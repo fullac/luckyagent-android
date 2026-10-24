@@ -160,6 +160,12 @@ data class ChatBubble(
     val outboundId: String? = null,
     val outboundStatus: OutboundQueueStatus? = null,
     val outboundError: String? = null,
+    /**
+     * Session-wide oldest-first index of the server message this bubble renders.
+     * Null for rows that exist only in memory. This is the identity a refresh
+     * reconciles against; a page offset moves, this does not.
+     */
+    val serverOrdinal: Int? = null,
 )
 
 data class ChatMedia(
@@ -368,11 +374,24 @@ class AppViewModel(
     private var historyMessages: List<ProviderMessage> = emptyList()
     private var historyStartIndex = 0
     private var historyMessageCount = 0
+    /**
+     * True only after a history refresh for [historySessionId] finished with a
+     * real count. An empty in-memory page is not that: a failed or still-running
+     * load also leaves the count at 0, and that 0 must not anchor a live turn.
+     */
+    private var historyCountConfirmed = false
     private var assistantBufferId: String? = null
     private var assistantBufferIndex: Int? = null
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
+    /**
+     * Messages the runtime had stored when the current turn was sent. The first
+     * stored row past it is that turn's user message.
+     */
+    private var turnSendBaseline: Int? = null
+    /** Server ordinal of that user message, resolved once history catches up. */
+    private var turnUserOrdinal: Int? = null
     /** In-progress turn for a session that is not on screen. Keyed by session id. */
     private val parkedTurns = mutableMapOf<String, ParkedTurn>()
     private val toolStepIndex = mutableMapOf<String, String>()
@@ -389,6 +408,8 @@ class AppViewModel(
 
     private data class ParkedTurn(
         val turnId: String,
+        val sendBaseline: Int?,
+        val userOrdinal: Int?,
         val bufferId: String?,
         val pending: String,
         val bubbles: List<ChatBubble>,
@@ -482,8 +503,11 @@ class AppViewModel(
         historyMessages = emptyList()
         historyStartIndex = 0
         historyMessageCount = 0
+        historyCountConfirmed = false
         outboundRestored = false
         outboundChatQueue.clear()
+        turnSendBaseline = null
+        turnUserOrdinal = null
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
@@ -1037,6 +1061,7 @@ class AppViewModel(
         if (handle != null) {
             markOutboundSent(item.id, handle)
             registerRun(handle)
+            if (activeRuns[sessionId]?.size == 1) anchorForegroundTurn()
             dispatchNextOutbound(sessionId)
             return
         }
@@ -1060,6 +1085,7 @@ class AppViewModel(
             } else {
                 markOutboundSent(item.id, retryHandle)
                 registerRun(retryHandle)
+                if (activeRuns[sessionId]?.size == 1) anchorForegroundTurn()
             }
             outboundDispatchJobs.remove(sessionId)
             dispatchNextOutbound(sessionId)
@@ -1438,7 +1464,29 @@ class AppViewModel(
         if (sessionId != currentSessionId() || activeRuns[sessionId].isNullOrEmpty()) return
         resetAssistantStream()
         currentTurnId = "turn-${System.currentTimeMillis()}"
+        anchorForegroundTurn()
         _ui.update { it.copy(isResponding = true, activityLine = "Next message queued · continuing") }
+    }
+
+    /**
+     * Message count at the moment a queued item becomes the foreground turn.
+     * The count taken when it was only queued is stale once the previous turn
+     * has been stored.
+     */
+    private fun anchorForegroundTurn() {
+        turnSendBaseline = confirmedTurnBaseline()
+        turnUserOrdinal = null
+        toolStepIndex.clear()
+    }
+
+    /**
+     * Count of messages already stored when this turn starts, or null while that
+     * count is still unknown. Zero is valid only after a successful load of an
+     * empty session. A failed or unfinished load also reports zero in memory.
+     */
+    private fun confirmedTurnBaseline(): Int? {
+        if (!historyCountConfirmed || historySessionId != currentSessionId()) return null
+        return historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size)
     }
 
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
@@ -1986,11 +2034,23 @@ class AppViewModel(
                     attachments = safeAttachments,
                 )
             }
-            st.copy(bubbles = list, isResponding = false, liveSummary = null, processNotice = null)
+            st.copy(
+                bubbles = list.filterNot(::isEmptyTurnStatusPlaceholder),
+                isResponding = false,
+                liveSummary = null,
+                processNotice = null,
+            )
         }
         assistantBufferId = null
         assistantBufferIndex = null
+        // The turn is over, so its anchor no longer applies to the next one.
+        turnSendBaseline = null
+        turnUserOrdinal = null
     }
+
+    /** The status box opened before any reasoning arrived. It is not a stored step. */
+    private fun isEmptyTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+        com.luckyagent.android.ui.screens.isTurnStatusPlaceholder(bubble)
 
     private fun mediaKey(media: ChatMedia): String {
         val descriptor = media.descriptor
@@ -2022,6 +2082,28 @@ class AppViewModel(
             })
         }
         resetAssistantStream()
+    }
+
+    /**
+     * A new turn gets its own status fold before the first reasoning or tool
+     * event, so its status never lands in the previous turn's fold. The id is the
+     * one [upsertReasoningBubble] uses for round 0, so real reasoning replaces
+     * this box instead of opening a second one.
+     */
+    private fun openTurnStatusBox() {
+        val id = "reasoning-$currentTurnId-0"
+        _ui.update { state ->
+            if (state.bubbles.any { it.id == id }) return@update state
+            state.copy(
+                bubbles = state.bubbles + ChatBubble(
+                    id = id,
+                    role = "reasoning",
+                    content = "",
+                    reasoningRound = 0,
+                    reasoningHasContent = false,
+                ),
+            )
+        }
     }
 
     private fun pushBubble(bubble: ChatBubble) {
@@ -2745,6 +2827,7 @@ class AppViewModel(
         historyMessages = emptyList()
         historyStartIndex = 0
         historyMessageCount = 0
+        historyCountConfirmed = false
         viewModelScope.launch {
             runCatching { container.sessionCache.touchOpened(connection.apiBase, target, apiKey = connection.apiKey) }
         }
@@ -2754,8 +2837,13 @@ class AppViewModel(
         val parked = parkedTurns.remove(target)
         if (parked != null && activeRuns[target]?.isNotEmpty() == true) {
             currentTurnId = parked.turnId
+            turnSendBaseline = parked.sendBaseline
+            turnUserOrdinal = parked.userOrdinal
             assistantBufferId = parked.bufferId
             assistantPending.append(parked.pending)
+        } else {
+            turnSendBaseline = null
+            turnUserOrdinal = null
         }
         _ui.update {
             it.copy(
@@ -2831,6 +2919,7 @@ class AppViewModel(
                         historyMessages = emptyList()
                         historyStartIndex = 0
                         historyMessageCount = 0
+                        historyCountConfirmed = false
                         _ui.update {
                             it.copy(
                                 bubbles = pendingOutboundBubbles(target),
@@ -3105,6 +3194,7 @@ class AppViewModel(
                     historyMessages = emptyList()
                     historyStartIndex = 0
                     historyMessageCount = 0
+                    historyCountConfirmed = false
                     syncFullHistory(apiBase, apiKey, sessionId)
                 }
                 is LatestMerge.Appended -> {
@@ -3158,6 +3248,8 @@ class AppViewModel(
         val state = _ui.value
         parkedTurns[sessionId] = ParkedTurn(
             turnId = currentTurnId,
+            sendBaseline = turnSendBaseline,
+            userOrdinal = turnUserOrdinal,
             bufferId = assistantBufferId,
             pending = assistantPending.toString(),
             bubbles = state.bubbles,
@@ -3182,6 +3274,9 @@ class AppViewModel(
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         historyMessageCount = page.messageCount
+        // A cache paint can happen before the server answers. It is a real local
+        // count, so a turn may anchor on it; a later server page replaces it.
+        historyCountConfirmed = true
         val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
         val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
         // History projection runs off the main thread. Bubble ids are only touched on main.
@@ -3199,6 +3294,12 @@ class AppViewModel(
                 resetAssistantStream()
             }
             val stillOwned = ownsOutboundLease(sessionId) && activeRuns[sessionId]?.isNotEmpty() == true
+            if (keepLiveTurn && stillOwned) {
+                turnUserOrdinal = resolveTurnOrdinal(page) ?: turnUserOrdinal
+            } else {
+                turnSendBaseline = null
+                turnUserOrdinal = null
+            }
             val shownActivity = if (offline) {
                 activity
             } else if (activeRuns[sessionId]?.isNotEmpty() == true) {
@@ -3215,6 +3316,53 @@ class AppViewModel(
             )
         }
     }
+
+    /**
+     * The stored user message that opened the current turn, or null while the
+     * runtime has not written it yet.
+     *
+     * [turnSendBaseline] is the message count when the turn was sent, so the row
+     * at that ordinal is the candidate. It must still be a user row carrying this
+     * turn's text: a stale count or an older identical message must not make the
+     * live turn look stored.
+     */
+    private fun resolveTurnOrdinal(page: MessagePage): Int? {
+        val baseline = turnSendBaseline ?: return null
+        // The count is only an anchor after history includes the rows that existed
+        // when this turn started. An older count can land on a previous user row.
+        val covered = page.messageCount.coerceAtLeast(page.startIndex + page.messages.size)
+        if (covered < baseline) return null
+        val offset = baseline - page.startIndex
+        if (offset < 0 || offset >= page.messages.size) return null
+        val candidate = page.messages[offset]
+        if (!candidate.role.equals("user", ignoreCase = true)) return null
+        val outboundId = foregroundOutboundId()
+        val sameRequest = !candidate.clientMessageId.isNullOrBlank() &&
+            candidate.clientMessageId == outboundId
+        if (sameRequest) return baseline
+        // A command or continuation has no user bubble. Text equality cannot
+        // prove it is this request, so leave the live rows in place.
+        if (outboundId != null && _ui.value.bubbles.none { it.outboundId == outboundId && it.role.equals("user", ignoreCase = true) }) {
+            return null
+        }
+        val live = com.luckyagent.android.ui.screens.liveTurnBubbles(
+            _ui.value.bubbles,
+            currentTurnId,
+            assistantBufferId,
+        ).firstOrNull { it.role.equals("user", ignoreCase = true) } ?: return null
+        val storedText = candidate.content?.trim().orEmpty()
+        if (storedText != live.content.trim()) return null
+        return baseline
+    }
+
+    /** Client id of the outbound item this phone is currently sending. */
+    private fun foregroundOutboundId(): String? =
+        outboundChatQueue.items(currentSessionId()).firstOrNull { item ->
+            item.status == OutboundQueueStatus.Sending || item.status == OutboundQueueStatus.Running
+        }?.id
+            ?: outboundChatQueue.items(currentSessionId()).lastOrNull { item ->
+                item.status == OutboundQueueStatus.Accepted || item.status == OutboundQueueStatus.ServerQueued
+            }?.id
 
     private fun publishHistory(
         sessionId: String,
@@ -3237,11 +3385,13 @@ class AppViewModel(
                 com.luckyagent.android.ui.screens.dedupeLiveTurn(
                     bubbles,
                     com.luckyagent.android.ui.screens.liveTurnBubbles(current.bubbles, currentTurnId, assistantBufferId),
+                    turnUserOrdinal,
                 )
             } else {
                 emptyList()
             }
-            val shown = bubbles + live + pendingBubbles
+            // A pending outbox bubble and the live user bubble are one message.
+            val shown = (bubbles + live + pendingBubbles).distinctBy { it.id }
             current.copy(
                 bubbles = shown,
                 outboundQueue = pendingItems,
@@ -3768,6 +3918,8 @@ class AppViewModel(
         val persisted = persistOutbound(item)
         if (!wasRunning) {
             currentTurnId = "turn-${System.currentTimeMillis()}"
+            turnSendBaseline = confirmedTurnBaseline()
+            turnUserOrdinal = null
             toolStepIndex.clear()
             resetAssistantStream()
         }
@@ -3784,6 +3936,9 @@ class AppViewModel(
                     outboundStatus = item.status,
                 ),
             )
+            // The new turn gets its own status box now. Without it the status of
+            // this turn paints into the previous turn's fold.
+            if (!wasRunning) openTurnStatusBox()
         }
         _ui.update {
             it.copy(
@@ -4552,6 +4707,8 @@ class AppViewModel(
                 historyMessages = emptyList()
                 historyStartIndex = 0
                 historyMessageCount = 0
+                // The server just created this session, so zero is a real count.
+                historyCountConfirmed = true
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
                 foregroundRequestIds.remove(session.id)
                 resetAssistantStream()
@@ -4654,6 +4811,9 @@ class AppViewModel(
                             historyJob?.cancel()
                             historySessionId = ""
                             historyMessages = emptyList()
+                            historyStartIndex = 0
+                            historyMessageCount = 0
+                            historyCountConfirmed = false
                             container.settingsRepository.update { it.copy(sessionId = "") }
                             _ui.update {
                                 it.copy(

@@ -12,8 +12,6 @@ import com.luckyagent.android.data.api.RuntimeSession
  */
 object SessionCachePolicy {
     const val LATEST_PAGE = 40
-    const val MAX_MESSAGES = 200
-    const val MAX_SESSIONS = 30
     const val OFFLINE_LABEL = "离线，显示上次内容"
     const val REFRESH_FAILED_LABEL = "刷新失败，显示上次内容"
 }
@@ -27,9 +25,9 @@ data class CachedSessionMeta(
 enum class HistorySync {
     /** updated_at and message_count are unchanged. Skip the body fetch. */
     Unchanged,
-    /** Fetch limit=40&offset=0 and append the non-overlapping tail. */
+    /** Fetch the latest full-content page and append the non-overlapping tail. */
     MergeLatest,
-    /** Overlap missing, count shrank, or the cache was never aligned. Refetch. */
+    /** Overlap missing, count shrank, or the cache is partial. Fetch the full history. */
     Invalidate,
 }
 
@@ -40,9 +38,11 @@ fun historySyncAction(cached: CachedSessionMeta?, remote: RuntimeSession): Histo
         return HistorySync.Invalidate
     }
     if (remoteCount < cached.messageCount) return HistorySync.Invalidate
+    if (!cached.reachedOldest) return HistorySync.Invalidate
     if (remoteCount == cached.messageCount && remote.updatedAt == cached.updatedAt) {
         return HistorySync.Unchanged
     }
+    if (remoteCount == cached.messageCount) return HistorySync.Invalidate
     return HistorySync.MergeLatest
 }
 
@@ -170,18 +170,19 @@ data class IndexedMessage(
 )
 
 fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCacheWrite {
-    val capped = capLatestMessages(incoming)
     if (stored == null || stored.messages.isEmpty() || stored.startIndex < 0) return HistoryCacheWrite.Replace
-    if (pagesMatch(stored, capped)) return HistoryCacheWrite.Unchanged
+    if (pagesMatch(stored, incoming)) return HistoryCacheWrite.Unchanged
 
     val storedStart = stored.startIndex
     val storedEnd = storedStart + stored.messages.size
-    val nextStart = capped.startIndex
-    val nextEnd = nextStart + capped.messages.size
+    val nextStart = incoming.startIndex
+    val nextEnd = nextStart + incoming.messages.size
     if (nextStart < 0 || nextEnd < nextStart) return HistoryCacheWrite.Replace
-    // Head rows may only fall out because the 200-message window is full. A page
-    // that merely starts later must not delete a prefix that is still valid.
-    if (nextStart > storedStart && capped.messages.size < SessionCachePolicy.MAX_MESSAGES) {
+    // Replace deletes every cached row for this session and writes only the
+    // incoming page, so a start index past the stored prefix drops that prefix.
+    // Callers must not hand a narrower page here unless losing the prefix is
+    // acceptable. There is no "keep the prefix" variant.
+    if (nextStart > storedStart) {
         return HistoryCacheWrite.Replace
     }
     val overlapStart = maxOf(storedStart, nextStart)
@@ -189,10 +190,13 @@ fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCache
     if (overlapStart >= overlapEnd) return HistoryCacheWrite.Replace
     for (ordinal in overlapStart until overlapEnd) {
         val previous = stored.messages[ordinal - storedStart]
-        val next = capped.messages[ordinal - nextStart]
+        val next = incoming.messages[ordinal - nextStart]
+        // Structural equality: an attachment, content part, or blob field that
+        // changed on an otherwise identical message still has to be written.
+        // Identity equality is only for locating overlap.
         if (previous != next) return HistoryCacheWrite.Replace
     }
-    val inserts = capped.messages.mapIndexedNotNull { index, message ->
+    val inserts = incoming.messages.mapIndexedNotNull { index, message ->
         val ordinal = nextStart + index
         if (ordinal < storedStart || ordinal >= storedEnd) IndexedMessage(ordinal, message) else null
     }
@@ -216,17 +220,8 @@ private fun pagesMatch(stored: MessagePage, incoming: MessagePage): Boolean =
         // Identity equality is only for locating overlap below.
         stored.messages == incoming.messages
 
-fun capLatestMessages(page: MessagePage, max: Int = SessionCachePolicy.MAX_MESSAGES): MessagePage {
-    if (page.messages.size <= max) return page
-    val dropped = page.messages.size - max
-    return page.copy(
-        messages = page.messages.takeLast(max),
-        startIndex = page.startIndex + dropped,
-        reachedOldest = false,
-    )
-}
-
 fun messageIdentity(message: ProviderMessage): String {
+    message.clientMessageId?.trim()?.takeIf { it.isNotEmpty() }?.let { return "client:$it" }
     val toolId = message.toolCallId?.trim().orEmpty()
     if (toolId.isNotEmpty()) return "tool:$toolId"
     return listOf(

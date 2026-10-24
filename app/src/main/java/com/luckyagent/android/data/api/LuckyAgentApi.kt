@@ -545,7 +545,7 @@ class LuckyAgentApi(
 
     suspend fun sessionHistory(
         sessionId: String,
-        limit: Int = 40,
+        limit: Int? = 40,
         offset: Int = 0,
         /** When true, request full message bodies (include=full). Default uses server preview caps. */
         includeFull: Boolean = false,
@@ -553,7 +553,7 @@ class LuckyAgentApi(
         withContext(Dispatchers.IO) {
             runCatching {
                 val query = buildMap {
-                    put("limit", limit.coerceIn(1, 500).toString())
+                    limit?.let { put("limit", it.coerceIn(1, 500).toString()) }
                     put("offset", offset.coerceAtLeast(0).toString())
                     if (includeFull) {
                         put("include", "full")

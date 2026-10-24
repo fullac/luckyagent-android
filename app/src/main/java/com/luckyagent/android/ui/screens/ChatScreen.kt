@@ -1114,6 +1114,7 @@ private fun ChatConversation(
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
                                 onRetry = vm::retryLastResponse,
+                                onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
@@ -1438,6 +1439,7 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
+    onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -1534,6 +1536,35 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     onDownload = onDownload,
                                 )
+                            }
+                        }
+                        bubble.outboundStatus?.let { status ->
+                            val (label, tint) = when (status) {
+                                OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+                                OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+                                OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+                                OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+                                OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+                                OutboundQueueStatus.Failed -> "未送达" to CloverError
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(top = 5.dp),
+                            ) {
+                                Text(
+                                    bubble.outboundError?.let { "$label · $it" } ?: label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = tint,
+                                )
+                                if (status == OutboundQueueStatus.Failed && bubble.outboundId != null) {
+                                    TextButton(
+                                        onClick = { onRetryOutbound(bubble.outboundId) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                    ) {
+                                        Text("重试")
+                                    }
+                                }
                             }
                         }
                         if (showActions && !isUser && bubble.content.isNotBlank()) {
@@ -2765,9 +2796,12 @@ private fun OutboundQueueChip(
     onRetry: () -> Unit,
 ) {
     val (label, tint) = when (item.status) {
-        OutboundQueueStatus.Sending -> "发送中" to CloverAccent
-        OutboundQueueStatus.Queued -> "排队中" to CloverText3
-        OutboundQueueStatus.Failed -> "失败" to CloverError
+        OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+        OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+        OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+        OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+        OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+        OutboundQueueStatus.Failed -> "未送达" to CloverError
     }
     Surface(
         shape = RoundedCornerShape(999.dp),

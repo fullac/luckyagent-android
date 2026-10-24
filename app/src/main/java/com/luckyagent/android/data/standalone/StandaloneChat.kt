@@ -160,12 +160,18 @@ class StandaloneChatClient(
     fun check(settings: StandaloneSettings): Result<String> = runCatching {
         requireConnectionSettings(settings)
         val model = settings.model.trim().ifBlank { discoverModel(settings) }
-        completeRequest(
-            settings = settings,
+        // The probe proves the endpoint answers, not that the model wrote prose.
+        // A reasoning model can spend the whole budget on reasoning_content and
+        // return an empty message, which still means the URL and Key work.
+        val url = chatCompletionsUrl(settings.apiBase)
+        val body = post(
+            url = url,
+            apiKey = settings.apiKey,
             model = model,
             messages = listOf(mapOf("role" to "user", "content" to "Reply with ok")),
-            maxTokens = 8,
+            maxTokens = PROBE_MAX_TOKENS,
         )
+        requireChatAnswer(body)
         model
     }
 
@@ -185,6 +191,19 @@ class StandaloneChatClient(
         messages: List<Map<String, String>>,
         maxTokens: Int,
     ): String {
+        val url = chatCompletionsUrl(settings.apiBase)
+        val body = post(url, settings.apiKey, model, messages, maxTokens)
+        return runCatching { extractCompletion(body) }
+            .getOrElse { error("${it.message ?: "模型没有返回正文"}（请求 $url）") }
+    }
+
+    private fun post(
+        url: String,
+        apiKey: String,
+        model: String,
+        messages: List<Map<String, String>>,
+        maxTokens: Int,
+    ): String {
         val payload = json.encodeToString(
             CompletionPayload(
                 model = model,
@@ -193,15 +212,15 @@ class StandaloneChatClient(
             ),
         )
         val request = Request.Builder()
-            .url(chatCompletionsUrl(settings.apiBase))
-            .header("Authorization", "Bearer ${settings.apiKey}")
+            .url(url)
+            .header("Authorization", "Bearer $apiKey")
             .header("Content-Type", "application/json")
             .post(payload.toRequestBody(JSON))
             .build()
         return call(request) { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error(readableModelError(response.code, body))
-            extractCompletion(body)
+            if (!response.isSuccessful) error("${readableModelError(response.code, body)}（请求 $url）")
+            body
         }
     }
 
@@ -211,14 +230,15 @@ class StandaloneChatClient(
     }
 
     private fun discoverModel(settings: StandaloneSettings): String {
+        val url = modelsUrl(settings.apiBase)
         val request = Request.Builder()
-            .url(modelsUrl(settings.apiBase))
+            .url(url)
             .header("Authorization", "Bearer ${settings.apiKey}")
             .get()
             .build()
         return call(request) { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error(readableModelError(response.code, body))
+            if (!response.isSuccessful) error("${readableModelError(response.code, body)}（请求 $url）")
             extractFirstModel(body)
         }
     }
@@ -245,6 +265,21 @@ class StandaloneChatClient(
 
 private const val CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 private const val MODELS_SUFFIX = "/models"
+
+/**
+ * Budget for the connectivity probe. Reasoning models answer by spending tokens
+ * on `reasoning_content` first, so a tiny budget yields an empty message even
+ * when the endpoint is healthy.
+ */
+private const val PROBE_MAX_TOKENS = 64
+
+/** A 2xx body with a `choices` array proves the endpoint speaks chat completions. */
+internal fun requireChatAnswer(body: String) {
+    val root = runCatching { Json { ignoreUnknownKeys = true }.parseToJsonElement(body).jsonObject }
+        .getOrElse { error("模型返回的不是对话响应") }
+    val choices = runCatching { root["choices"]?.jsonArray }.getOrNull()
+    if (choices.isNullOrEmpty()) error("模型返回的不是对话响应")
+}
 
 internal fun chatCompletionsUrl(apiBase: String): String {
     val parsed = parseApiUrl(apiBase)

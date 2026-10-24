@@ -108,6 +108,55 @@ class StandaloneChatTest {
     }
 
     @Test
+    fun checkAcceptsReasoningOnlyAnswer() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            // A reasoning model that spends the whole budget on reasoning_content.
+            server.enqueue(
+                MockResponse().setBody(
+                    """{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"thinking"},"finish_reason":"length"}]}""",
+                ),
+            )
+
+            val settings = StandaloneSettings(
+                apiBase = server.url("/v1").toString(),
+                apiKey = "sample-key",
+                model = "reasoner",
+            )
+            val result = StandaloneChatClient().check(settings)
+
+            assertEquals("reasoner", result.getOrThrow())
+            val request = server.takeRequest()
+            assertEquals("/v1/chat/completions", request.path)
+            assertTrue(request.body.readUtf8().contains("\"model\":\"reasoner\""))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun checkFailureNamesTheRequestedUrl() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":{"message":"no such model"}}"""))
+
+            val settings = StandaloneSettings(
+                apiBase = server.url("/v1").toString(),
+                apiKey = "sample-key",
+                model = "missing",
+            )
+            val error = StandaloneChatClient().check(settings).exceptionOrNull()
+
+            assertTrue(error?.message?.contains("no such model") == true)
+            assertTrue(error?.message?.contains("/v1/chat/completions") == true)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun completionReadsMessageContent() {
         val body = """{"choices":[{"message":{"role":"assistant","content":" hello "}}]}"""
         assertEquals("hello", extractCompletion(body))

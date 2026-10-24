@@ -731,8 +731,12 @@ class AppViewModel(
                                 // Anything visibly working is proof enough; an id alone
                                 // is not, or a replayed old error would invent a failure.
                                 clearRuns(event.sessionId)
-                                if (requestId == null) failInFlightOutbound(event.sessionId, msg)
                             } else if (!matched) {
+                                // Nothing on screen to fix, but a send may still be
+                                // queued as Sending with no id to close it by lookup.
+                                // Leaving it open would block every later message in
+                                // this session, since firstQueued() skips Sending.
+                                if (requestId == null) failInFlightOutbound(event.sessionId, msg)
                                 return@collect
                             }
                             finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
@@ -762,7 +766,10 @@ class AppViewModel(
                                 finishBackgroundRun(event.sessionId)
                             }
                         }
-                        "compact" -> if (foreground) handleCompactEvent(env.data)
+                        // Compaction runs over HTTP and registers no ActiveRun, so
+                        // there is no foreground id to match. Gate on the session
+                        // instead, the same way the lucky branch does.
+                        "compact" -> if (event.sessionId == currentSessionId()) handleCompactEvent(env.data)
                         "task_event" -> handleTaskEvent(env.data)
                         "status", "info" -> {
                             val state = extractField(env.data, "state")
@@ -4549,6 +4556,7 @@ class AppViewModel(
                     it.copy(
                         bubbles = emptyList(),
                         historyLoading = false,
+                        historyRefreshing = false,
                         historyLoadingMore = false,
                         historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
@@ -4647,6 +4655,7 @@ class AppViewModel(
                                 it.copy(
                                     bubbles = emptyList(),
                                     historyLoading = false,
+                                    historyRefreshing = false,
                                     historyHasMore = false,
                                     activityLine = "deleted · $id",
                                 )

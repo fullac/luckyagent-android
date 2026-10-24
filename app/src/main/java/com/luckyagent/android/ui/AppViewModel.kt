@@ -3042,7 +3042,8 @@ class AppViewModel(
                 val slot = index - historyStartIndex
                 if (slot !in historyMessages.indices || historyMessages[slot] != expected) return@launch
                 val updated = historyMessages.toMutableList()
-                updated[slot] = full.copy(contentTruncated = false)
+                val clientCapped = full.content.orEmpty().length > MAX_UI_MESSAGE_CHARS
+                updated[slot] = full.copy(contentTruncated = clientCapped)
                 val page = currentHistoryPage().copy(
                     messages = updated,
                     messageCount = remoteCount,

@@ -273,6 +273,21 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun fullPageKeepsAnOlderPreviewMarker() {
+        val marked = page(
+            start = 0,
+            count = 2,
+            messages = listOf(
+                msg("older preview\n...[truncated]").copy(contentTruncated = true),
+                msg("fresh full body"),
+            ),
+        ).withContentTruncation(false)
+
+        assertEquals(true, marked.messages[0].contentTruncated)
+        assertEquals(false, marked.messages[1].contentTruncated)
+    }
+
+    @Test
     fun pageFlagOnlyMarksBodiesThatCarryTheServerMarker() {
         val marked = page(
             start = 0,

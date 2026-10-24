@@ -63,6 +63,11 @@ data class MessagePage(
 internal const val HISTORY_TRUNCATION_MARKER = "\n...[truncated]"
 
 internal fun ProviderMessage.withPreviewFlag(pageTruncated: Boolean): ProviderMessage {
+    // A later full page must not clear an older cached preview that was not
+    // fetched again. The marker is the only proof that this body is still capped.
+    if (!pageTruncated && content?.endsWith(HISTORY_TRUNCATION_MARKER) == true) {
+        return if (contentTruncated) this else copy(contentTruncated = true)
+    }
     if (!pageTruncated) {
         return if (contentTruncated) copy(contentTruncated = false) else this
     }

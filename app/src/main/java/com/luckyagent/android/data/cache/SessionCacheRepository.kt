@@ -273,7 +273,7 @@ class SessionCacheRepository internal constructor(
      */
     private fun messageFromCache(entity: CachedMessageEntity): ProviderMessage? {
         val preview = entity.rawJson.isEmpty() ||
-            entity.rawJson.contains(PREVIEW_BLOB) ||
+            rawJsonHasBlobHash(entity.rawJson, PREVIEW_BLOB) ||
             entity.content?.endsWith(HISTORY_TRUNCATION_MARKER) == true
         if (entity.rawJson.isEmpty() || !rawJsonNeeded(entity.rawJson)) {
             return ProviderMessage(
@@ -290,6 +290,11 @@ class SessionCacheRepository internal constructor(
         // Older builds stored the capped text as the complete JSON. The content
         // column is that same preview; do not treat the decoded copy as full.
         return message.copy(content = entity.content, contentTruncated = true)
+    }
+
+    /** Match the encoded field, not the word anywhere in tool arguments or URLs. */
+    private fun rawJsonHasBlobHash(raw: String, value: String): Boolean {
+        return raw.contains("\"blob_hash\":\"$value\"")
     }
 
     private fun rawJsonNeeded(raw: String): Boolean {

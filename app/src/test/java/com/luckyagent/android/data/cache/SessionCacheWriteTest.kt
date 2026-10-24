@@ -181,6 +181,34 @@ class SessionCacheWriteTest {
     }
 
     @Test
+    fun previewWordInsideToolArgumentsDoesNotMarkAFullRow() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val message = msg("saved body").copy(
+            role = "assistant",
+            toolCalls = listOf(
+                HistoryToolCall(id = "call-1", name = "file_read", arguments = "{\"path\":\"preview.html\"}"),
+            ),
+        )
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(message)),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("full row should open")
+        val row = loaded.messages.single()
+        assertEquals(false, row.contentTruncated)
+        assertEquals("saved body", row.content)
+        assertEquals("{\"path\":\"preview.html\"}", row.toolCalls.single().arguments)
+    }
+
+    @Test
     fun olderPreviewStoredAsCompleteJsonIsMarkedTruncatedOnOpen() = kotlinx.coroutines.runBlocking {
         val dao = FakeDao()
         val cache = cache(dao)

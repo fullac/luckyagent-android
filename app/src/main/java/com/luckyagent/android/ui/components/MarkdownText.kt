@@ -80,7 +80,12 @@ fun MarkdownText(
             when (block) {
                 is MdBlock.Mermaid -> MermaidView(source = block.source)
                 is MdBlock.Html -> {
-                    if (block.showPreview || requiresHtmlPage(block.source)) {
+                    // Parsed once per source. A static drawing renders itself, and the
+                    // parse must not run again on every recomposition.
+                    val svg = remember(block.source) { staticSvgDocument(block.source) }
+                    if (svg != null) {
+                        InlineSvgPreview(source = block.source, svg = svg)
+                    } else if (block.showPreview || requiresHtmlPage(block.source)) {
                         InlineHtmlPreview(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
                     } else {
                         NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)

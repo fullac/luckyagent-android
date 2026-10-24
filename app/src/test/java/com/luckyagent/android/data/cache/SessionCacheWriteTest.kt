@@ -2,6 +2,7 @@ package com.luckyagent.android.data.cache
 
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
+import com.luckyagent.android.data.api.RuntimeSession
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -167,12 +168,63 @@ class SessionCacheWriteTest {
         assertEquals(emptyList<CachedOutboundMessage>(), cache.listOutbound("http://127.0.0.1:9090"))
     }
 
+    @Test
+    fun staleSessionDroppedFromTheRemoteListDeletesItsOutbox() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "gone",
+            "old",
+            "t1",
+            null,
+            page(start = 0, count = 1, messages = listOf(msg("kept"))),
+            opened = true,
+            now = 10,
+        )
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "live",
+            "current",
+            "t1",
+            null,
+            page(start = 0, count = 1, messages = listOf(msg("stay"))),
+            opened = true,
+            now = 10,
+        )
+        cache.saveOutbound("http://127.0.0.1:9090", outbound("gone", "outbound-gone"))
+        cache.saveOutbound("http://127.0.0.1:9090", outbound("live", "outbound-live"))
+
+        cache.saveSessionList(
+            "http://127.0.0.1:9090",
+            listOf(RuntimeSession(id = "live", title = "current")),
+            now = 20,
+        )
+
+        assertEquals(listOf("live"), dao.sessions.map { it.sessionId })
+        assertEquals(listOf("live"), dao.messages.map { it.sessionId }.distinct())
+        assertEquals(listOf("outbound-live"), cache.listOutbound("http://127.0.0.1:9090").map { it.clientMessageId })
+    }
+
     private fun cache(dao: FakeDao) = SessionCacheRepository(
         dao,
         Json { ignoreUnknownKeys = true; explicitNulls = false },
     )
 
     private fun msg(content: String) = ProviderMessage(role = "user", content = content, createdAt = "c-$content")
+
+    private fun outbound(sessionId: String, clientMessageId: String) = CachedOutboundMessage(
+        sessionId = sessionId,
+        clientMessageId = clientMessageId,
+        preview = "pending",
+        message = "pending",
+        attachments = emptyList(),
+        status = "Queued",
+        requestId = null,
+        error = null,
+        createdAt = 10,
+        updatedAt = 11,
+    )
 
     private fun page(start: Int, count: Int, messages: List<ProviderMessage>) = MessagePage(
         messages = messages,

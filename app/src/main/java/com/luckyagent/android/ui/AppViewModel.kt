@@ -888,8 +888,11 @@ class AppViewModel(
                     message = cached.message,
                     attachments = cached.attachments,
                     // A process restart cannot know whether a previous frame
-                    // reached the computer. Replay the same id; the runtime's
-                    // idempotency key makes this safe.
+                    // reached the computer. Replay the same client id. This is
+                    // safe only while the runtime dedupes on client_message_id,
+                    // including after the idempotency window expires. Accepted,
+                    // ServerQueued, and Running are replayed too; there is no
+                    // local proof they were stored.
                     requestId = null,
                     status = if (cached.status == OutboundQueueStatus.Failed.name) {
                         OutboundQueueStatus.Failed

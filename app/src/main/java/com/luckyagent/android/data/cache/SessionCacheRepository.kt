@@ -187,8 +187,11 @@ class SessionCacheRepository internal constructor(
         dao.sessionIdsByRecentOpen(endpoint)
             .filter { it !in remoteIds }
             .forEach { stale ->
+                // Same cleanup as removeSession. A leftover outbox row is restored
+                // on the next launch and resent to a session the computer already dropped.
                 dao.deleteMessages(endpoint, stale)
                 dao.deleteSession(endpoint, stale)
+                dao.deleteOutboundSession(endpoint, stale)
             }
     }
 

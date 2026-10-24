@@ -172,8 +172,8 @@ class SessionCacheMergeTest {
         val stored = page(start = 0, count = 4, messages = (0 until 4).map { msg("m$it", created = "c$it") })
         val incoming = page(start = 2, count = 6, messages = (2 until 6).map { msg("m$it", created = "c$it") })
 
-        // Rows 0 and 1 are still valid and the window is not at the 200 cap, so
-        // sliding the start forward must not delete them piecemeal.
+        // Replace drops the stored prefix. Callers must not pass a narrower page
+        // unless losing rows 0 and 1 is acceptable.
         assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
     }
 

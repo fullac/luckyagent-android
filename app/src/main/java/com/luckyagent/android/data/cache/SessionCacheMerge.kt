@@ -178,8 +178,10 @@ fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCache
     val nextStart = incoming.startIndex
     val nextEnd = nextStart + incoming.messages.size
     if (nextStart < 0 || nextEnd < nextStart) return HistoryCacheWrite.Replace
-    // The caller merges a latest page before writing it. If a narrower page
-    // reaches this function, replace it rather than deleting a valid prefix.
+    // Replace deletes every cached row for this session and writes only the
+    // incoming page, so a start index past the stored prefix drops that prefix.
+    // Callers must not hand a narrower page here unless losing the prefix is
+    // acceptable. There is no "keep the prefix" variant.
     if (nextStart > storedStart) {
         return HistoryCacheWrite.Replace
     }

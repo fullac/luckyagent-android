@@ -251,7 +251,9 @@ class StandaloneChatClient(
             .header("User-Agent", "LuckyAgent-Android")
             .get()
             .build()
-        http.newCall(request).execute().use { response ->
+        // Go through call() so a stop aborts the search too; a blocking execute()
+        // here would keep running after the coroutine was cancelled.
+        call(request) { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) error("搜索失败：${response.code}")
             formatSearch(trimmed, body).ifBlank { "没有搜到「$trimmed」的结果" }
@@ -312,8 +314,10 @@ private fun normalizedApiBasePath(url: HttpUrl): String {
         path.isEmpty() || path == "/" -> "/v1"
         path.endsWith(CHAT_COMPLETIONS_SUFFIX) ->
             path.removeSuffix(CHAT_COMPLETIONS_SUFFIX).ifBlank { "/" }
-        path.endsWith("/v1") -> path
-        else -> error("模型 URL 路径需以 /v1 或 /chat/completions 结尾")
+        // Any other prefix is a gateway that already carries its own version
+        // (open.bigmodel.cn/api/paas/v4, host/llm/openai). Appending keeps those
+        // settings working, which the strict /v1 rule broke.
+        else -> path
     }
 }
 

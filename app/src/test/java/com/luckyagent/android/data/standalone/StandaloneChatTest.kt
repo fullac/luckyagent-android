@@ -41,9 +41,26 @@ class StandaloneChatTest {
     }
 
     @Test
-    fun chatUrlRejectsAmbiguousPath() {
-        val error = runCatching { chatCompletionsUrl("https://api.example.test/v1/chat") }.exceptionOrNull()
-        assertTrue(error?.message?.contains("/v1") == true)
+    fun chatUrlAppendsToGatewaysWithTheirOwnVersionPath() {
+        // Saving a config that worked before this change must keep working:
+        // these gateways carry their own prefix instead of /v1.
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            chatCompletionsUrl("https://open.bigmodel.cn/api/paas/v4"),
+        )
+        assertEquals(
+            "https://host.test/llm/openai/chat/completions",
+            chatCompletionsUrl("https://host.test/llm/openai"),
+        )
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/models",
+            modelsUrl("https://open.bigmodel.cn/api/paas/v4"),
+        )
+        // An unknown sub-path is appended, not rejected.
+        assertEquals(
+            "https://api.example.test/v1/chat/chat/completions",
+            chatCompletionsUrl("https://api.example.test/v1/chat"),
+        )
     }
 
     @Test

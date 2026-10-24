@@ -3827,8 +3827,12 @@ class AppViewModel(
 
     private fun checkStandalone() {
         val settings = standaloneSettings()
+        // The probe shares the client's active call, so a stop cancels it too.
+        // Capture the generation: a cancelled probe must not report a failure.
+        val generation = standaloneRequestGeneration
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             container.standalone.check(settings).onSuccess { resolvedModel ->
+                if (generation != standaloneRequestGeneration) return@onSuccess
                 if (!isStandaloneRequestCurrent(settings)) return@onSuccess
                 if (settings.model.isBlank() && resolvedModel.isNotBlank()) {
                     updateSettings { current ->
@@ -3844,9 +3848,11 @@ class AppViewModel(
                         }
                     }
                 }
+                if (generation != standaloneRequestGeneration) return@onSuccess
                 if (!isStandaloneRequestCurrent(settings)) return@onSuccess
                 _ui.update { it.copy(standaloneNotice = "模型已连通", healthOk = true) }
             }.onFailure { error ->
+                if (generation != standaloneRequestGeneration) return@onFailure
                 if (!isStandaloneRequestCurrent(settings)) return@onFailure
                 _ui.update { it.copy(standaloneNotice = error.message ?: "模型没有连通", healthOk = false) }
             }
@@ -3877,6 +3883,14 @@ class AppViewModel(
             try {
                 var session = stored.copy(messages = stored.messages + StandaloneMessage("user", text))
                 var promptSession = stored
+                // A stop bumps the generation; a blocking search/complete already in
+                // flight cannot be interrupted mid-call, so every step re-checks this
+                // before spending another request or writing the reply.
+                fun stopped() = generation != standaloneRequestGeneration
+                fun persistAbandoned() {
+                    container.standaloneStore.save(session)
+                }
+
                 val search = searchQuery?.let { query ->
                     container.standalone.search(query).fold(
                         onSuccess = { result ->
@@ -3894,6 +3908,10 @@ class AppViewModel(
                         },
                     )
                 }
+                if (stopped()) {
+                    persistAbandoned()
+                    return@launch
+                }
                 val prompt = buildStandaloneMessages(
                     promptSession,
                     if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text,
@@ -3902,6 +3920,9 @@ class AppViewModel(
                     onSuccess = { it },
                     onFailure = { error ->
                         container.standaloneStore.save(session)
+                        // A cancelled call reports OkHttp's own text; the user asked
+                        // to stop, so keep 「已停止」 instead of showing a failure.
+                        if (stopped()) return@launch
                         if (isStandaloneSessionCurrent(sessionId)) {
                             showStandaloneSession(session)
                             _ui.update { it.copy(standaloneNotice = error.message ?: "模型请求失败，已有消息还在") }
@@ -3909,6 +3930,10 @@ class AppViewModel(
                         return@launch
                     },
                 )
+                if (stopped()) {
+                    persistAbandoned()
+                    return@launch
+                }
                 session = session.copy(
                     title = session.title.ifBlank { text.take(24) },
                     messages = session.messages + StandaloneMessage("assistant", reply),

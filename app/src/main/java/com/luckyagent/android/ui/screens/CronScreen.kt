@@ -44,7 +44,7 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = "Cron tasks",
+            title = "定时",
             subtitle = when {
                 state.cronLoading -> "Querying scheduled tasks…"
                 state.cronError != null && state.cronJobs.isEmpty() -> "Unable to query scheduler"

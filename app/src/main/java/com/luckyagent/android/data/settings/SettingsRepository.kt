@@ -203,6 +203,23 @@ class SettingsRepository(context: Context) {
 
     fun snapshot(): ClientSettings = _settings.value
 
+    /** Cards the user closed from chat. The task itself stays on the computer. */
+    fun dismissedWorkCardIds(): Set<String> = synchronized(prefs) {
+        prefs.getStringSet(KEY_DISMISSED_WORK_CARDS, emptySet()).orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    fun dismissWorkCard(id: String) {
+        val cardId = id.trim()
+        if (cardId.isEmpty()) return
+        synchronized(prefs) {
+            val next = dismissedWorkCardIds() + cardId
+            prefs.edit().putStringSet(KEY_DISMISSED_WORK_CARDS, next).apply()
+        }
+    }
+
     /** Last visible chat position, keyed by session so switching chats keeps context. */
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
         if (sessionId.isBlank()) return@synchronized null
@@ -269,6 +286,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_STANDALONE_KEY = "standalone_api_key"
         private const val KEY_STANDALONE_MODEL = "standalone_model"
         private const val KEY_STANDALONE_SESSION = "standalone_session_id"
+        private const val KEY_DISMISSED_WORK_CARDS = "dismissed_work_cards"
     }
 }
 

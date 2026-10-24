@@ -398,6 +398,10 @@ class AppViewModel(
     private var pluginsMutationJob: Job? = null
     /** In-flight slash command; cancelled when the phone leaves the computer connection. */
     private var runtimeCommandJob: Job? = null
+    /** The standalone reply in flight, if any. */
+    private var standaloneJob: Job? = null
+    /** Newest standalone attempt; only that one may settle 「正在回复」. */
+    private var standaloneRequestGeneration = 0
 
     init {
         viewModelScope.launch {
@@ -873,6 +877,15 @@ class AppViewModel(
             current.standaloneApiBase == settings.apiBase &&
             current.standaloneApiKey == settings.apiKey &&
             current.standaloneSessionId == settings.sessionId
+    }
+
+    /**
+     * The stored transcript belongs to a session, not to the credentials it was
+     * fetched with: editing the URL or Key must not hide a reply already paid for.
+     */
+    private fun isStandaloneSessionCurrent(sessionId: String): Boolean {
+        val current = container.settingsRepository.snapshot()
+        return current.connectionMode == "standalone" && current.standaloneSessionId == sessionId
     }
 
     private fun currentSessionId(): String =
@@ -2519,6 +2532,11 @@ class AppViewModel(
                 }
                 showStandaloneSession()
             } else {
+                // Leaving standalone proves the phone is done with that attempt.
+                container.standalone.cancel()
+                standaloneJob?.cancel()
+                standaloneJob = null
+                standaloneRequestGeneration += 1
                 val runtimeSessionId = next.sessionId.ifBlank { "android-main" }
                 historySessionId = runtimeSessionId
                 historyMessages = emptyList()
@@ -3343,6 +3361,11 @@ class AppViewModel(
 
     fun sendComposer() {
         if (_ui.value.settings.connectionMode == "standalone") {
+            if (_ui.value.composer.trim().equals("/stop", ignoreCase = true)) {
+                _ui.update { it.copy(composer = "") }
+                stopStandalone()
+                return
+            }
             sendStandalone()
             return
         }
@@ -3414,6 +3437,9 @@ class AppViewModel(
     }
 
     fun saveStandaloneSettings(apiBase: String, apiKey: String, model: String) {
+        // New credentials make the attempt in flight obsolete; releasing it here keeps
+        // 「正在回复」 from outliving a request the user is no longer waiting for.
+        stopStandalone(notice = null)
         updateSettings {
             it.copy(
                 connectionMode = "standalone",
@@ -3423,6 +3449,15 @@ class AppViewModel(
             )
         }
         checkStandalone()
+    }
+
+    /** Aborts the standalone reply in flight and clears its indicators. */
+    private fun stopStandalone(notice: String? = "已停止") {
+        container.standalone.cancel()
+        standaloneJob?.cancel()
+        standaloneJob = null
+        standaloneRequestGeneration += 1
+        _ui.update { it.copy(isResponding = false, standaloneNotice = notice) }
     }
 
     fun useRuntimeConnection() {
@@ -3493,54 +3528,59 @@ class AppViewModel(
         )
         pushBubble(userBubble)
         _ui.update { it.copy(composer = "", isResponding = true, standaloneNotice = if (searchQuery != null) "正在搜索" else "正在回复") }
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            var session = stored.copy(messages = stored.messages + StandaloneMessage("user", text))
-            var promptSession = stored
-            val search = searchQuery?.let { query ->
-                container.standalone.search(query).fold(
-                    onSuccess = { result ->
-                        val searchMessage = StandaloneMessage("assistant", result, kind = "search")
-                        session = session.copy(messages = session.messages + searchMessage)
-                        promptSession = promptSession.copy(messages = promptSession.messages + searchMessage)
-                        result
-                    },
+        val generation = ++standaloneRequestGeneration
+        standaloneJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                var session = stored.copy(messages = stored.messages + StandaloneMessage("user", text))
+                var promptSession = stored
+                val search = searchQuery?.let { query ->
+                    container.standalone.search(query).fold(
+                        onSuccess = { result ->
+                            val searchMessage = StandaloneMessage("assistant", result, kind = "search")
+                            session = session.copy(messages = session.messages + searchMessage)
+                            promptSession = promptSession.copy(messages = promptSession.messages + searchMessage)
+                            result
+                        },
+                        onFailure = { error ->
+                            val notice = "这次没有拿到外部结果：${error.message ?: "搜索失败"}"
+                            val searchMessage = StandaloneMessage("assistant", notice, kind = "search")
+                            session = session.copy(messages = session.messages + searchMessage)
+                            promptSession = promptSession.copy(messages = promptSession.messages + searchMessage)
+                            notice
+                        },
+                    )
+                }
+                val prompt = buildStandaloneMessages(
+                    promptSession,
+                    if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text,
+                )
+                val reply = container.standalone.complete(settings, prompt).fold(
+                    onSuccess = { it },
                     onFailure = { error ->
-                        val notice = "这次没有拿到外部结果：${error.message ?: "搜索失败"}"
-                        val searchMessage = StandaloneMessage("assistant", notice, kind = "search")
-                        session = session.copy(messages = session.messages + searchMessage)
-                        promptSession = promptSession.copy(messages = promptSession.messages + searchMessage)
-                        notice
+                        container.standaloneStore.save(session)
+                        if (isStandaloneSessionCurrent(sessionId)) {
+                            showStandaloneSession(session)
+                            _ui.update { it.copy(standaloneNotice = error.message ?: "模型请求失败，已有消息还在") }
+                        }
+                        return@launch
                     },
                 )
-            }
-            val prompt = buildStandaloneMessages(
-                promptSession,
-                if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text,
-            )
-            val reply = container.standalone.complete(settings, prompt).fold(
-                onSuccess = { it },
-                onFailure = { error ->
-                    container.standaloneStore.save(session)
-                    if (!isStandaloneRequestCurrent(settings)) return@launch
-                    showStandaloneSession(session)
-                    _ui.update { it.copy(isResponding = false, standaloneNotice = error.message ?: "模型请求失败，已有消息还在") }
-                    return@launch
-                },
-            )
-            session = session.copy(
-                title = session.title.ifBlank { text.take(24) },
-                messages = session.messages + StandaloneMessage("assistant", reply),
-            )
-            val compacted = if (standaloneContextTokens(session) > 3000) compactStandaloneSession(session) else null
-            val saved = compacted ?: session
-            container.standaloneStore.save(saved)
-            if (!isStandaloneRequestCurrent(settings)) return@launch
-            showStandaloneSession(saved)
-            _ui.update {
-                it.copy(
-                    isResponding = false,
-                    standaloneNotice = if (compacted != null) "上下文已自动压缩" else null,
+                session = session.copy(
+                    title = session.title.ifBlank { text.take(24) },
+                    messages = session.messages + StandaloneMessage("assistant", reply),
                 )
+                val compacted = if (standaloneContextTokens(session) > 3000) compactStandaloneSession(session) else null
+                val saved = compacted ?: session
+                container.standaloneStore.save(saved)
+                if (!isStandaloneSessionCurrent(sessionId)) return@launch
+                showStandaloneSession(saved)
+                _ui.update { it.copy(standaloneNotice = if (compacted != null) "上下文已自动压缩" else null) }
+            } finally {
+                // Every exit, including a cancel or a failed request, releases the
+                // indicator. A newer attempt owns it and settles it itself.
+                if (generation == standaloneRequestGeneration) {
+                    _ui.update { it.copy(isResponding = false) }
+                }
             }
         }
     }

@@ -10,11 +10,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 enum class ConnectionMode { Runtime, Standalone }
 
@@ -134,6 +137,26 @@ class StandaloneChatClient(
         .build(),
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
+    private val activeCall = AtomicReference<Call?>(null)
+
+    /**
+     * Abort the request in flight. The waiting caller sees the failure as an
+     * ordinary error and settles its own UI; OkHttp reports it as an IOException.
+     */
+    fun cancel() {
+        activeCall.getAndSet(null)?.cancel()
+    }
+
+    private fun <T> call(request: Request, read: (Response) -> T): T {
+        val call = http.newCall(request)
+        activeCall.set(call)
+        return try {
+            call.execute().use(read)
+        } finally {
+            activeCall.compareAndSet(call, null)
+        }
+    }
+
     fun check(settings: StandaloneSettings): Result<String> = runCatching {
         requireConnectionSettings(settings)
         val model = settings.model.trim().ifBlank { discoverModel(settings) }
@@ -175,7 +198,7 @@ class StandaloneChatClient(
             .header("Content-Type", "application/json")
             .post(payload.toRequestBody(JSON))
             .build()
-        return http.newCall(request).execute().use { response ->
+        return call(request) { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) error(readableModelError(response.code, body))
             extractCompletion(body)
@@ -193,10 +216,10 @@ class StandaloneChatClient(
             .header("Authorization", "Bearer ${settings.apiKey}")
             .get()
             .build()
-        http.newCall(request).execute().use { response ->
+        return call(request) { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) error(readableModelError(response.code, body))
-            return extractFirstModel(body)
+            extractFirstModel(body)
         }
     }
 

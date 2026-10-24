@@ -80,6 +80,34 @@ class StandaloneChatTest {
     }
 
     @Test
+    fun namedModelSkipsModelDiscovery() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}]}"""))
+
+            val settings = StandaloneSettings(
+                apiBase = server.url("/v1").toString(),
+                apiKey = "sample-key",
+                model = "my-model",
+            )
+            val result = StandaloneChatClient().complete(
+                settings,
+                listOf(mapOf("role" to "user", "content" to "hi")),
+            )
+
+            assertEquals("ok", result.getOrThrow())
+            // A typed model name means exactly one request: no /models probe.
+            assertEquals(1, server.requestCount)
+            val request = server.takeRequest()
+            assertEquals("/v1/chat/completions", request.path)
+            assertTrue(request.body.readUtf8().contains("\"model\":\"my-model\""))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun completionReadsMessageContent() {
         val body = """{"choices":[{"message":{"role":"assistant","content":" hello "}}]}"""
         assertEquals("hello", extractCompletion(body))

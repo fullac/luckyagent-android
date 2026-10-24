@@ -1,5 +1,6 @@
 package com.luckyagent.android.data.cache
 
+import com.luckyagent.android.data.api.HistoryToolCall
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
 import kotlinx.serialization.json.Json
@@ -140,10 +141,62 @@ class SessionCacheWriteTest {
         )
 
         val row = dao.messages.single()
-        assertEquals("", row.rawJson)
+        assertEquals(false, row.rawJson.contains("\"content\""))
         assertEquals(preview, row.content)
 
         val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("preview should still open")
+        assertTrue(loaded.messages.single().contentTruncated)
+        assertEquals(preview, loaded.messages.single().content)
+    }
+
+    @Test
+    fun truncatedRowKeepsAttachmentsAndToolCalls() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val preview = "body\n...[truncated]"
+        val message = msg(preview).copy(
+            role = "assistant",
+            contentTruncated = true,
+            attachments = listOf(MediaAttachment(type = "file", fileName = "a.txt")),
+            toolCalls = listOf(HistoryToolCall(id = "call-1", name = "file_read", arguments = "{}")),
+        )
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(message)),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("truncated row should open")
+        val row = loaded.messages.single()
+        assertTrue(row.contentTruncated)
+        assertEquals(preview, row.content)
+        assertEquals("a.txt", row.attachments.single().fileName)
+        assertEquals("call-1", row.toolCalls.single().id)
+        assertEquals(false, dao.messages.single().rawJson.contains("\"content\""))
+    }
+
+    @Test
+    fun olderPreviewStoredAsCompleteJsonIsMarkedTruncatedOnOpen() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val preview = "old body\n...[truncated]"
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(msg(preview).copy(role = "assistant"))),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("old preview should open")
         assertTrue(loaded.messages.single().contentTruncated)
         assertEquals(preview, loaded.messages.single().content)
     }

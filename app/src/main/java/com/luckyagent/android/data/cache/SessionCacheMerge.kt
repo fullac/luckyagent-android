@@ -271,15 +271,20 @@ fun messageIdentity(message: ProviderMessage): String {
 private fun messagesEquivalent(left: ProviderMessage, right: ProviderMessage): Boolean =
     messageIdentity(left) == messageIdentity(right)
 
-/** Same row for a cache rewrite. A stored full body still matches its own preview. */
-private fun sameHistoryRow(stored: ProviderMessage, incoming: ProviderMessage): Boolean {
+/** Same row for a cache rewrite. A stored full body still matches its own preview, and the reverse. */
+internal fun sameHistoryRow(stored: ProviderMessage, incoming: ProviderMessage): Boolean {
     if (messagesEquivalent(stored, incoming)) return true
     if (stored.createdAt != incoming.createdAt || stored.role != incoming.role) return false
     if (stored.name != incoming.name || stored.toolCallId != incoming.toolCallId) return false
-    val full = stored.content.orEmpty()
-    val preview = incoming.content.orEmpty()
-    if (!incoming.contentTruncated || !preview.endsWith(HISTORY_TRUNCATION_MARKER)) return false
-    return full.startsWith(preview.removeSuffix(HISTORY_TRUNCATION_MARKER))
+    return previewOf(stored.content, incoming.content, incoming.contentTruncated) ||
+        previewOf(incoming.content, stored.content, stored.contentTruncated)
+}
+
+/** [preview] is the capped copy of [full]. Either side may be the one already stored. */
+private fun previewOf(full: String?, preview: String?, previewTruncated: Boolean): Boolean {
+    val capped = preview.orEmpty()
+    if (!previewTruncated || !capped.endsWith(HISTORY_TRUNCATION_MARKER)) return false
+    return full.orEmpty().startsWith(capped.removeSuffix(HISTORY_TRUNCATION_MARKER))
 }
 
 /** Same identity, but not merely a preview of a body we already expanded. */
@@ -312,6 +317,8 @@ internal fun latestPageAlreadyStored(
 
 /** Full text already stored for a row still matches the preview the server just sent. */
 private fun sameStoredTailRow(stored: ProviderMessage, remote: ProviderMessage): Boolean {
+    // A preview already on disk is not the stored body, even when the text matches.
+    if (stored.contentTruncated) return false
     if (stored == remote) return true
     if (!sameHistoryRow(stored, remote)) return false
     // Attachments, tool arguments, or a finished tool body still need a rewrite.

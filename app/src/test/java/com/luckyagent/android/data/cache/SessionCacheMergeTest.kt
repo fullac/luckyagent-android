@@ -134,6 +134,19 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun storedPreviewOfTheSameRemoteTailStillNeedsARewrite() {
+        val stored = page(
+            start = 0,
+            count = 1,
+            messages = listOf(msg("hello\n...[truncated]", created = "c0").copy(contentTruncated = true)),
+        )
+        val latest = listOf(msg("hello\n...[truncated]", created = "c0").copy(contentTruncated = true))
+
+        // Same text is not enough. The disk row is still a preview, so refresh must not skip it.
+        assertEquals(false, latestPageAlreadyStored(stored, latest, remoteCount = 1))
+    }
+
+    @Test
     fun attachmentChangeOnTheTailRequiresRewrite() {
         val stored = page(start = 0, count = 1, messages = listOf(msg("a")))
         val latest = listOf(msg("a").copy(attachments = listOf(
@@ -189,6 +202,31 @@ class SessionCacheMergeTest {
         assertEquals(listOf(200), write.inserts.map { it.ordinal })
         assertEquals(1, write.deleteBefore)
         assertEquals(201, write.deleteFrom)
+    }
+
+    @Test
+    fun expandingAStoredPreviewPatchesThatRowInsteadOfReplacingThePage() {
+        val preview = "hello\n...[truncated]"
+        val full = "hello world, now stored in full"
+        val stored = page(
+            start = 0,
+            count = 2,
+            messages = listOf(
+                msg(preview, created = "c0").copy(contentTruncated = true),
+                msg("next", created = "c1"),
+            ),
+        )
+        val incoming = page(
+            start = 0,
+            count = 2,
+            messages = listOf(msg(full, created = "c0"), msg("next", created = "c1")),
+        )
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(0), write.inserts.map { it.ordinal })
+        assertEquals(full, write.inserts.single().message.content)
+        assertEquals(false, write.inserts.single().message.contentTruncated)
     }
 
     @Test

@@ -227,9 +227,14 @@ class SessionCacheRepository internal constructor(
         content = message.content,
         createdAt = message.createdAt,
         toolCallId = message.toolCallId,
-        // A preview is not the stored body. Leave rawJson empty so a later open
-        // cannot decode the cap (including a trailing truncation marker) as complete.
-        rawJson = if (message.contentTruncated) "" else json.encodeToString(message),
+        // A preview is not the stored body. Strip the capped text, but keep
+        // attachments and tool calls. blob_hash marks the row even when the
+        // server marker is absent. An empty rawJson is the older preview form.
+        rawJson = if (message.contentTruncated) {
+            json.encodeToString(message.copy(content = null, blobHash = PREVIEW_BLOB))
+        } else {
+            json.encodeToString(message)
+        },
     )
 
     suspend fun removeSession(apiBase: String, sessionId: String, apiKey: String = "") {
@@ -263,27 +268,28 @@ class SessionCacheRepository internal constructor(
     /**
      * Plain rows rebuild from the structured columns. rawJson is decoded only
      * when the row carries fields those columns cannot hold, such as attachments
-     * or tool calls. An empty rawJson is a truncated preview, not a full body.
+     * or tool calls. An empty rawJson, or a body that still ends with the server
+     * truncation marker, is a preview, not a full body.
      */
     private fun messageFromCache(entity: CachedMessageEntity): ProviderMessage? {
-        if (entity.rawJson.isEmpty()) {
+        val preview = entity.rawJson.isEmpty() ||
+            entity.rawJson.contains(PREVIEW_BLOB) ||
+            entity.content?.endsWith(HISTORY_TRUNCATION_MARKER) == true
+        if (entity.rawJson.isEmpty() || !rawJsonNeeded(entity.rawJson)) {
             return ProviderMessage(
                 role = entity.role,
                 content = entity.content,
                 createdAt = entity.createdAt,
                 toolCallId = entity.toolCallId,
-                contentTruncated = true,
+                contentTruncated = preview,
             )
         }
-        if (!rawJsonNeeded(entity.rawJson)) {
-            return ProviderMessage(
-                role = entity.role,
-                content = entity.content,
-                createdAt = entity.createdAt,
-                toolCallId = entity.toolCallId,
-            )
-        }
-        return decodeMessage(entity.rawJson)
+        val decoded = decodeMessage(entity.rawJson) ?: return null
+        val message = if (decoded.blobHash == PREVIEW_BLOB) decoded.copy(blobHash = null) else decoded
+        if (!preview) return message
+        // Older builds stored the capped text as the complete JSON. The content
+        // column is that same preview; do not treat the decoded copy as full.
+        return message.copy(content = entity.content, contentTruncated = true)
     }
 
     private fun rawJsonNeeded(raw: String): Boolean {
@@ -301,4 +307,9 @@ class SessionCacheRepository internal constructor(
 
     private fun decodeMessage(raw: String): ProviderMessage? =
         runCatching { json.decodeFromString(ProviderMessage.serializer(), raw) }.getOrNull()
+
+    private companion object {
+        /** Not a server hash. Marks a preview row whose capped body was not stored. */
+        const val PREVIEW_BLOB = "preview"
+    }
 }

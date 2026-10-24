@@ -3110,6 +3110,10 @@ class AppViewModel(
                         content = bubble.content,
                         toolOutput = bubble.toolOutput,
                         attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
+                        // The call bubble is built from the assistant tool_calls row.
+                        // Truncation lives on the following tool result.
+                        contentTruncated = bubble.contentTruncated,
+                        historyIndex = bubble.historyIndex,
                     )
                 } else {
                     bubbles += bubble

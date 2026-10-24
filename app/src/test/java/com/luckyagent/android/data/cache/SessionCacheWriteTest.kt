@@ -1,11 +1,13 @@
 package com.luckyagent.android.data.cache
 
+import com.luckyagent.android.data.api.HistoryToolCall
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.RuntimeSession
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionCacheWriteTest {
@@ -124,6 +126,31 @@ class SessionCacheWriteTest {
     }
 
     @Test
+    fun truncatedPreviewIsNotStoredAsTheFullBody() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val preview = "x".repeat(4000) + "…[truncated]"
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(msg(preview).copy(contentTruncated = true))),
+            opened = true,
+            now = 10,
+        )
+
+        val row = dao.messages.single()
+        assertEquals(false, row.rawJson.contains("\"content\""))
+        assertEquals(preview, row.content)
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("preview should still open")
+        assertTrue(loaded.messages.single().contentTruncated)
+        assertEquals(preview, loaded.messages.single().content)
+    }
+
+    @Test
     fun fullHistoryIsStoredWithoutATruncationWindow() = kotlinx.coroutines.runBlocking {
         val dao = FakeDao()
         val cache = cache(dao)
@@ -142,6 +169,86 @@ class SessionCacheWriteTest {
         assertEquals((0 until 250).toList(), dao.messages.map { it.ordinal })
         assertEquals("m0", dao.messages.first().content)
         assertEquals(250, dao.sessions.single().messageCount)
+    }
+
+    @Test
+    fun truncatedRowKeepsAttachmentsAndToolCalls() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val preview = "body\n...[truncated]"
+        val message = msg(preview).copy(
+            role = "assistant",
+            contentTruncated = true,
+            attachments = listOf(MediaAttachment(type = "file", fileName = "a.txt")),
+            toolCalls = listOf(HistoryToolCall(id = "call-1", name = "file_read", arguments = "{}")),
+        )
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(message)),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("truncated row should open")
+        val row = loaded.messages.single()
+        assertTrue(row.contentTruncated)
+        assertEquals(preview, row.content)
+        assertEquals("a.txt", row.attachments.single().fileName)
+        assertEquals("call-1", row.toolCalls.single().id)
+        assertEquals(false, dao.messages.single().rawJson.contains("\"content\""))
+    }
+
+    @Test
+    fun previewWordInsideToolArgumentsDoesNotMarkAFullRow() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val message = msg("saved body").copy(
+            role = "assistant",
+            toolCalls = listOf(
+                HistoryToolCall(id = "call-1", name = "file_read", arguments = "{\"path\":\"preview.html\"}"),
+            ),
+        )
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(message)),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("full row should open")
+        val row = loaded.messages.single()
+        assertEquals(false, row.contentTruncated)
+        assertEquals("saved body", row.content)
+        assertEquals("{\"path\":\"preview.html\"}", row.toolCalls.single().arguments)
+    }
+
+    @Test
+    fun olderPreviewStoredAsCompleteJsonIsMarkedTruncatedOnOpen() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val preview = "old body\n...[truncated]"
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(msg(preview).copy(role = "assistant"))),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("old preview should open")
+        assertTrue(loaded.messages.single().contentTruncated)
+        assertEquals(preview, loaded.messages.single().content)
     }
 
     @Test
@@ -166,6 +273,49 @@ class SessionCacheWriteTest {
         assertEquals(listOf(row), cache.listOutbound("http://127.0.0.1:9090"))
         cache.removeOutbound("http://127.0.0.1:9090", "s", "outbound-1")
         assertEquals(emptyList<CachedOutboundMessage>(), cache.listOutbound("http://127.0.0.1:9090"))
+    }
+
+    @Test
+    fun plainCachedMessageOpensWithoutDecodingRawJson() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(msg("hello"))),
+            opened = true,
+            now = 10,
+        )
+        dao.messages[0] = dao.messages[0].copy(rawJson = "{not-json")
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("plain row should open from columns")
+        assertEquals("hello", loaded.messages.single().content)
+        assertEquals(false, loaded.messages.single().contentTruncated)
+    }
+
+    @Test
+    fun attachmentRowStillDecodesRawJson() = kotlinx.coroutines.runBlocking {
+        val dao = FakeDao()
+        val cache = cache(dao)
+        val attached = msg("see file").copy(
+            attachments = listOf(MediaAttachment(type = "file", fileName = "a.txt")),
+        )
+        cache.savePage(
+            "http://127.0.0.1:9090",
+            "s",
+            null,
+            null,
+            null,
+            page(start = 0, count = 1, messages = listOf(attached)),
+            opened = true,
+            now = 10,
+        )
+
+        val loaded = cache.loadPage("http://127.0.0.1:9090", "s") ?: error("attachment row should open")
+        assertEquals("a.txt", loaded.messages.single().attachments.single().fileName)
     }
 
     @Test

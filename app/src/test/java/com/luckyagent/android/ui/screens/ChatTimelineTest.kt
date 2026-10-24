@@ -96,6 +96,30 @@ class ChatTimelineTest {
     }
 
     @Test
+    fun truncatedToolResultKeepsTheExpandHandleOnItsOwnBubble() {
+        val messages = listOf(
+            ProviderMessage(
+                role = "assistant",
+                content = "Reading",
+                toolCalls = listOf(HistoryToolCall(id = "call-1", name = "file_read", arguments = "{}")),
+            ),
+            ProviderMessage(
+                role = "tool",
+                name = "file_read",
+                content = "preview\n...[truncated]",
+                toolCallId = "call-1",
+                contentTruncated = true,
+            ),
+        )
+
+        val tool = messages.flatMapIndexed { index, message -> message.toHistoryBubbles(index) }
+            .single { it.role == "tool" && it.toolOutput != null }
+
+        assertTrue(tool.contentTruncated)
+        assertEquals(1, tool.historyIndex)
+    }
+
+    @Test
     fun loadingAHistoryPageInTheMiddleOfAToolQueryStillProducesOneFold() {
         val items = timeline(round(3) + round(4) + ProviderMessage(role = "assistant", content = "Done"), startIndex = 200)
 
@@ -120,6 +144,17 @@ class ChatTimelineTest {
         assertEquals(3, items.size)
         assertEquals("Read the entrypoint first", (items[1] as ChatTimelineItem.Process).steps.single { it.isIntermediate }.content)
         assertEquals("Implemented", (items[2] as ChatTimelineItem.Message).bubble.content)
+    }
+
+    @Test
+    fun truncatedHistoryRowKeepsTheServerIndexAndThePreviewFlag() {
+        val bubble = ProviderMessage(role = "assistant", content = "preview", contentTruncated = true)
+            .toHistoryBubbles(idx = 17)
+            .single { it.role == "assistant" }
+
+        assertEquals(true, bubble.contentTruncated)
+        assertEquals(17, bubble.historyIndex)
+        assertEquals("preview", bubble.content)
     }
 
     @Test

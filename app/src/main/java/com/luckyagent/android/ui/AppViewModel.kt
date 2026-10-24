@@ -27,6 +27,7 @@ import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
 import com.luckyagent.android.data.cache.olderHistoryOffset
 import com.luckyagent.android.data.cache.prependOlderPage
+import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.ModelEffortResponse
@@ -156,6 +157,10 @@ data class ChatBubble(
     val quote: MessageQuote? = null,
     /** Assistant commentary from a tool/continuation round belongs inside the process fold. */
     val isIntermediate: Boolean = false,
+    /** Server preview, not the stored body. The UI can request the full page and swap this row. */
+    val contentTruncated: Boolean = false,
+    /** Oldest-first server index of the source message. -1 for live bubbles. */
+    val historyIndex: Int = -1,
     /** Non-null only while a locally persisted user message awaits server history. */
     val outboundId: String? = null,
     val outboundStatus: OutboundQueueStatus? = null,
@@ -230,6 +235,8 @@ data class AppUiState(
     val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
     val historyHasMore: Boolean = false,
+    /** Server index whose full body is being fetched. -1 when idle. */
+    val expandingHistoryIndex: Int = -1,
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
     /** Locally persisted outbound messages, including frames waiting for delivery or acknowledgement. */
@@ -380,6 +387,8 @@ class AppViewModel(
      * load also leaves the count at 0, and that 0 must not anchor a live turn.
      */
     private var historyCountConfirmed = false
+    /** Server index whose full body is currently being fetched. -1 when idle. */
+    private var expandingHistoryIndex = -1
     private var assistantBufferId: String? = null
     private var assistantBufferIndex: Int? = null
     private val assistantPending = StringBuilder()
@@ -3050,7 +3059,7 @@ class AppViewModel(
                     val page = merged.page.copy(
                         reachedOldest = merged.page.reachedOldest ||
                             (history.hasMore != true && merged.page.startIndex == 0),
-                    )
+                    ).withContentTruncation(history.contentTruncated == true)
                     persistHistoryPage(
                         apiBase,
                         apiKey,
@@ -3092,7 +3101,7 @@ class AppViewModel(
                 startIndex = start,
                 messageCount = remoteCount,
                 reachedOldest = start == 0 && history.hasMore != true && history.contentTruncated != true,
-            )
+            ).withContentTruncation(history.contentTruncated == true)
             persistHistoryPage(
                 apiBase,
                 apiKey,
@@ -3187,7 +3196,13 @@ class AppViewModel(
             val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
             val cached = currentHistoryPage()
-            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {
+            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset).let { result ->
+                if (result is LatestMerge.Appended) {
+                    LatestMerge.Appended(result.page.withContentTruncation(history.contentTruncated == true))
+                } else {
+                    result
+                }
+            }) {
                 is LatestMerge.Invalidate -> {
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onSuccess
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
@@ -3459,6 +3474,112 @@ class AppViewModel(
         }
     }
 
+    /**
+     * The history API only serves full bodies for a whole page. Fetch that page
+     * and swap the one truncated row. Other preview rows stay preview, and only
+     * the complete body is written back into the cache.
+     */
+    fun expandTruncatedMessage(bubble: ChatBubble) {
+        val index = bubble.historyIndex
+        if (!bubble.contentTruncated || index < 0 || expandingHistoryIndex == index) return
+        val local = index - historyStartIndex
+        if (local !in historyMessages.indices || !historyMessages[local].contentTruncated) return
+        val expected = historyMessages[local]
+        val sessionId = historySessionId ?: return
+        val total = currentHistoryPage().messageCount
+        // History offset skips the newest N messages. Walk back from the session
+        // end in page-sized steps until this row is inside the fetched page.
+        val pageEnd = total - ((total - 1 - index) / SessionCachePolicy.LATEST_PAGE) * SessionCachePolicy.LATEST_PAGE
+        val offset = (total - pageEnd).coerceAtLeast(0)
+        val limit = (pageEnd - (pageEnd - SessionCachePolicy.LATEST_PAGE).coerceAtLeast(0)).coerceIn(1, SessionCachePolicy.LATEST_PAGE)
+        expandingHistoryIndex = index
+        _ui.update { it.copy(expandingHistoryIndex = index, activityLine = "正在加载全文") }
+        viewModelScope.launch {
+            try {
+                val connection = container.settingsRepository.snapshot()
+                val fetch = container.api.sessionHistory(
+                    sessionId,
+                    limit = limit,
+                    offset = offset,
+                    includeFull = true,
+                ).getOrElse { error ->
+                    _ui.update { it.copy(activityLine = "全文加载失败 · ${error.message}") }
+                    return@launch
+                }
+                val history = fetch.history ?: run {
+                    _ui.update { it.copy(activityLine = "服务端未返回完整正文") }
+                    return@launch
+                }
+                if (history.contentTruncated == true) {
+                    _ui.update { it.copy(activityLine = "服务端未返回完整正文") }
+                    return@launch
+                }
+                if (currentSessionId() != sessionId || historySessionId != sessionId) return@launch
+                val remoteCount = history.messageCount ?: currentHistoryPage().messageCount
+                if (remoteCount != total) {
+                    _ui.update { it.copy(activityLine = "会话已更新，请重新展开") }
+                    return@launch
+                }
+                val pageStart = remoteCount - offset - history.messages.size
+                val full = history.messages.getOrNull(index - pageStart) ?: run {
+                    _ui.update { it.copy(activityLine = "服务端未返回完整正文") }
+                    return@launch
+                }
+                if (!sameExpandedRow(expected, full)) {
+                    _ui.update { it.copy(activityLine = "会话已更新，请重新展开") }
+                    return@launch
+                }
+                val slot = index - historyStartIndex
+                if (slot !in historyMessages.indices || historyMessages[slot] != expected) return@launch
+                val updated = historyMessages.toMutableList()
+                val clientCapped = full.content.orEmpty().length > MAX_UI_MESSAGE_CHARS
+                updated[slot] = full.copy(contentTruncated = clientCapped)
+                val page = currentHistoryPage().copy(
+                    messages = updated,
+                    messageCount = remoteCount,
+                    contentTruncated = updated.any { it.contentTruncated },
+                )
+                historyMessages = page.messages
+                val stored = runCatching {
+                    container.sessionCache.loadPage(connection.apiBase, sessionId, connection.apiKey)
+                }.getOrNull()
+                persistHistoryPage(
+                    connection.apiBase,
+                    connection.apiKey,
+                    sessionId,
+                    null,
+                    remoteUpdatedAt(sessionId),
+                    page,
+                    stored = stored,
+                )
+                if (currentSessionId() != sessionId || historySessionId != sessionId) return@launch
+                applyHistoryPage(sessionId, page, offline = false)
+                _ui.update { it.copy(activityLine = "已展开全文") }
+            } finally {
+                if (expandingHistoryIndex == index) {
+                    expandingHistoryIndex = -1
+                    _ui.update { state ->
+                        if (state.expandingHistoryIndex == index) state.copy(expandingHistoryIndex = -1) else state
+                    }
+                }
+            }
+        }
+    }
+
+    /** The fetched row is the one the user tapped, not a neighbor shifted by a new message. */
+    private fun sameExpandedRow(expected: ProviderMessage, fetched: ProviderMessage): Boolean {
+        if (expected.role != fetched.role) return false
+        if (expected.createdAt != fetched.createdAt) return false
+        val expectedTool = expected.toolCallId?.trim().orEmpty()
+        val fetchedTool = fetched.toolCallId?.trim().orEmpty()
+        if (expectedTool.isNotEmpty() || fetchedTool.isNotEmpty()) return expectedTool == fetchedTool
+        val preview = expected.content.orEmpty()
+        val full = fetched.content.orEmpty()
+        val marker = "\n...[truncated]"
+        if (!preview.endsWith(marker)) return preview == full
+        return full.startsWith(preview.removeSuffix(marker))
+    }
+
     private fun remoteUpdatedAt(sessionId: String): String? =
         _ui.value.sessions.firstOrNull { it.id == sessionId }?.updatedAt
 
@@ -3480,6 +3601,10 @@ class AppViewModel(
                         content = bubble.content,
                         toolOutput = bubble.toolOutput,
                         attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
+                        // The call bubble is built from the assistant tool_calls row.
+                        // Truncation lives on the following tool result.
+                        contentTruncated = bubble.contentTruncated,
+                        historyIndex = bubble.historyIndex,
                     )
                 } else {
                     bubbles += bubble

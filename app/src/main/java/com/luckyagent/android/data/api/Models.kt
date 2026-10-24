@@ -129,6 +129,11 @@ data class ProviderMessage(
     val name: String? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<HistoryToolCall> = emptyList(),
+    /**
+     * True when this copy is a server preview, not the stored body.
+     * Not serialized: a preview must not be written back as a complete message.
+     */
+    @kotlinx.serialization.Transient val contentTruncated: Boolean = false,
     /** Present when large tool/assistant bodies are externalized server-side. */
     @SerialName("blob_hash") val blobHash: String? = null,
     @SerialName("blob_bytes") val blobBytes: Int? = null,

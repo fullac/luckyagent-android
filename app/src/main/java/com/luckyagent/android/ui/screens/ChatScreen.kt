@@ -1257,6 +1257,9 @@ private fun ChatConversation(
                                 onRetry = vm::retryLastResponse,
                                 onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
+                                onExpand = vm::expandTruncatedMessage,
+                                expanding = state.expandingHistoryIndex >= 0 &&
+                                    state.expandingHistoryIndex == item.bubble.historyIndex,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -1278,6 +1281,8 @@ private fun ChatConversation(
                                     cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
                                     vm.notifyCopied()
                                 },
+                                onExpand = vm::expandTruncatedMessage,
+                                expandingHistoryIndex = state.expandingHistoryIndex,
                                 onOpenThinking = {
                                     selectedThinkingSteps = item.steps.filterNot(::isTurnStatusPlaceholder)
                                     showThinkingSheet = true
@@ -1425,6 +1430,8 @@ private fun ChatConversation(
                     cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
                     vm.notifyCopied()
                 },
+                onExpand = vm::expandTruncatedMessage,
+                expandingHistoryIndex = state.expandingHistoryIndex,
             )
         }
     }
@@ -1662,6 +1669,25 @@ private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size:
     )
 }
 
+
+@Composable
+private fun FullTextButton(
+    bubble: ChatBubble,
+    expanding: Boolean,
+    onExpand: (ChatBubble) -> Unit,
+) {
+    TextButton(
+        onClick = { onExpand(bubble) },
+        enabled = !expanding,
+    ) {
+        Text(
+            if (expanding) "加载中" else "查看全文",
+            color = CloverText3,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+}
+
 @Composable
 private fun BubbleRow(
     bubble: ChatBubble,
@@ -1677,6 +1703,8 @@ private fun BubbleRow(
     onRetry: () -> Unit = {},
     onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
+    onExpand: (ChatBubble) -> Unit = {},
+    expanding: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -1747,6 +1775,9 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     streaming = bubble.streaming,
                                 )
+                            }
+                            if (bubble.contentTruncated) {
+                                FullTextButton(bubble, expanding, onExpand)
                             }
                         }
                         if (bubble.attachments.isNotEmpty()) {
@@ -2263,6 +2294,8 @@ private fun ProcessTimeline(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expandingHistoryIndex: Int = -1,
     onOpenThinking: (List<ChatBubble>) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
@@ -2316,6 +2349,8 @@ private fun ThinkingSheet(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expandingHistoryIndex: Int = -1,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CloverBg) {
         LazyColumn(
@@ -2376,7 +2411,16 @@ private fun ThinkingSheet(
                 when {
                     step.role == "compact" -> CompactProgressRow(step.content)
                     step.role == "reasoning" || step.isIntermediate -> ReasoningPart(step, imageHeaders, imageBaseUrl)
-                    else -> ToolPart(step, imageHeaders, imageBaseUrl, onDownload, onQuote, onCopy)
+                    else -> ToolPart(
+                        step,
+                        imageHeaders,
+                        imageBaseUrl,
+                        onDownload,
+                        onQuote,
+                        onCopy,
+                        onExpand,
+                        expanding = expandingHistoryIndex >= 0 && expandingHistoryIndex == step.historyIndex,
+                    )
                 }
             }
         }
@@ -2419,6 +2463,8 @@ private fun ToolPart(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expanding: Boolean = false,
 ) {
     var expanded by remember(bubble.id) { mutableStateOf(false) }
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2488,6 +2534,9 @@ private fun ToolPart(
                     imageHeaders = imageHeaders,
                     imageBaseUrl = imageBaseUrl,
                 )
+                if (bubble.contentTruncated) {
+                    FullTextButton(bubble, expanding, onExpand)
+                }
             }
             bubble.attachments.forEach { media ->
                 ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload)

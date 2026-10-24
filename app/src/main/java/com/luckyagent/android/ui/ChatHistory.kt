@@ -55,6 +55,8 @@ internal fun ProviderMessage.toHistoryBubbles(
             toolDone = true,
             stepId = toolCallId,
             attachments = messageAttachments,
+            contentTruncated = contentTruncated,
+            historyIndex = idx,
             serverOrdinal = idx,
         )
     } else if (role == "system" && compactLabel != null) {
@@ -74,6 +76,8 @@ internal fun ProviderMessage.toHistoryBubbles(
             usage = usage,
             attachments = messageAttachments,
             isIntermediate = role == "assistant" && toolCalls.isNotEmpty(),
+            contentTruncated = contentTruncated,
+            historyIndex = idx,
             outboundId = clientMessageId,
             serverOrdinal = idx,
         )

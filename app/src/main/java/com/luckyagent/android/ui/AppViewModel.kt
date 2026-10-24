@@ -70,6 +70,9 @@ import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.ui.screens.dismissedWorkCardIds
+import com.luckyagent.android.ui.screens.keepFocusedWorkCard
+import com.luckyagent.android.ui.screens.visibleWorkCard
 import com.luckyagent.android.data.api.toTaskNode
 import com.luckyagent.android.data.api.toTaskSummary
 import com.luckyagent.android.data.api.WsChatHandle
@@ -314,6 +317,9 @@ data class AppUiState(
     val taskPolling: Boolean = false,
     val backgroundDashboard: AutonomyDashboardResponse? = null,
     val backgroundTasks: List<AutonomyTaskSummary> = emptyList(),
+    val focusedWorkCardId: String? = null,
+    val focusedWorkCardBackground: Boolean = false,
+    val dismissedWorkCardIds: Set<String> = emptySet(),
     val backgroundLoading: Boolean = false,
     val backgroundError: String? = null,
     val backgroundFilter: BackgroundFilter = BackgroundFilter.All,
@@ -368,7 +374,12 @@ data class AppUiState(
 class AppViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
-    private val _ui = MutableStateFlow(AppUiState(settings = container.settingsRepository.snapshot()))
+    private val _ui = MutableStateFlow(
+        AppUiState(
+            settings = container.settingsRepository.snapshot(),
+            dismissedWorkCardIds = container.settingsRepository.dismissedWorkCardIds(),
+        ),
+    )
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
 
     private var eventsJob: Job? = null
@@ -1296,7 +1307,7 @@ class AppViewModel(
                 if (task.childCount > 0) append(" · ${task.completedChildren}/${task.childCount}")
                 task.error?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it.take(80)) }
             }
-            container.notifications.notifyTask(kind, task.id, title, body, task.executionSession().orEmpty(), terminal)
+            container.notifications.notifyTask(kind, task.id, title, body, task.executionSession().orEmpty(), terminal, background = false)
         }
         taskFingerprints.keys.retainAll(seen)
         if (tasks.isNotEmpty() || progressWatchReady) progressWatchReady = true
@@ -1377,7 +1388,7 @@ class AppViewModel(
             progress?.let { append(" · ${(it * 100).toInt().coerceIn(0, 100)}%") }
             if (message.isNotBlank()) append(" · ").append(message.take(80))
         }
-        container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal)
+        container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal, background = false)
     }
 
     /** Reads both explicit and legacy metadata session links from task events. */
@@ -2260,7 +2271,7 @@ class AppViewModel(
     }
 
     fun openSessionFromNotification(sessionId: String) {
-        openSession(sessionId)
+        openSession(sessionId, keepWorkCard = focusedCardBelongsTo(sessionId))
     }
 
     /**
@@ -2268,7 +2279,7 @@ class AppViewModel(
      * Task detail state is cleared first so Android back returns to the normal
      * chat screen instead of a stale task detail overlay.
      */
-    fun openSession(sessionId: String?) {
+    fun openSession(sessionId: String?, keepWorkCard: Boolean = false) {
         val target = sessionId?.trim().orEmpty()
         if (target.isBlank()) {
             _ui.update { it.copy(snackbarMessage = "这个任务还没有关联执行会话") }
@@ -2277,7 +2288,18 @@ class AppViewModel(
         clearSelectedTask()
         clearSelectedBackgroundTask()
         navigate(AppDestination.Chat)
-        selectSession(target)
+        selectSession(target, keepWorkCard = keepWorkCard && focusedCardBelongsTo(target))
+    }
+
+    private fun focusedCardBelongsTo(sessionId: String): Boolean {
+        val state = _ui.value
+        return keepFocusedWorkCard(
+            state.focusedWorkCardId,
+            state.focusedWorkCardBackground,
+            sessionId,
+            state.tasks,
+            state.backgroundTasks,
+        )
     }
 
     /** Opens the execution conversation associated with a unified or legacy task. */
@@ -2288,6 +2310,65 @@ class AppViewModel(
     /** Opens the conversation used by an autonomy queue task, when present. */
     fun openBackgroundSession(sessionId: String?) {
         openSession(sessionId)
+    }
+
+    /**
+     * Opens the one card a notification is about. The module list stays
+     * available from navigation; this path does not land there.
+     */
+    fun openWorkCardFromNotification(taskId: String, background: Boolean) {
+        val id = taskId.trim()
+        if (id.isBlank()) return
+        focusWorkCard(id, background)
+        navigate(AppDestination.Chat)
+        viewModelScope.launch {
+            refreshTasksNow()
+            refreshBackgroundNow()
+        }
+    }
+
+    fun focusWorkCard(taskId: String, background: Boolean) {
+        val id = taskId.trim()
+        if (id.isBlank()) return
+        _ui.update {
+            it.copy(
+                focusedWorkCardId = id,
+                focusedWorkCardBackground = background,
+            )
+        }
+    }
+
+    private enum class CancelSurface { Card, Detail }
+
+    fun clearFocusedWorkCard() {
+        _ui.update { it.copy(focusedWorkCardId = null, focusedWorkCardBackground = false) }
+    }
+
+    /** Hides this card in chat. The task remains in the task list and on the computer. */
+    fun dismissWorkCard(taskId: String) {
+        val id = taskId.trim()
+        if (id.isBlank()) return
+        val state = _ui.value
+        val placeholder = state.focusedWorkCardId == id && visibleWorkCard(
+            id,
+            state.focusedWorkCardBackground,
+            state.tasks,
+            state.backgroundTasks,
+            state.settings.sessionId,
+            state.dismissedWorkCardIds,
+        )?.loading == true
+        if (placeholder) {
+            clearFocusedWorkCard()
+            return
+        }
+        container.settingsRepository.dismissWorkCard(id)
+        _ui.update {
+            it.copy(
+                dismissedWorkCardIds = dismissedWorkCardIds(it.dismissedWorkCardIds, id),
+                focusedWorkCardId = if (it.focusedWorkCardId == id) null else it.focusedWorkCardId,
+                focusedWorkCardBackground = if (it.focusedWorkCardId == id) false else it.focusedWorkCardBackground,
+            )
+        }
     }
 
     fun openDestinationFromNotification(destination: String) {
@@ -2925,7 +3006,7 @@ class AppViewModel(
         }
     }
 
-    fun selectSession(id: String) {
+    fun selectSession(id: String, keepWorkCard: Boolean = false) {
         val target = id.ifBlank { "android-main" }
         val leaving = currentSessionId()
         if (leaving != target) parkCurrentTurn(leaving)
@@ -2941,6 +3022,7 @@ class AppViewModel(
             runCatching { container.sessionCache.touchOpened(connection.apiBase, target, apiKey = connection.apiKey) }
         }
         container.settingsRepository.update { it.copy(sessionId = target) }
+        if (leaving != target && !keepWorkCard) clearFocusedWorkCard()
         resetAssistantStream()
         toolStepIndex.clear()
         val parked = parkedTurns.remove(target)
@@ -4747,15 +4829,36 @@ class AppViewModel(
         }
     }
 
+    /** Cancels the task behind the pinned chat card. Detail pages stay closed. */
+    fun cancelWorkCard(taskId: String) {
+        val task = _ui.value.tasks.firstOrNull { it.id == taskId }
+        if (task == null) {
+            _ui.update { it.copy(snackbarMessage = "列表里已经没有这条，没法从卡片取消。") }
+            return
+        }
+        cancelTask(task, surface = CancelSurface.Card)
+    }
+
     fun cancelTask(task: TaskSummary) {
+        cancelTask(task, surface = CancelSurface.Detail)
+    }
+
+    private fun cancelTask(task: TaskSummary, surface: CancelSurface) {
         if (task.status.isTerminalTaskStatus()) return
         viewModelScope.launch {
             _ui.update { it.copy(taskDetailError = null) }
             val result = container.api.cancelTask(task.id, task.origin)
             if (result.isSuccess) {
                 refreshTasksNow()
+                if (surface == CancelSurface.Card) {
+                    _ui.update { it.copy(snackbarMessage = "已取消") }
+                }
             } else {
-                _ui.update { it.copy(taskDetailError = result.exceptionOrNull()?.message ?: "Cancel request failed") }
+                val message = if (surface == CancelSurface.Card) "没能取消。重试这一条。" else result.exceptionOrNull()?.message ?: "没能取消。重试这一条。"
+                _ui.update {
+                    if (surface == CancelSurface.Card) it.copy(snackbarMessage = message)
+                    else it.copy(taskDetailError = message)
+                }
             }
         }
     }

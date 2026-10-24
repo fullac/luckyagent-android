@@ -385,7 +385,7 @@ private fun BackgroundTaskCard(
             TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开结果")
             }
         }
     }
@@ -465,9 +465,9 @@ private fun BackgroundDetailContent(state: AppUiState, task: AutonomyTaskDetail,
                     ) {
                         Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Open agent chat")
+                        Text("打开结果")
                     }
-                }
+                } ?: Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 BackgroundDetailPayload("Last activity", formatBackgroundTime(task.lastActivityAt))
                 BackgroundDetailPayload("Checkpoint", if (task.checkpointPresent) "Saved · ${formatBackgroundTime(task.checkpointAt)}" else "No checkpoint")
                 task.verification?.takeIf { it.isNotBlank() }?.let { BackgroundDetailPayload("Verification", it) }

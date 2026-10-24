@@ -117,11 +117,10 @@ Key 存在 `EncryptedSharedPreferences`，不进 URL / 默认不进 body 日志�
 
 1. 电脑启动 API：`lh serve`（监听 `0.0.0.0:9090`，配好 `server.api_keys`）
 2. 手机与电脑同一局域网（或 Tailscale）
-3. 安装 debug APK 后打开 App → **Settings**
-4. API Base 填 `http://<电脑局域网IP>:9090`（模拟器可用 `http://10.0.2.2:9090`）
-5. 填 API Key，选择 Bearer 或 X-API-Key
-6. 点「保存并探测」看 Health；点「重连 WS」
-7. 回 **Chat** 发一条消息；侧栏可搜 session / 切历史
+3. 安装 debug APK 后打开 App。没有地址和密钥时，全屏先要求扫码或手动填写。
+4. 扫电脑上 `lh qr` 的码，或填写 `http://<电脑局域网IP>:9090` 和密钥。以 `Bearer ` 开头的密钥按 Bearer 发送，其余按 `X-API-Key`。
+5. 连上后会显示「已连接」和电脑名称，然后进入聊天。成功以带密钥的会话列表为准，不把免鉴权的健康检查当成已连接。失败时可以重试、改地址或重新扫码。已经保存过密钥但这次还没验证通过时，也会停在这一步。
+6. 回 **Chat** 发一条消息；侧栏可搜 session / 切历史
 8. **Memory** 可 recall；工具调用应出现卡片
 
 

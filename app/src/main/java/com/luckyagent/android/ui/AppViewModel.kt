@@ -75,13 +75,17 @@ import com.luckyagent.android.data.api.toTaskSummary
 import com.luckyagent.android.data.api.WsChatHandle
 import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
+import com.luckyagent.android.data.settings.RuntimeEndpoint
+import com.luckyagent.android.ui.screens.ComputerLink
+import com.luckyagent.android.ui.screens.connectionFailureMessage
+import com.luckyagent.android.ui.screens.connectionHostLabel
+import com.luckyagent.android.ui.screens.manualConnection
 import com.luckyagent.android.data.standalone.StandaloneMessage
 import com.luckyagent.android.data.standalone.StandaloneSession
 import com.luckyagent.android.data.standalone.StandaloneSettings
 import com.luckyagent.android.data.standalone.buildStandaloneMessages
 import com.luckyagent.android.data.standalone.compactStandaloneSession
 import com.luckyagent.android.data.standalone.standaloneContextTokens
-import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.data.work.AgentTaskWork
 import com.luckyagent.android.BuildConfig
@@ -246,6 +250,10 @@ data class AppUiState(
     val reconnectInfo: String? = null,
     val healthText: String? = null,
     val healthOk: Boolean? = null,
+    /** Shown by the first-connection step. Null when that step has nothing new to say. */
+    val connectionNotice: String? = null,
+    /** Ready only after an authenticated request succeeds in this session. */
+    val computerLink: ComputerLink = ComputerLink.Unknown,
     val memoryEntries: List<MemoryEntry> = emptyList(),
     val memoryStats: MemoryStats? = null,
     val memoryGraphNodes: List<MemoryGraphNode> = emptyList(),
@@ -365,6 +373,7 @@ class AppViewModel(
 
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
+    private var connectionVerifyJob: Job? = null
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
     private var cronPollingJob: Job? = null
@@ -445,6 +454,7 @@ class AppViewModel(
                         current.settings.useBearer != s.useBearer
                     current.copy(
                         settings = s,
+                        computerLink = if (endpointChanged) ComputerLink.Unknown else current.computerLink,
                         pendingQuote = if (current.settings.sessionId != s.sessionId) null else current.pendingQuote,
                         models = if (endpointChanged) emptyList() else current.models,
                         activeModels = if (endpointChanged) emptyMap() else current.activeModels,
@@ -465,6 +475,11 @@ class AppViewModel(
                     )
                 }
                 if (endpointChanged) resetForEndpointChange(s)
+                val shouldVerify = s.connectionMode != "standalone" &&
+                    s.apiBase.isNotBlank() &&
+                    s.apiKey.isNotBlank() &&
+                    (endpointChanged || _ui.value.computerLink == ComputerLink.Unknown)
+                if (shouldVerify) verifyComputerConnection()
             }
         }
         viewModelScope.launch {
@@ -474,7 +489,18 @@ class AppViewModel(
         }
         viewModelScope.launch {
             container.wsClient.lastError.collect { err ->
-                _ui.update { it.copy(socketError = err) }
+                val rejected = err?.contains("认证失败") == true
+                _ui.update {
+                    it.copy(
+                        socketError = err,
+                        computerLink = if (rejected) ComputerLink.Failed else it.computerLink,
+                        connectionNotice = if (rejected) {
+                            "密钥没有通过这台电脑的验证。可以重试、改地址或重新扫码。"
+                        } else {
+                            it.connectionNotice
+                        },
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -2589,14 +2615,20 @@ class AppViewModel(
     }
 
     fun reportPairingScanFailed(message: String = "这张图里没有二维码") {
-        _ui.update { it.copy(activityLine = message) }
+        _ui.update { it.copy(activityLine = message, connectionNotice = message, healthOk = false) }
     }
 
     fun applyPairingQr(raw: String) {
         val endpoint = try {
             com.luckyagent.android.data.settings.PairingQr.parse(raw).toEndpoint()
         } catch (error: Exception) {
-            _ui.update { it.copy(activityLine = error.message ?: "这不是 LuckyAgent 配对码") }
+            _ui.update {
+                it.copy(
+                    activityLine = error.message ?: "这不是 LuckyAgent 配对码",
+                    connectionNotice = error.message ?: "这不是 LuckyAgent 配对码。可以重新扫码，或改成手动填写。",
+                    healthOk = false,
+                )
+            }
             return
         }
         updateSettings { settings ->
@@ -2604,7 +2636,39 @@ class AppViewModel(
             settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = endpoint.id)
         }
         refreshSessions()
-        _ui.update { it.copy(activityLine = "已写入 ${endpoint.apiBase}，临时 key 在 API 重启后失效") }
+        verifyComputerConnection(endpoint.name)
+    }
+
+    fun submitFirstConnection(address: String, key: String) {
+        val parsed = manualConnection(address, key)
+        if (parsed == null) {
+            _ui.update {
+                it.copy(
+                    healthOk = false,
+                    connectionNotice = "地址需要以 http:// 或 https:// 开头，并填写密钥。",
+                )
+            }
+            return
+        }
+        val label = connectionHostLabel(parsed.apiBase)
+        updateSettings { settings ->
+            val currentId = settings.activeRuntimeEndpointId.ifBlank { "endpoint-default" }
+            val endpoint = RuntimeEndpoint(
+                id = currentId,
+                name = label,
+                apiBase = parsed.apiBase,
+                apiKey = parsed.apiKey,
+                useBearer = parsed.useBearer,
+            )
+            val endpoints = if (settings.runtimeEndpoints.any { it.id == currentId }) {
+                settings.runtimeEndpoints.map { if (it.id == currentId) endpoint else it }
+            } else {
+                settings.runtimeEndpoints + endpoint
+            }
+            settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = currentId)
+        }
+        refreshSessions()
+        verifyComputerConnection(label)
     }
 
     fun saveRuntimeEndpoint(endpoint: RuntimeEndpoint) {
@@ -2749,10 +2813,46 @@ class AppViewModel(
             _ui.update {
                 it.copy(
                     healthOk = result.isSuccess,
-                    healthText = result.getOrElse { e -> e.message ?: "health failed" },
-                    activityLine = if (result.isSuccess) "health ok" else "health failed",
+                    healthText = result.getOrElse { error -> error.message ?: "health failed" },
                 )
             }
+        }
+    }
+
+    /**
+     * Confirms the saved address and key with an authenticated request.
+     * /health/live does not check the key, so it cannot open the chat gate.
+     */
+    fun verifyComputerConnection(connectedName: String? = null) {
+        val settings = container.settingsRepository.snapshot()
+        if (settings.connectionMode == "standalone") return
+        if (settings.apiBase.isBlank() || settings.apiKey.isBlank()) {
+            _ui.update {
+                it.copy(
+                    computerLink = ComputerLink.Failed,
+                    connectionNotice = "先填写电脑地址和密钥。",
+                )
+            }
+            return
+        }
+        val name = connectionHostLabel(settings.apiBase, connectedName)
+        connectionVerifyJob?.cancel()
+        _ui.update { it.copy(computerLink = ComputerLink.Checking, connectionNotice = "正在连接…") }
+        connectionVerifyJob = viewModelScope.launch {
+            val result = container.api.listSessions()
+            if (!currentCacheConnectionMatches(settings.apiBase, settings.apiKey)) return@launch
+            val connected = "已连接 $name"
+            val failed = connectionFailureMessage(result.exceptionOrNull())
+            _ui.update {
+                it.copy(
+                    computerLink = if (result.isSuccess) ComputerLink.Ready else ComputerLink.Failed,
+                    connectionNotice = if (result.isSuccess) connected else failed,
+                    snackbarMessage = if (result.isSuccess) connected else it.snackbarMessage,
+                    activityLine = if (result.isSuccess) connected else failed,
+                    healthText = result.exceptionOrNull()?.message ?: it.healthText,
+                )
+            }
+            if (result.isSuccess) connectSocket(force = true)
         }
     }
 

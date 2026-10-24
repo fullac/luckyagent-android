@@ -3481,10 +3481,10 @@ private fun ModelSwitchButton(
     Row(
         modifier = Modifier
             .widthIn(max = 180.dp)
-            .heightIn(min = 32.dp)
+            .heightIn(min = 48.dp)
             .clickable(enabled = !switching, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = "切换模型" }
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {

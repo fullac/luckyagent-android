@@ -279,29 +279,52 @@ fun DetailDisclosure(label: String, value: String?, json: Boolean = false, previ
 
 @Composable
 fun StatusChip(status: String, label: String = statusChipLabel(status)) {
-    val raw = status.lowercase()
-    val color = when (raw) {
-        "failed", "failure", "error", "blocked" -> MaterialTheme.colorScheme.error
-        "retrying", "warning", "reconnecting" -> com.luckyagent.android.ui.theme.CloverWarning
-        "connected", "success", "completed", "done", "running", "in_progress", "active", "enabled", "healthy" -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    val tone = statusChipTone(status, label)
+    val color = when (tone) {
+        StatusChipTone.Error -> MaterialTheme.colorScheme.error
+        StatusChipTone.Warning -> com.luckyagent.android.ui.theme.CloverWarning
+        StatusChipTone.Positive -> MaterialTheme.colorScheme.primary
+        StatusChipTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(color = color.copy(alpha = .1f), shape = RoundedCornerShape(999.dp)) {
         Text(label, color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
     }
 }
 
+enum class StatusChipTone { Error, Warning, Positive, Neutral }
+
+/**
+ * Color key for a chip. Callers may pass an English status or an already
+ * translated label, so both are normalized before the color is chosen.
+ */
+fun statusChipTone(status: String, label: String = statusChipLabel(status)): StatusChipTone {
+    val shown = label.trim()
+    when (shown) {
+        "失败", "需要处理" -> return StatusChipTone.Error
+        "注意", "重试中", "超时" -> return StatusChipTone.Warning
+        "成功", "已完成", "进行中", "运行中", "已连接", "已启用", "已接通" -> return StatusChipTone.Positive
+        "已停止" -> return StatusChipTone.Neutral
+    }
+    return when (status.trim().lowercase()) {
+        "failed", "failure", "error", "blocked" -> StatusChipTone.Error
+        "retrying", "warning", "reconnecting", "timeout" -> StatusChipTone.Warning
+        "connected", "success", "completed", "done", "running", "in_progress", "in-progress", "active", "enabled", "healthy" -> StatusChipTone.Positive
+        else -> StatusChipTone.Neutral
+    }
+}
+
 /** Chinese label for a status chip. Callers may already pass a Chinese sentence. */
 fun statusChipLabel(status: String): String = when (status.trim().lowercase()) {
-    "success", "completed", "done", "healthy" -> "成功"
+    "success", "completed", "done", "healthy", "succeeded" -> "已完成"
     "failure", "failed", "error" -> "失败"
     "running", "in_progress", "in-progress", "active" -> "进行中"
-    "pending", "queued" -> "排队中"
+    "pending", "queued", "ready" -> "排队中"
     "blocked", "waiting" -> "需要处理"
     "timeout" -> "超时"
     "cancelled", "canceled" -> "已取消"
     "connected" -> "已连接"
     "enabled" -> "已启用"
+    "stopped", "已停止" -> "已停止"
     "retrying", "reconnecting" -> "重试中"
     "warning" -> "注意"
     "unknown", "" -> "未知"

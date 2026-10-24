@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import com.luckyagent.android.ui.components.statusChipLabel
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -788,16 +789,7 @@ internal fun String.taskIsActive(): Boolean = when (lowercase()) {
     else -> false
 }
 
-internal fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
-    "pending", "queued" -> "排队中"
-    "running", "in_progress", "in-progress" -> "进行中"
-    "blocked", "waiting" -> "需要处理"
-    "completed", "done" -> "已完成"
-    "failed", "error" -> "失败"
-    "timeout" -> "超时"
-    "cancelled", "canceled" -> "已取消"
-    else -> status.ifBlank { "未知" }
-}
+internal fun friendlyTaskStatus(status: String): String = statusChipLabel(status)
 
 internal fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
     "single" -> "Single step"

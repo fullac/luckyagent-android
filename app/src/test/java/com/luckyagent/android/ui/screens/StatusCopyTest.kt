@@ -1,7 +1,9 @@
 package com.luckyagent.android.ui.screens
 
 import com.luckyagent.android.data.api.SocketState
+import com.luckyagent.android.ui.components.StatusChipTone
 import com.luckyagent.android.ui.components.statusChipLabel
+import com.luckyagent.android.ui.components.statusChipTone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -58,11 +60,26 @@ class StatusCopyTest {
     }
 
     @Test fun statusChipUsesChineseIncludingUnknown() {
-        assertEquals("成功", statusChipLabel("success"))
+        assertEquals("已完成", statusChipLabel("success"))
+        assertEquals("已完成", statusChipLabel("completed"))
         assertEquals("失败", statusChipLabel("failure"))
         assertEquals("未知", statusChipLabel("unknown"))
         assertEquals("未知", statusChipLabel("  "))
-        assertEquals("运行中", statusChipLabel("运行中"))
+        assertEquals("进行中", statusChipLabel("running"))
+        assertEquals("已停止", statusChipLabel("stopped"))
+        assertEquals("已完成", friendlyTaskStatus("completed"))
+        assertEquals(statusChipLabel("failed"), friendlyTaskStatus("failed"))
+    }
+
+    @Test fun statusChipKeepsColorWhenTheCallerAlreadyTranslated() {
+        assertEquals(StatusChipTone.Error, statusChipTone("失败"))
+        assertEquals(StatusChipTone.Error, statusChipTone("需要处理"))
+        assertEquals(StatusChipTone.Positive, statusChipTone("已完成"))
+        assertEquals(StatusChipTone.Positive, statusChipTone("运行中"))
+        assertEquals(StatusChipTone.Positive, statusChipTone("running", "进行中"))
+        assertEquals(StatusChipTone.Neutral, statusChipTone("stopped", "已停止"))
+        assertEquals(StatusChipTone.Error, statusChipTone("failed", friendlyTaskStatus("failed")))
+        assertEquals(StatusChipTone.Positive, statusChipTone("completed", friendlyTaskStatus("completed")))
     }
 
     @Test fun pageTitlesMatchNavigation() {

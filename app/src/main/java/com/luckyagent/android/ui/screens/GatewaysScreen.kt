@@ -212,7 +212,7 @@ private fun GatewayCard(
                 option.description,
                 if (gateway.connected == true) "已接通" else null,
             ).joinToString(" · "),
-            trailing = { StatusChip(if (gateway.running) "运行中" else "已停止") },
+            trailing = { StatusChip(if (gateway.running) "running" else "stopped") },
         )
         Text(option.configHint, color = CloverText3, style = MaterialTheme.typography.bodySmall)
         gateway.stats?.let { stats ->

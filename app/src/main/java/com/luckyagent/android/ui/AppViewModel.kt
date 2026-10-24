@@ -579,7 +579,7 @@ class AppViewModel(
                 progressSteps = emptyList(),
                 liveSummary = null,
                 processNotice = null,
-                activityLine = "loading history…",
+                activityLine = "正在读取这轮对话",
             )
         }
         restoreOutboundQueue()
@@ -771,7 +771,7 @@ class AppViewModel(
                                 _ui.update {
                                     it.copy(
                                         isResponding = false,
-                                        activityLine = "cancelled",
+                                        activityLine = "已取消。可以重新发送这一条。",
                                         liveSummary = null,
                                         processNotice = "已取消",
                                         progressSteps = it.progressSteps.map { step ->
@@ -827,7 +827,7 @@ class AppViewModel(
                                         liveSummary = null,
                                         processNotice = "请求失败",
                                         progressSteps = it.progressSteps.map { step ->
-                                            if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
+                                            if (step.status == ProgressStatus.Active) step.copy(label = "请求失败", status = ProgressStatus.Failed) else step
                                         },
                                     )
                                 }
@@ -878,7 +878,7 @@ class AppViewModel(
                                         _ui.update { current ->
                                             current.copy(
                                                 isResponding = false,
-                                                activityLine = "complete",
+                                                activityLine = "已回复",
                                                 liveSummary = null,
                                                 processNotice = null,
                                                 progressSteps = current.progressSteps.map { step ->
@@ -896,7 +896,7 @@ class AppViewModel(
                                     val summary = extractField(env.data, "summary")?.trim().orEmpty()
                                     val line = summary.ifBlank { message?.trim().orEmpty() }
                                     if (line.isNotEmpty()) updatePhase("status", line)
-                                    else _ui.update { it.copy(activityLine = state ?: env.type) }
+                                    else _ui.update { it.copy(activityLine = "正在回复") }
                                 }
                             }
                         }
@@ -923,7 +923,7 @@ class AppViewModel(
                         }
                         else -> {
                             if (foreground && env.error != null) {
-                                _ui.update { it.copy(activityLine = env.error) }
+                                _ui.update { it.copy(activityLine = "回复失败。回到聊天后重试这一条。") }
                             }
                         }
                     }
@@ -934,7 +934,7 @@ class AppViewModel(
                     // take down the whole ViewModel. Keep the error generic because
                     // event payloads can contain credentials or user content.
                     _ui.update {
-                        it.copy(activityLine = "WebSocket event ignored · ${error::class.simpleName ?: "error"}")
+                        it.copy(activityLine = "没能读到这条状态。重新连接后再试。")
                     }
                 }
             }
@@ -1511,7 +1511,7 @@ class AppViewModel(
         resetAssistantStream()
         currentTurnId = "turn-${System.currentTimeMillis()}"
         anchorForegroundTurn()
-        _ui.update { it.copy(isResponding = true, activityLine = "Next message queued · continuing") }
+        _ui.update { it.copy(isResponding = true, activityLine = "正在回复") }
     }
 
     /**
@@ -1554,7 +1554,7 @@ class AppViewModel(
             output = null,
         )
         upsertProgress(ChatProgressStep("tool-$id", "Using $name", ProgressStatus.Active))
-        _ui.update { it.copy(activityLine = "tool · $name") }
+        _ui.update { it.copy(activityLine = "正在使用$name") }
     }
 
     private fun handleToolResult(data: kotlinx.serialization.json.JsonElement?) {
@@ -1610,7 +1610,7 @@ class AppViewModel(
             ),
         )
         _ui.update {
-            it.copy(activityLine = if (success) "tool done · $name" else "tool failed · $name")
+            it.copy(activityLine = if (success) "已完成$name" else "${name}失败。回到聊天后重试这一条。")
         }
     }
 
@@ -2760,7 +2760,7 @@ class AppViewModel(
             wsUrl = endpoint.wsUrl.trim(),
         )
         if (normalized.apiBase.isBlank()) {
-            _ui.update { it.copy(activityLine = "API base URL is required") }
+            _ui.update { it.copy(activityLine = "未连接。打开设置填写服务地址。") }
             return
         }
         updateSettings { settings ->
@@ -2783,7 +2783,7 @@ class AppViewModel(
     fun deleteRuntimeEndpoint(id: String) {
         val settings = container.settingsRepository.snapshot()
         if (settings.runtimeEndpoints.size <= 1) {
-            _ui.update { it.copy(activityLine = "Keep at least one runtime endpoint") }
+            _ui.update { it.copy(activityLine = "至少保留一台电脑。") }
             return
         }
         val endpoints = settings.runtimeEndpoints.filterNot { it.id == id }
@@ -2894,7 +2894,8 @@ class AppViewModel(
             _ui.update {
                 it.copy(
                     healthOk = result.isSuccess,
-                    healthText = result.getOrElse { error -> error.message ?: "health failed" },
+                    healthText = result.getOrElse { error -> error.message ?: "没能连上这台电脑" },
+                    activityLine = if (result.isSuccess) "已连接" else "未连接。重新连接后再试。",
                 )
             }
         }
@@ -3059,7 +3060,7 @@ class AppViewModel(
                 luckySegments = 0,
                 luckyAttachments = 0,
                 luckyPending = luckyPending.values.filter { it.sessionId == target },
-                activityLine = "loading history…",
+                activityLine = "正在读取这轮对话",
             )
         }
         container.wsClient.replaySession(target)
@@ -3092,9 +3093,9 @@ class AppViewModel(
                 historyRefreshing = refreshing,
                 historyLoadingMore = loadingMore,
                 activityLine = if (reset) {
-                    if (it.bubbles.isEmpty()) "loading history…" else "正在刷新"
+                    if (it.bubbles.isEmpty()) "正在读取这轮对话" else "正在刷新"
                 } else {
-                    "loading older history…"
+                    "正在读取更早的对话"
                 },
             )
         }
@@ -3115,7 +3116,7 @@ class AppViewModel(
                             it.copy(
                                 bubbles = pendingOutboundBubbles(target),
                                 historyLoading = true,
-                                activityLine = "loading history…",
+                                activityLine = "正在读取这轮对话",
                             )
                         }
                     }
@@ -3308,7 +3309,7 @@ class AppViewModel(
                     historyLoading = false,
                     historyRefreshing = false,
                     historyLoadingMore = false,
-                    activityLine = "history: $message",
+                    activityLine = "没能读到这轮对话。回到聊天后重试这一条。",
                 )
             }
         } else {
@@ -3410,7 +3411,7 @@ class AppViewModel(
                     activityLine = if (historyMessages.isNotEmpty()) {
                         SessionCachePolicy.REFRESH_FAILED_LABEL
                     } else {
-                        "history: ${error.message}"
+                        "没能读到这轮对话。回到聊天后重试这一条。"
                     },
                     showingOfflineCache = historyMessages.isNotEmpty(),
                 )
@@ -3500,7 +3501,7 @@ class AppViewModel(
             val shownActivity = if (offline) {
                 activity
             } else if (activeRuns[sessionId]?.isNotEmpty() == true) {
-                "Agent running · history loaded"
+                "正在回复"
             } else {
                 "loaded ${historyMessages.size} messages"
             }
@@ -3592,7 +3593,7 @@ class AppViewModel(
             current.copy(
                 bubbles = shown,
                 outboundQueue = pendingItems,
-                activityLine = if (running && !offline) "Agent running · history loaded" else activity,
+                activityLine = if (running && !offline) "正在回复" else activity,
                 isResponding = running,
                 historyLoading = false,
                 historyRefreshing = false,
@@ -3767,7 +3768,7 @@ class AppViewModel(
 
     private fun historyLoadedLine(sessionId: String): String {
         val running = activeRuns[sessionId]?.isNotEmpty() == true
-        return if (running) "Agent running · history loaded" else "loaded ${historyMessages.size} messages"
+        return if (running) "正在回复" else "已读到这轮对话"
     }
 
     private fun historyToBubbles(messages: List<ProviderMessage>, startIndex: Int = 0): List<ChatBubble> {
@@ -4452,7 +4453,7 @@ class AppViewModel(
 
     private fun sendRuntimeCommand(rawText: String, command: ParsedRuntimeCommand) {
         if (isCurrentSessionRunActive()) {
-            _ui.update { it.copy(activityLine = "Agent 正在运行，请等待完成或发送 /stop") }
+            _ui.update { it.copy(activityLine = "正在回复。等这一轮结束，或发送 /stop。") }
             return
         }
         if (_ui.value.commandExecuting) return
@@ -4466,7 +4467,7 @@ class AppViewModel(
                 commandExecuting = true,
                 commandExecution = null,
                 commandsError = null,
-                activityLine = "Running /${command.name}",
+                activityLine = "正在执行 /${command.name}",
                 progressSteps = emptyList(),
             )
         }
@@ -4539,7 +4540,7 @@ class AppViewModel(
                 commandExecuting = false,
                 commandExecution = execution,
                 commandsError = error,
-                activityLine = if (success) "/$command completed" else "/$command failed",
+                activityLine = if (success) "已完成 /$command" else "/$command 失败。重试这一条。",
                 progressSteps = emptyList(),
             )
         }
@@ -4567,7 +4568,7 @@ class AppViewModel(
         finishAssistant(null)
         _ui.update {
             it.copy(
-                activityLine = "cancel requested",
+                activityLine = "已取消。可以重新发送这一条。",
                 isResponding = false,
                 liveSummary = null,
                 processNotice = "已取消",
@@ -4785,7 +4786,7 @@ class AppViewModel(
         val summary = _ui.value.tasks.firstOrNull { it.id == id }
             ?: container.api.getTaskRecord(id).getOrNull()?.toTaskSummary()
         if (summary == null) {
-            _ui.update { if (it.selectedTaskId != id) it else it.copy(taskDetailLoading = false, taskDetailError = "Task not found") }
+            _ui.update { if (it.selectedTaskId != id) it else it.copy(taskDetailLoading = false, taskDetailError = "没找到这个任务。回到聊天后重试这一条。") }
             return
         }
         val detailResult = if (summary.origin == TaskOrigin.Legacy) {
@@ -5050,7 +5051,7 @@ class AppViewModel(
                         historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         outboundQueue = outboundChatQueue.items(session.id),
-                        activityLine = "new session · ${session.id}",
+                        activityLine = "已新建会话",
                         pendingQuote = null,
                         contextInspect = null,
                         contextInspectError = null,
@@ -5060,7 +5061,7 @@ class AppViewModel(
                 refreshSessions()
                 refreshContextInspect()
             }.onFailure { e ->
-                _ui.update { it.copy(activityLine = "create session: ${e.message}") }
+                _ui.update { it.copy(activityLine = "没能新建会话。重试这一条。") }
             }
         }
     }
@@ -5071,10 +5072,10 @@ class AppViewModel(
         viewModelScope.launch {
             val result = container.api.renameSession(id, trimmed)
             result.onSuccess {
-                _ui.update { it.copy(activityLine = "renamed · $trimmed") }
+                _ui.update { it.copy(activityLine = "已重命名") }
                 refreshSessions()
             }.onFailure { e ->
-                _ui.update { it.copy(activityLine = "rename: ${e.message}") }
+                _ui.update { it.copy(activityLine = "没能重命名。重试这一条。") }
             }
         }
     }
@@ -5089,13 +5090,13 @@ class AppViewModel(
                             sessions = state.sessions.map { session ->
                                 if (session.id == id) session.copy(pinned = pinned) else session
                             },
-                            activityLine = if (pinned) "pinned · $id" else "unpinned · $id",
+                            activityLine = if (pinned) "已置顶" else "已取消置顶",
                         )
                     }
                     refreshSessions()
                 }
                 .onFailure { e ->
-                    _ui.update { it.copy(activityLine = "pin: ${e.message}") }
+                    _ui.update { it.copy(activityLine = "没能改置顶。重试这一条。") }
                 }
         }
     }
@@ -5111,13 +5112,13 @@ class AppViewModel(
                             sessions = state.sessions.map { session ->
                                 if (session.id == id) session.copy(project = trimmed.ifBlank { null }) else session
                             },
-                            activityLine = if (trimmed.isEmpty()) "project cleared · $id" else "project · $trimmed",
+                            activityLine = if (trimmed.isEmpty()) "已清除项目分类" else "已保存项目分类",
                         )
                     }
                     refreshSessions()
                 }
                 .onFailure { e ->
-                    _ui.update { it.copy(activityLine = "project: ${e.message}") }
+                    _ui.update { it.copy(activityLine = "没能保存项目分类。重试这一条。") }
                 }
         }
     }
@@ -5149,7 +5150,7 @@ class AppViewModel(
                                     historyLoading = false,
                                     historyRefreshing = false,
                                     historyHasMore = false,
-                                    activityLine = "deleted · $id",
+                                    activityLine = "已删除会话",
                                 )
                             }
                         }
@@ -5157,13 +5158,13 @@ class AppViewModel(
                     _ui.update {
                         it.copy(
                             sessions = remaining,
-                            activityLine = "deleted · $id",
+                            activityLine = "已删除会话",
                         )
                     }
                     refreshSessions()
                 }
                 .onFailure { e ->
-                    _ui.update { it.copy(activityLine = "delete: ${e.message}") }
+                    _ui.update { it.copy(activityLine = "没能删除会话。重试这一条。") }
                 }
         }
     }
@@ -5269,7 +5270,7 @@ class AppViewModel(
                         skillsDir = payload.skillsDir,
                         skillsJson = null,
                         skillsError = null,
-                        activityLine = "skills · ${payload.skills.size}",
+                        activityLine = "已读到技能",
                     )
                 } else {
                     it.copy(
@@ -5294,7 +5295,7 @@ class AppViewModel(
                         gateways = list,
                         gatewaysJson = null,
                         gatewaysError = null,
-                        activityLine = "gateways · ${list.size}",
+                        activityLine = "已读到渠道",
                     )
                 } else {
                     it.copy(
@@ -5318,8 +5319,8 @@ class AppViewModel(
                     it.copy(
                         gatewayAction = null,
                         gatewayActionError = null,
-                        activityLine = "$name · started",
-                        snackbarMessage = "$name gateway started",
+                        activityLine = "渠道已启动",
+                        snackbarMessage = "$name 已启动",
                     )
                 }
                 refreshGateways()
@@ -5327,8 +5328,8 @@ class AppViewModel(
                 _ui.update {
                     it.copy(
                         gatewayAction = null,
-                        gatewayActionError = result.exceptionOrNull()?.message ?: "Unable to start $name gateway",
-                        activityLine = "$name · start failed",
+                        gatewayActionError = result.exceptionOrNull()?.message ?: "没能启动 $name。重试这一条。",
+                        activityLine = "渠道没能启动。重试这一条。",
                     )
                 }
             }
@@ -5346,8 +5347,8 @@ class AppViewModel(
                     it.copy(
                         gatewayAction = null,
                         gatewayActionError = null,
-                        activityLine = "$name · stopped",
-                        snackbarMessage = "$name gateway stopped",
+                        activityLine = "渠道已停止",
+                        snackbarMessage = "$name 已停止",
                     )
                 }
                 refreshGateways()
@@ -5355,8 +5356,8 @@ class AppViewModel(
                 _ui.update {
                     it.copy(
                         gatewayAction = null,
-                        gatewayActionError = result.exceptionOrNull()?.message ?: "Unable to stop $name gateway",
-                        activityLine = "$name · stop failed",
+                        gatewayActionError = result.exceptionOrNull()?.message ?: "没能停止 $name。重试这一条。",
+                        activityLine = "渠道没能停止。重试这一条。",
                     )
                 }
             }
@@ -5370,7 +5371,7 @@ class AppViewModel(
                 _ui.update {
                     it.copy(
                         trajectory = null,
-                        trajectoryError = "Select a session in Chat first",
+                        trajectoryError = "先回聊天打开一个会话。",
                         trajectoryLoading = false,
                         trajectoryJson = null,
                     )
@@ -5387,12 +5388,7 @@ class AppViewModel(
                         trajectory = trace,
                         trajectoryJson = null,
                         trajectoryError = null,
-                        activityLine = buildString {
-                            append("trajectory · ${trace?.tools?.size ?: 0}")
-                            trace?.totalCalls?.takeIf { it > trace.tools.size }?.let { append("/$it") }
-                            append(" tools")
-                            if (trace?.hasMore == true) append(" · showing latest 100")
-                        },
+                        activityLine = "已读到本轮轨迹",
                     )
                 } else {
                     it.copy(

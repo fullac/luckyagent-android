@@ -208,6 +208,7 @@ import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
+import com.luckyagent.android.ui.components.socketStateLabel
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -1659,10 +1660,21 @@ private fun ChatTopBar(
                     Icon(Icons.Outlined.Menu, contentDescription = "打开会话", tint = CloverText2)
                 }
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
                 ModelSwitchButton(
                     state = state,
                     onClick = onOpenModel,
+                )
+                Text(
+                    socketStateLabel(
+                        state.socketState,
+                        responding = state.isResponding,
+                        addressMissing = state.settings.apiBase.isBlank(),
+                    ),
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (connectionNeedsAction(state.socketState, state.settings.apiBase.isBlank())) CloverError else CloverText3,
+                    maxLines = 1,
                 )
             }
             IconButton(onClick = onNewSession) {
@@ -2686,9 +2698,7 @@ private fun ComposerBar(
     val activityWorking = activityLabel != ComposerActivityLabel.Hidden
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
-    val attachmentActivity = state.activityLine?.takeIf {
-        it.contains("下载") || it.contains("附件")
-    }
+    val shownActivity = activityStatusLine(state.activityLine)
     LaunchedEffect(showContextSheet) {
         if (showContextSheet) vm.refreshContextInspect()
     }
@@ -2705,10 +2715,10 @@ private fun ComposerBar(
             )
             Spacer(Modifier.height(8.dp))
         }
-        if (!isRecordingVoice && !activityWorking && !attachmentActivity.isNullOrBlank()) {
+        if (!isRecordingVoice && !activityWorking && !shownActivity.isNullOrBlank()) {
             Text(
-                attachmentActivity,
-                color = if (attachmentActivity.contains("失败")) CloverError else CloverText3,
+                shownActivity,
+                color = if (activityStatusFailed(state.activityLine, shownActivity)) CloverError else CloverText3,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(start = 4.dp, bottom = 7.dp),
                 maxLines = 1,
@@ -4671,7 +4681,7 @@ private fun SessionDrawer(
                         CircularProgressIndicator(color = CloverAccent, strokeWidth = 3.dp)
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "Loading sessions…",
+                            "正在读取会话",
                             style = MaterialTheme.typography.bodyMedium,
                             color = CloverText3,
                         )
@@ -4689,9 +4699,9 @@ private fun SessionDrawer(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             if (query.isNotEmpty()) {
-                                "No sessions match \"$query\""
+                                "没有匹配的会话"
                             } else {
-                                "No sessions yet"
+                                "还没有会话"
                             },
                             style = MaterialTheme.typography.bodyLarge,
                             color = CloverText2,
@@ -4699,9 +4709,9 @@ private fun SessionDrawer(
                         Spacer(Modifier.height(8.dp))
                         Text(
                             if (query.isNotEmpty()) {
-                                "Try another keyword, or clear the search."
+                                "换个词，或清空搜索。"
                             } else {
-                                "Create a session to start chatting."
+                                "新建一个会话后再开始聊天。"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = CloverText3,

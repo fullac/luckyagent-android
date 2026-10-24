@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import com.luckyagent.android.ui.components.statusChipLabel
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -141,11 +142,11 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
     state.tasksError?.let { ErrorLine(it) }
 
     val filters = listOf(
-        TaskFilter.All to "All",
-        TaskFilter.Active to "Active",
-        TaskFilter.Completed to "Done",
-        TaskFilter.Failed to "Failed",
-        TaskFilter.Cancelled to "Cancelled",
+        TaskFilter.All to "全部",
+        TaskFilter.Active to "进行中",
+        TaskFilter.Completed to "已完成",
+        TaskFilter.Failed to "失败",
+        TaskFilter.Cancelled to "已取消",
     )
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
@@ -174,7 +175,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
             .background(CloverSurface2)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         decorationBox = { inner ->
-            if (state.taskQuery.isEmpty()) Text("Filter by task, agent, mode or status", color = CloverText3)
+            if (state.taskQuery.isEmpty()) Text("搜索任务、代理或状态", color = CloverText3)
             inner()
         },
     )
@@ -185,17 +186,19 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
 
     when {
         state.tasksLoading && state.tasks.isEmpty() -> {
-            Text("Loading tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
+            Text("正在读取任务", color = CloverText2, modifier = Modifier.padding(16.dp))
         }
         !state.tasksLoading && tasks.isEmpty() -> {
             EmptyState(
-                title = "No tasks",
+                title = if (state.tasks.isEmpty()) "还没有任务" else "没有匹配的任务",
                 body = if (state.tasks.isEmpty()) {
-                    "Multi-agent and background tasks will appear here."
+                    "从聊天发出的协作任务会出现在这里。"
                 } else {
-                    "No tasks match the current filters."
+                    "换个筛选，或回到聊天继续这一轮。"
                 },
                 modifier = Modifier.padding(16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 icon = {
                     Icon(
                         Icons.Outlined.AssignmentLate,
@@ -257,14 +260,14 @@ private fun TaskOverviewCard(tasks: List<TaskSummary>) {
     val active = tasks.count { it.status.taskIsActive() }
     val finished = tasks.count { it.status.equals("completed", ignoreCase = true) }
     CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Text("Your run at a glance", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text("这一轮", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            OverviewMetric("Needs you", attention.toString(), if (attention > 0) CloverError else CloverText2)
-            OverviewMetric("Running", active.toString(), CloverAccent)
-            OverviewMetric("Completed", finished.toString(), CloverLeaf)
+            OverviewMetric("需要处理", attention.toString(), if (attention > 0) CloverError else CloverText2)
+            OverviewMetric("进行中", active.toString(), CloverAccent)
+            OverviewMetric("已完成", finished.toString(), CloverLeaf)
         }
     }
 }
@@ -441,8 +444,10 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
         } else if (detail.origin == TaskOrigin.Legacy) {
             item {
                 EmptyState(
-                    title = "No event stream",
-                    body = "This legacy task exposes child state and output, but not persisted task events.",
+                    title = "没有事件记录",
+                    body = "这条旧任务只有步骤和结果，没有保存过程。",
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 )
             }
         }
@@ -784,16 +789,7 @@ internal fun String.taskIsActive(): Boolean = when (lowercase()) {
     else -> false
 }
 
-internal fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
-    "pending", "queued" -> "Queued"
-    "running", "in_progress", "in-progress" -> "In progress"
-    "blocked", "waiting" -> "Needs attention"
-    "completed", "done" -> "Completed"
-    "failed", "error" -> "Failed"
-    "timeout" -> "Timed out"
-    "cancelled", "canceled" -> "Cancelled"
-    else -> status.ifBlank { "Unknown" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
-}
+internal fun friendlyTaskStatus(status: String): String = statusChipLabel(status)
 
 internal fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
     "single" -> "Single step"

@@ -30,18 +30,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.Assignment
-import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Timeline
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -74,6 +70,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
+import com.luckyagent.android.ui.screens.ComputerLink
+import com.luckyagent.android.ui.screens.FirstConnectionScreen
+import com.luckyagent.android.ui.screens.computerNavDestinations
+import com.luckyagent.android.ui.screens.needsConnectionSetup
 import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
@@ -105,25 +105,22 @@ private data class NavSpec(
 
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "聊天", Icons.Outlined.ChatBubbleOutline),
-    NavSpec(AppDestination.Tasks, "任务", Icons.Outlined.Assignment),
-    NavSpec(AppDestination.Background, "后台黑板", Icons.Outlined.Autorenew),
-    NavSpec(AppDestination.Cron, "定时任务", Icons.Outlined.Schedule),
-    NavSpec(AppDestination.Trajectory, "执行轨迹", Icons.Outlined.Timeline),
-    NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
+    NavSpec(AppDestination.Cron, "定时", Icons.Outlined.Schedule),
+    NavSpec(AppDestination.Gateways, "渠道", Icons.Outlined.Hub),
     NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
-    NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
-    NavSpec(AppDestination.Gateways, "网关", Icons.Outlined.Hub),
+    NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
     NavSpec(AppDestination.RuntimeConfig, "服务器配置", Icons.Outlined.Code),
     NavSpec(AppDestination.Settings, "基础设置", Icons.Outlined.Settings),
 )
 
 private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
 
-/** Chat and Settings are pinned top/bottom; the rest are grouped by what the user is checking. */
-private val navGroups = listOf(
-    "运行与自动化" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
-    "资源与连接" to listOf(AppDestination.Skills, AppDestination.Plugins, AppDestination.Memory, AppDestination.Gateways, AppDestination.RuntimeConfig).map(::nav),
-)
+/**
+ * Phone home is chat. Progress, traces, memory, and the background board grow
+ * out of the current session card. Host controls — including the server config —
+ * stay under one computer, not beside chat.
+ */
+private val computerNavItems = computerNavDestinations.map(::nav)
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
 private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (dest) {
@@ -136,15 +133,6 @@ private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (
     AppDestination.Gateways -> when {
         state.gatewaysError != null -> CloverError
         state.gateways.isNotEmpty() && state.gateways.none { it.running } -> CloverWarning
-        else -> null
-    }
-    AppDestination.Tasks -> when {
-        state.tasksError != null -> CloverError
-        state.tasks.any { it.status.equals("failed", ignoreCase = true) } -> CloverWarning
-        else -> null
-    }
-    AppDestination.Background -> when {
-        state.backgroundError != null -> CloverError
         else -> null
     }
     AppDestination.Cron -> when {
@@ -171,12 +159,13 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
     val openNavigation: () -> Unit = remember(navigationPager, scope) {
         { scope.launch { navigationPager.animateScrollToPage(0) }; Unit }
     }
-    val navigationOpen = state.destination != AppDestination.Chat && navigationPager.currentPage == 0
+    val setupRequired = needsConnectionSetup(state.settings, state.computerLink)
+    val navigationOpen = !setupRequired && state.destination != AppDestination.Chat && navigationPager.currentPage == 0
     BackHandler(enabled = navigationOpen) {
         scope.launch { navigationPager.animateScrollToPage(1) }
     }
     BackHandler(
-        enabled = !navigationOpen && (
+        enabled = !setupRequired && !navigationOpen && (
             state.destination != AppDestination.Chat ||
                 state.selectedTaskId != null ||
                 state.selectedBackgroundTaskId != null
@@ -191,14 +180,14 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
         val useRail = maxWidth >= 700.dp && maxWidth >= (AppNavRailWidth + MinMainContentWidth)
 
         if (useRail) {
-            // NavigationRail is always visible on large layouts.
+            // The first connection replaces every page, including the wide rail.
             AppScaffold(
                 state = state,
                 vm = vm,
                 useRail = true,
                 openNavigation = null,
             )
-        } else if (state.destination == AppDestination.Chat) {
+        } else if (setupRequired || state.destination == AppDestination.Chat) {
             AppScaffold(
                 state = state,
                 vm = vm,
@@ -297,7 +286,7 @@ private fun AppScaffold(
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.safeDrawing),
             ) {
-                if (useRail) {
+                if (useRail && !needsConnectionSetup(state.settings, state.computerLink)) {
                     NavigationRail(
                         modifier = Modifier
                             .width(AppNavRailWidth)
@@ -308,26 +297,38 @@ private fun AppScaffold(
                         Spacer(Modifier.height(16.dp))
                         BrandMark(state.settings.avatarFile, size = 42.dp, corner = 14.dp)
                         Spacer(Modifier.height(16.dp))
-                        navItems.forEach { item ->
-                            if (item.dest == AppDestination.Settings) Spacer(Modifier.height(12.dp))
-                            NavigationRailItem(
-                                selected = state.destination == item.dest,
-                                onClick = { vm.navigate(item.dest) },
-                                icon = {
-                                    val badge = badgeColor(item.dest, state)
-                                    if (badge == null) Icon(item.icon, contentDescription = item.label)
-                                    else androidx.compose.material3.BadgedBox(badge = { androidx.compose.material3.Badge(containerColor = badge) }) {
-                                        Icon(item.icon, contentDescription = item.label)
-                                    }
-                                },
-                                label = { Text(if (item.dest == AppDestination.Cron) "Cron" else item.label, maxLines = 1) },
-                            )
-                        }
+                        RailDestination(nav(AppDestination.Chat), state, vm)
+                        Text(
+                            "这台电脑",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CloverText3,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        )
+                        computerNavItems.forEach { RailDestination(it, state, vm) }
+                        Spacer(Modifier.height(12.dp))
+                        RailDestination(nav(AppDestination.Settings), state, vm)
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     Box(Modifier.widthIn(max = 1440.dp).fillMaxSize()) {
-                        when (state.destination) {
+                        if (needsConnectionSetup(state.settings, state.computerLink)) {
+                            FirstConnectionScreen(
+                                state = state,
+                                onScan = startPairingScan,
+                                onPickQrImage = {
+                                    qrImagePicker.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                        ),
+                                    )
+                                },
+                                onSubmit = vm::submitFirstConnection,
+                                onRetry = { vm.verifyComputerConnection() },
+                                onUseStandalone = vm::useStandaloneConnection,
+                            )
+                        } else when (state.destination) {
                             AppDestination.Chat -> ChatScreen(
                                 state = state,
                                 vm = vm,
@@ -343,7 +344,11 @@ private fun AppScaffold(
                             AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
                             AppDestination.Plugins -> PluginsScreen(state = state, vm = vm)
                             AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
-                            AppDestination.RuntimeConfig -> RuntimeConfigScreen(state = state, vm = vm)
+                            AppDestination.RuntimeConfig -> RuntimeConfigScreen(
+                                state = state,
+                                vm = vm,
+                                onBack = { vm.navigate(AppDestination.Chat) },
+                            )
                             AppDestination.Settings -> SettingsScreen(
                                 state = state,
                                 vm = vm,
@@ -400,6 +405,22 @@ private fun WallpaperLayer(settings: com.luckyagent.android.data.settings.Client
 }
 
 @Composable
+private fun RailDestination(item: NavSpec, state: AppUiState, vm: AppViewModel) {
+    NavigationRailItem(
+        selected = state.destination == item.dest,
+        onClick = { vm.navigate(item.dest) },
+        icon = {
+            val badge = badgeColor(item.dest, state)
+            if (badge == null) Icon(item.icon, contentDescription = item.label)
+            else androidx.compose.material3.BadgedBox(badge = { androidx.compose.material3.Badge(containerColor = badge) }) {
+                Icon(item.icon, contentDescription = item.label)
+            }
+        },
+        label = { Text(item.label, maxLines = 1) },
+    )
+}
+
+@Composable
 private fun NavigationPage(
     state: AppUiState,
     onSelect: (AppDestination) -> Unit,
@@ -432,7 +453,7 @@ private fun NavigationPage(
                 )
             }
             IconButton(onClick = onClose) {
-                Icon(Icons.Outlined.Close, contentDescription = "关闭功能导航")
+                Icon(Icons.Outlined.Close, contentDescription = "关闭导航")
             }
         }
         Surface(
@@ -483,16 +504,14 @@ private fun NavigationPage(
                 .padding(horizontal = 12.dp, vertical = 14.dp),
         ) {
             DrawerNavItem(nav(AppDestination.Chat), state, onSelect)
-            navGroups.forEach { (groupLabel, groupItems) ->
-                Text(
-                    groupLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CloverText3,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp),
-                )
-                groupItems.forEach { DrawerNavItem(it, state, onSelect) }
-            }
+            Text(
+                "这台电脑",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp),
+            )
+            computerNavItems.forEach { DrawerNavItem(it, state, onSelect) }
         }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp))
         Box(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {

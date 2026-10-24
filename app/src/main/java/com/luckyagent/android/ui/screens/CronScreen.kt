@@ -44,7 +44,7 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = "定时任务",
+            title = "定时",
             subtitle = when {
                 state.cronLoading -> "正在读取定时任务"
                 state.cronError != null && state.cronJobs.isEmpty() -> "没能读到定时任务。重试这一条。"

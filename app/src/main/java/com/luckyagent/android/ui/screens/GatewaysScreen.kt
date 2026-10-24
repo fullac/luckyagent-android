@@ -85,7 +85,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             eyebrow = "Channels",
-            title = "网关",
+            title = "渠道",
             subtitle = "在已连接的电脑上启动或停止渠道",
             actions = {
                 IconButton(onClick = vm::refreshGateways, enabled = !state.gatewaysLoading && state.gatewayAction == null) {

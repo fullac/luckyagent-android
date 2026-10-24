@@ -427,7 +427,7 @@ class LuckyAgentWsClient internal constructor(
 
     fun sendChat(
         message: String,
-        maxIterations: Int = 8,
+        maxIterations: Int = 0,
         attachments: List<MediaAttachment> = emptyList(),
         sessionId: String? = null,
         trackLease: Boolean = true,

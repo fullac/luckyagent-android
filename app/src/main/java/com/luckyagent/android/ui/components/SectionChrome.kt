@@ -278,7 +278,7 @@ fun DetailDisclosure(label: String, value: String?, json: Boolean = false, previ
 }
 
 @Composable
-fun StatusChip(status: String) {
+fun StatusChip(status: String, label: String = statusChipLabel(status)) {
     val raw = status.lowercase()
     val color = when (raw) {
         "failed", "failure", "error", "blocked" -> MaterialTheme.colorScheme.error
@@ -287,7 +287,7 @@ fun StatusChip(status: String) {
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(color = color.copy(alpha = .1f), shape = RoundedCornerShape(999.dp)) {
-        Text(statusChipLabel(status), color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+        Text(label, color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
     }
 }
 

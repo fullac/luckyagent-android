@@ -82,8 +82,9 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = "执行轨迹",
+            title = "本轮轨迹",
             subtitle = state.settings.sessionId.ifBlank { "先打开一个会话" },
+            onBack = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
             actions = {
                 IconButton(onClick = vm::refreshTrajectory) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
@@ -167,7 +168,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     title = "还没有会话",
                     body = "先回聊天打开一轮对话，工具调用会出现在这里。",
                     modifier = Modifier.padding(16.dp),
-                    actionLabel = "回到聊天",
+                    actionLabel = "打开聊天",
                     onAction = { vm.navigate(AppDestination.Chat) },
                 )
             }

@@ -128,6 +128,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
                 eyebrow = "Vault",
                 title = "记忆",
                 subtitle = "已连接电脑上的知识图谱和召回",
+                onBack = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 actions = { IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Refresh, "Refresh") } },
             )
         }

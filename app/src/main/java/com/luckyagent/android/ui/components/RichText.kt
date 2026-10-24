@@ -19,32 +19,36 @@ import org.commonmark.parser.beta.InlineContentParserFactory
 import org.commonmark.parser.beta.ParsedInline
 import org.jsoup.nodes.Entities
 
-private val markdownParser = Parser.builder().customInlineContentParserFactory(object : InlineContentParserFactory {
-    override fun getTriggerCharacters() = setOf('$')
-    override fun create() = InlineContentParser { state ->
-        val scanner = state.scanner()
-        val start = scanner.position()
-        scanner.next()
-        val fence = if (scanner.next('$')) "$$" else "$"
-        val body = StringBuilder()
-        var closed = false
-        while (scanner.hasNext()) {
-            if (fence == "$" && scanner.peek() == '\n') break
-            if (scanner.next(fence)) { closed = true; break }
-            val char = scanner.peek()
-            body.append(char)
+private val markdownParser: ThreadLocal<Parser> = ThreadLocal.withInitial {
+    Parser.builder().customInlineContentParserFactory(object : InlineContentParserFactory {
+        override fun getTriggerCharacters() = setOf('$')
+        override fun create() = InlineContentParser { state ->
+            val scanner = state.scanner()
+            val start = scanner.position()
             scanner.next()
-            if (char == '\\' && scanner.hasNext()) {
-                body.append(scanner.peek()); scanner.next()
+            val fence = if (scanner.next('$')) "$$" else "$"
+            val body = StringBuilder()
+            var closed = false
+            while (scanner.hasNext()) {
+                if (fence == "$" && scanner.peek() == '\n') break
+                if (scanner.next(fence)) { closed = true; break }
+                val char = scanner.peek()
+                body.append(char)
+                scanner.next()
+                if (char == '\\' && scanner.hasNext()) {
+                    body.append(scanner.peek()); scanner.next()
+                }
             }
+            if (closed && body.isNotBlank()) {
+                val node = HtmlInline().apply { literal = "<span data-lucky-math='$fence'>${Entities.escape(body.toString())}</span>" }
+                ParsedInline.of(node, scanner.position())
+            } else { scanner.setPosition(start); ParsedInline.none() }
         }
-        if (closed && body.isNotBlank()) {
-            val node = HtmlInline().apply { literal = "<span data-lucky-math='$fence'>${Entities.escape(body.toString())}</span>" }
-            ParsedInline.of(node, scanner.position())
-        } else { scanner.setPosition(start); ParsedInline.none() }
-    }
-}).build()
-private val markdownRenderer = HtmlRenderer.builder().softbreak("\n").build()
+    }).build()
+}
+private val markdownRenderer: ThreadLocal<HtmlRenderer> = ThreadLocal.withInitial {
+    HtmlRenderer.builder().softbreak("\n").build()
+}
 private val mathPattern = Regex("""\$\$([\s\S]+?)\$\$|(?<!\\)\$((?:\\\$|[^$\n])+?)(?<!\\)\$""")
 
 /** Markdown is parsed once; HTML nodes and code literals then share the native painter. */
@@ -54,8 +58,11 @@ internal fun richInlineText(
     baseUrl: String = "",
 ): AnnotatedString = htmlAnnotatedText(richTextNodes(source), colors, baseUrl, parseMath = false)
 
-internal fun richTextNodes(source: String): List<HtmlNode> =
-    parseHtml(markdownRenderer.render(markdownParser.parse(source))).orEmpty()
+internal fun richTextNodes(source: String): List<HtmlNode> {
+    val parser = requireNotNull(markdownParser.get())
+    val renderer = requireNotNull(markdownRenderer.get())
+    return parseHtml(renderer.render(parser.parse(source))).orEmpty()
+}
 
 internal fun htmlLiteralText(nodes: List<HtmlNode>): String = nodes.joinToString("") {
     when (it) {

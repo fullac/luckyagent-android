@@ -71,6 +71,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Assignment
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -89,6 +92,7 @@ import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Info
@@ -123,6 +127,8 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.luckyagent.android.ui.components.CloverCard
+import com.luckyagent.android.ui.components.StatusChip
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -170,10 +176,12 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
 import com.luckyagent.android.data.api.isSecureCredentialForm
@@ -191,11 +199,13 @@ import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.ReplacedBubbleList
 import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
+import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.components.socketStateLabel
@@ -255,18 +265,55 @@ internal sealed interface ChatTimelineItem {
 
 /**
  * One line for the latest chat fold.
- * A running turn shows only the newest summary. A finished turn yields to the answer,
- * except cancel and failure, which replace the summary with an end state.
+ * A running turn shows only the newest summary, and only on the fold that
+ * belongs to that turn. A finished turn yields to the answer, except cancel
+ * and failure, which replace the summary with an end state.
  */
 internal fun outerProcessLabel(
     liveSummary: String?,
     processNotice: String?,
     isResponding: Boolean,
     isLatestProcess: Boolean,
+    ownsCurrentTurn: Boolean = true,
 ): String? {
-    if (!isLatestProcess) return null
+    if (!isLatestProcess || !ownsCurrentTurn) return null
     if (!isResponding) return processNotice?.trim()?.ifBlank { null }
     return liveSummary?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+}
+
+/** A status box opened for a new turn before any reasoning or tool text arrives. */
+internal fun isTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+    bubble.role == "reasoning" && !bubble.reasoningHasContent && bubble.content.isBlank()
+
+/** A placeholder is hidden while the same fold already has a real step. */
+internal fun visibleProcessSteps(steps: List<ChatBubble>): List<ChatBubble> =
+    if (steps.any { !isTurnStatusPlaceholder(it) }) steps.filterNot(::isTurnStatusPlaceholder) else steps
+
+/**
+ * The fold that owns the open turn: it is the last fold, and a user message
+ * opened it after the fold before it. A stored fold — even the only one on
+ * screen — does not own a new turn, so the previous turn's box cannot show the
+ * new turn's status.
+ */
+internal fun processOwnsTurn(steps: List<ChatBubble>, timeline: List<ChatTimelineItem>): Boolean {
+    val index = timeline.indexOfFirst { item ->
+        item is ChatTimelineItem.Process && item.steps === steps
+    }.takeIf { it >= 0 } ?: timeline.indexOfFirst { item ->
+        item is ChatTimelineItem.Process && item.steps.map { it.id } == steps.map { it.id }
+    }
+    if (index < 0) return false
+    val after = timeline.subList(index + 1, timeline.size)
+    if (after.any { it is ChatTimelineItem.Process }) return false
+    if (after.any { item ->
+            item is ChatTimelineItem.Message &&
+                item.bubble.role.equals("assistant", ignoreCase = true) &&
+                !item.bubble.isIntermediate
+        }
+    ) return false
+    val previous = timeline.subList(0, index).indexOfLast { it is ChatTimelineItem.Process }
+    return timeline.subList(previous + 1, index).any { item ->
+        item is ChatTimelineItem.Message && item.bubble.role.equals("user", ignoreCase = true)
+    }
 }
 
 /**
@@ -283,8 +330,7 @@ internal fun liveTurnBubbles(bubbles: List<ChatBubble>, turnId: String, bufferId
 /**
  * Index of the in-memory turn that history has not stored yet.
  * The user bubble that opened the turn is included, so a refresh can put the
- * whole turn back after the server page. A later server copy of the same user
- * text drops that local bubble instead of showing it twice.
+ * whole turn back after the server page.
  */
 internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): Int {
     if (turnId.isBlank() && bufferId.isNullOrBlank()) return -1
@@ -301,27 +347,107 @@ internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: 
 }
 
 /**
- * Drop the in-memory turn once the server page already ends with the same rows.
- * A stored user message alone is not enough: the live reasoning and answer stay
- * until the page carries those rows too. An older copy of the same text, with
- * a different reply after it, does not count as this turn.
+ * Session ordinals a live turn will get once the runtime stores it.
+ *
+ * History stamps every bubble of one server message with that message's index.
+ * A live tool bubble holds both the call and its output, while history stores
+ * the call on the assistant message and the output as the next tool message.
+ * The combined bubble keeps the call's ordinal and reserves the following
+ * result ordinal. Commentary before the result stays on the call. The answer
+ * uses the ordinal past the result. A status placeholder shares the next
+ * ordinal without consuming it, because history never stores that box.
  */
-internal fun dedupeLiveTurn(history: List<ChatBubble>, live: List<ChatBubble>): List<ChatBubble> {
-    if (live.isEmpty()) return emptyList()
-    val start = live.indexOfFirst { it.role.equals("user", ignoreCase = true) }.let { index ->
-        if (index >= 0) index else 0
+internal fun liveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<Int> {
+    val ordinals = MutableList(turn.size) { userOrdinal }
+    var next = userOrdinal
+    var groupOpen = false
+    var reservedResult: Int? = null
+    turn.forEachIndexed { index, bubble ->
+        val role = bubble.role.lowercase()
+        when {
+            role == "user" -> {
+                ordinals[index] = userOrdinal
+                next = userOrdinal + 1
+                groupOpen = false
+                reservedResult = null
+            }
+            isTurnStatusPlaceholder(bubble) -> ordinals[index] = next
+            role == "tool" && bubble.toolArgs != null && bubble.toolOutput != null -> {
+                if (!groupOpen) groupOpen = true
+                ordinals[index] = next
+                reservedResult = next + 1
+            }
+            role == "tool" && bubble.toolOutput != null && bubble.toolArgs == null -> {
+                val result = reservedResult
+                if (result != null) {
+                    ordinals[index] = result
+                    next = result + 1
+                    reservedResult = null
+                } else {
+                    if (groupOpen) next += 1
+                    ordinals[index] = next
+                    next += 1
+                }
+                groupOpen = false
+            }
+            role == "reasoning" || role == "tool" || (role == "assistant" && bubble.isIntermediate) -> {
+                if (!groupOpen) groupOpen = true
+                ordinals[index] = next
+            }
+            else -> {
+                val result = reservedResult
+                next = when {
+                    result != null -> result + 1
+                    groupOpen -> next + 1
+                    else -> next
+                }
+                ordinals[index] = next
+                next += 1
+                groupOpen = false
+                reservedResult = null
+            }
+        }
     }
-    val comparable = live.drop(start)
-    if (history.size >= comparable.size &&
-        history.takeLast(comparable.size).map(::liveTurnSignature) == comparable.map(::liveTurnSignature)
-    ) {
-        return emptyList()
-    }
-    return comparable
+    return ordinals
 }
 
-private fun liveTurnSignature(bubble: ChatBubble): String =
-    listOf(bubble.role, bubble.content, bubble.toolName.orEmpty(), bubble.stepId.orEmpty()).joinToString("\u0000")
+/**
+ * Replace live rows the server already stored.
+ *
+ * Identity is the session-wide oldest-first index, not a page offset and not
+ * full-text equality. [turnOrdinal] is the index of the stored user message that
+ * opened this turn; without it nothing can be proven, so the whole live turn
+ * stays. A row is dropped only when history holds a bubble of the same role at
+ * that index, so a grouping mismatch keeps a row instead of deleting content.
+ * Rows past the stored tail stay, including a second send with the same text.
+ */
+internal fun dedupeLiveTurn(
+    history: List<ChatBubble>,
+    live: List<ChatBubble>,
+    turnOrdinal: Int? = null,
+): List<ChatBubble> {
+    if (live.isEmpty()) return emptyList()
+    if (turnOrdinal == null) return live
+    val storedThrough = history.mapNotNull { it.serverOrdinal }.maxOrNull() ?: return live
+    val storedByOrdinal = history.filter { it.serverOrdinal != null }.groupBy { it.serverOrdinal!! }
+    val ordinals = liveTurnOrdinals(live, turnOrdinal)
+    return live.filterIndexed { index, bubble ->
+        val ordinal = ordinals[index]
+        if (ordinal > storedThrough) return@filterIndexed true
+        // The status box is the turn's own marker, not a stored row.
+        if (isTurnStatusPlaceholder(bubble)) return@filterIndexed true
+        val stored = storedByOrdinal[ordinal].orEmpty()
+        if (bubble.role.equals("user", ignoreCase = true)) {
+            return@filterIndexed stored.none { it.role.equals("user", ignoreCase = true) }
+        }
+        // A finished live tool spans the call ordinal and the following result.
+        if (bubble.role.equals("tool", ignoreCase = true) && bubble.toolArgs != null && bubble.toolOutput != null) {
+            val resultStored = storedByOrdinal[ordinal + 1].orEmpty().any { it.role.equals("tool", ignoreCase = true) }
+            if (!resultStored) return@filterIndexed true
+        }
+        stored.none { it.role.equals(bubble.role, ignoreCase = true) }
+    }
+}
 
 /**
  * Where to land when a session opens.
@@ -388,8 +514,9 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
         return candidate
     }
     fun flushSteps() {
-        if (steps.isNotEmpty()) {
-            result += ChatTimelineItem.Process(steps.toList(), uniqueKey(steps.first().id))
+        val visible = visibleProcessSteps(steps)
+        if (visible.isNotEmpty()) {
+            result += ChatTimelineItem.Process(visible, uniqueKey(visible.first().id))
             steps.clear()
         }
     }
@@ -405,6 +532,58 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     }
     flushSteps()
     return result
+}
+
+/**
+ * Reuse the existing timeline while a streaming answer replaces its last
+ * bubble. History/tool changes still take the full projection path because
+ * they can change process-fold boundaries.
+ */
+internal class ChatTimelineCache {
+    private var bubbles: List<ChatBubble>? = null
+    private var timeline: List<ChatTimelineItem> = emptyList()
+
+    fun update(next: List<ChatBubble>): List<ChatTimelineItem> {
+        val previous = bubbles
+        if (next === previous) return timeline
+        val replacement = next as? ReplacedBubbleList
+        val incremental = replacement
+            ?.takeIf {
+                it.source === previous ||
+                    (previous is ReplacedBubbleList &&
+                        previous.source === it.source &&
+                        previous.replacementIndex == it.replacementIndex)
+            }
+            ?.let(::replaceLastBubble)
+        timeline = incremental ?: buildTimeline(next)
+        bubbles = next
+        return timeline
+    }
+
+    private fun replaceLastBubble(change: ReplacedBubbleList): List<ChatTimelineItem>? {
+        if (change.replacementIndex != change.source.lastIndex) return null
+        val previous = change.source.lastOrNull() ?: return null
+        val replacement = change.replacement
+        if (isProcessBubble(previous) != isProcessBubble(replacement)) return null
+        val lastIndex = timeline.lastIndex
+        if (lastIndex < 0) return null
+
+        val updated = when (val item = timeline[lastIndex]) {
+            is ChatTimelineItem.Message -> {
+                if (isProcessBubble(replacement) || item.bubble.id != previous.id) return null
+                item.copy(bubble = replacement)
+            }
+            is ChatTimelineItem.Process -> {
+                if (!isProcessBubble(replacement) || item.steps.lastOrNull()?.id != previous.id) return null
+                item.copy(steps = item.steps.dropLast(1) + replacement)
+            }
+        }
+        return timeline.toMutableList().also { it[lastIndex] = updated }
+    }
+
+    private fun isProcessBubble(bubble: ChatBubble): Boolean =
+        bubble.role == "reasoning" || bubble.role == "tool" || bubble.role == "compact" ||
+            bubble.toolName != null || (bubble.role == "assistant" && bubble.isIntermediate)
 }
 
 @Composable
@@ -936,11 +1115,68 @@ private fun ChatConversation(
             onOpenModel = { showModelSheet = true },
             onReconnect = { vm.connectSocket(force = true) },
         )
+        val workCard = remember(
+            state.focusedWorkCardId,
+            state.focusedWorkCardBackground,
+            state.tasks,
+            state.backgroundTasks,
+            state.settings.sessionId,
+            state.dismissedWorkCardIds,
+        ) {
+            visibleWorkCard(
+                focusedId = state.focusedWorkCardId,
+                focusedBackground = state.focusedWorkCardBackground,
+                tasks = state.tasks,
+                background = state.backgroundTasks,
+                sessionId = state.settings.sessionId,
+                dismissedIds = state.dismissedWorkCardIds,
+            )
+        }
+        if (workCard != null) {
+            WorkReturnCard(
+                card = workCard,
+                onClose = { vm.dismissWorkCard(workCard.id) },
+                onCancel = { vm.cancelWorkCard(workCard.id) },
+                onOpenResult = {
+                    val session = workCard.sessionId
+                    if (!session.isNullOrBlank()) vm.openSession(session)
+                    if (workCard.terminal) vm.dismissWorkCard(workCard.id)
+                },
+                onOpenDetail = {
+                    if (workCard.kind == WorkCardKind.Background) {
+                        vm.selectBackgroundTask(workCard.id)
+                        vm.navigate(AppDestination.Background)
+                    } else {
+                        vm.selectTask(workCard.id)
+                        vm.navigate(AppDestination.Tasks)
+                    }
+                },
+            )
+        }
+        SessionNavigationCard(
+            sessionId = state.settings.sessionId,
+            tasks = state.tasks,
+            background = state.backgroundTasks,
+            tasksError = state.tasksError,
+            backgroundError = state.backgroundError,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            onOpenTask = { taskId ->
+                if (taskId != null) vm.selectTask(taskId)
+                vm.navigate(AppDestination.Tasks)
+            },
+            onOpenBackground = { taskId ->
+                if (taskId != null) vm.selectBackgroundTask(taskId)
+                vm.navigate(AppDestination.Background)
+            },
+            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+            onOpenMemory = { vm.navigate(AppDestination.Memory) },
+        )
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
         val refreshState = rememberPullToRefreshState()
-        val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        val timelineCache = remember { ChatTimelineCache() }
+        val timeline = remember(state.bubbles) { timelineCache.update(state.bubbles) }
         val latestAssistantId = remember(state.bubbles) {
             state.bubbles
                 .lastOrNull { it.role.equals("assistant", ignoreCase = true) && !it.isIntermediate && it.content.isNotBlank() }
@@ -1015,13 +1251,13 @@ private fun ChatConversation(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
                 state = refreshState,
-                isRefreshing = state.historyLoading,
+                isRefreshing = state.historyLoading || state.historyRefreshing,
                 onRefresh = { vm.loadHistory(reset = true) },
                 modifier = Modifier.fillMaxSize(),
                 indicator = {
                     PullToRefreshDefaults.Indicator(
                         state = refreshState,
-                        isRefreshing = state.historyLoading,
+                        isRefreshing = state.historyLoading || state.historyRefreshing,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
                 },
@@ -1060,16 +1296,21 @@ private fun ChatConversation(
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
                                 onRetry = vm::retryLastResponse,
+                                onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
+                                onExpand = vm::expandTruncatedMessage,
+                                expanding = state.expandingHistoryIndex >= 0 &&
+                                    state.expandingHistoryIndex == item.bubble.historyIndex,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
-                                isResponding = state.isResponding,
+                                isResponding = state.isResponding && processOwnsTurn(item.steps, timeline),
                                 liveSummary = outerProcessLabel(
                                     liveSummary = state.liveSummary,
                                     processNotice = state.processNotice,
                                     isResponding = state.isResponding,
                                     isLatestProcess = item.key == timeline.lastOrNull { it is ChatTimelineItem.Process }?.key,
+                                    ownsCurrentTurn = processOwnsTurn(item.steps, timeline),
                                 ),
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
@@ -1081,8 +1322,10 @@ private fun ChatConversation(
                                     cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
                                     vm.notifyCopied()
                                 },
+                                onExpand = vm::expandTruncatedMessage,
+                                expandingHistoryIndex = state.expandingHistoryIndex,
                                 onOpenThinking = {
-                                    selectedThinkingSteps = item.steps
+                                    selectedThinkingSteps = item.steps.filterNot(::isTurnStatusPlaceholder)
                                     showThinkingSheet = true
                                 },
                                 collabLabel = collabFoldLabel(
@@ -1108,7 +1351,20 @@ private fun ChatConversation(
                     item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
             }
-            if (state.historyLoading || state.historyLoadingMore) {
+            if ((state.showingOfflineCache || state.activityLine == SessionCachePolicy.REFRESH_FAILED_LABEL) && state.bubbles.isNotEmpty()) {
+                Text(
+                    state.activityLine ?: SessionCachePolicy.OFFLINE_LABEL,
+                    color = CloverText3,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 36.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(CloverSurface.copy(alpha = .94f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+            if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
                 CircularProgressIndicator(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -1203,7 +1459,11 @@ private fun ChatConversation(
                     state.isResponding,
                 ),
                 collabTasks = turnTasks,
-                onOpenTask = { vm.selectTask(it); vm.navigate(com.luckyagent.android.ui.AppDestination.Tasks) },
+                onOpenTask = {
+                    vm.focusWorkCard(it, background = false)
+                    vm.selectTask(it)
+                    vm.navigate(AppDestination.Tasks)
+                },
                 imageHeaders = imageHeaders,
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
@@ -1215,6 +1475,8 @@ private fun ChatConversation(
                     cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
                     vm.notifyCopied()
                 },
+                onExpand = vm::expandTruncatedMessage,
+                expandingHistoryIndex = state.expandingHistoryIndex,
             )
         }
     }
@@ -1225,6 +1487,146 @@ private fun ChatConversation(
                 .padding(bottom = 88.dp),
         )
     }
+}
+
+@Composable
+private fun WorkReturnCard(
+    card: WorkCard,
+    onClose: () -> Unit,
+    onCancel: () -> Unit,
+    onOpenResult: () -> Unit,
+    onOpenDetail: () -> Unit,
+) {
+    CloverCard(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    card.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (card.loading) {
+                    Text(
+                        "列表还没回来。可以打开详情，或先关掉这张卡。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CloverText2,
+                    )
+                }
+            }
+            if (!card.loading) StatusChip(card.status, workCardStatusLabel(card.status))
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.Close, contentDescription = "关闭卡片", tint = CloverText3)
+            }
+        }
+        if (card.terminal && card.sessionId.isNullOrBlank()) {
+            Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!card.loading && workCardCanCancel(card)) {
+                OutlinedButton(onClick = onCancel) { Text("取消") }
+            }
+            if (!card.loading && card.terminal && !card.sessionId.isNullOrBlank()) {
+                Button(onClick = onOpenResult) { Text("打开结果") }
+            }
+            TextButton(onClick = onOpenDetail) { Text("打开详情") }
+        }
+    }
+}
+
+@Composable
+private fun SessionNavigationCard(
+    sessionId: String,
+    tasks: List<TaskSummary>,
+    background: List<AutonomyTaskSummary>,
+    tasksError: String? = null,
+    backgroundError: String? = null,
+    modifier: Modifier = Modifier,
+    onOpenTask: (String?) -> Unit,
+    onOpenBackground: (String?) -> Unit,
+    onOpenTrace: () -> Unit,
+    onOpenMemory: () -> Unit,
+) {
+    val mine = remember(tasks, sessionId) { tasksForSession(tasks, sessionId) }
+    val board = remember(background, sessionId) { backgroundForSession(background, sessionId) }
+    val featured = remember(mine) { sessionNavigationTask(mine) }
+    val featuredBoard = remember(board) { sessionNavigationBackground(board) }
+    val quiet = featured == null && featuredBoard == null
+    // The task and background entries are gone from the drawer, so this card must
+    // open them unconditionally. Otherwise a session with no task of its own has
+    // no way to reach the global task list or the board.
+    val failure = when {
+        tasksError != null && backgroundError != null -> "任务和后台列表读取失败"
+        tasksError != null -> "任务列表读取失败"
+        backgroundError != null -> "后台列表读取失败"
+        else -> null
+    }
+    CloverCard(modifier = modifier) {
+        Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
+        when {
+            featured != null -> Text(
+                featured.description.ifBlank { "正在处理的任务" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            featuredBoard != null -> Text(
+                featuredBoard.title.ifBlank { featuredBoard.description.ifBlank { "后台还在处理" } },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            else -> Text("这轮还没有单独的任务。轨迹和记忆从这里进入。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        }
+        if (failure != null) {
+            Text(failure, color = CloverWarning, style = MaterialTheme.typography.labelMedium)
+        }
+        if (!quiet) {
+            val tone = when {
+                featured?.status?.taskNeedsAttention() == true || featuredBoard?.state?.taskNeedsAttention() == true -> CloverWarning
+                else -> CloverLeaf
+            }
+            Text(
+                sessionProgressLabel(featured, featuredBoard),
+                color = tone,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { onOpenTask(featured?.id) }) {
+                Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("任务")
+            }
+            TextButton(onClick = { onOpenBackground(featuredBoard?.id) }) {
+                Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("后台")
+            }
+            TextButton(onClick = onOpenTrace) {
+                Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("轨迹")
+            }
+            TextButton(onClick = onOpenMemory) {
+                Icon(Icons.Outlined.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("记忆")
+            }
+        }
+    }
+}
+
+private fun sessionProgressLabel(task: TaskSummary?, background: AutonomyTaskSummary?): String {
+    val taskLabel = task?.let { friendlyTaskStatus(it.status) }
+    val boardLabel = background?.let { friendlyTaskStatus(it.state) }
+    return listOfNotNull(
+        taskLabel?.let { "任务 · $it" },
+        boardLabel?.let { "后台 · $it" },
+    ).joinToString(" · ")
 }
 
 @Composable
@@ -1288,7 +1690,7 @@ private fun ChatTopBar(
                 ) {
                     openNavigation?.let { onOpen ->
                         DropdownMenuItem(
-                            text = { Text("功能导航") },
+                            text = { Text("这台电脑") },
                             onClick = {
                                 moreExpanded = false
                                 onOpen()
@@ -1369,6 +1771,25 @@ private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size:
     )
 }
 
+
+@Composable
+private fun FullTextButton(
+    bubble: ChatBubble,
+    expanding: Boolean,
+    onExpand: (ChatBubble) -> Unit,
+) {
+    TextButton(
+        onClick = { onExpand(bubble) },
+        enabled = !expanding,
+    ) {
+        Text(
+            if (expanding) "加载中" else "查看全文",
+            color = CloverText3,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+}
+
 @Composable
 private fun BubbleRow(
     bubble: ChatBubble,
@@ -1382,7 +1803,10 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
+    onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
+    onExpand: (ChatBubble) -> Unit = {},
+    expanding: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -1454,6 +1878,9 @@ private fun BubbleRow(
                                     streaming = bubble.streaming,
                                 )
                             }
+                            if (bubble.contentTruncated) {
+                                FullTextButton(bubble, expanding, onExpand)
+                            }
                         }
                         if (bubble.attachments.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
@@ -1478,6 +1905,35 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     onDownload = onDownload,
                                 )
+                            }
+                        }
+                        bubble.outboundStatus?.let { status ->
+                            val (label, tint) = when (status) {
+                                OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+                                OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+                                OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+                                OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+                                OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+                                OutboundQueueStatus.Failed -> "未送达" to CloverError
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(top = 5.dp),
+                            ) {
+                                Text(
+                                    bubble.outboundError?.let { "$label · $it" } ?: label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = tint,
+                                )
+                                if (status == OutboundQueueStatus.Failed && bubble.outboundId != null) {
+                                    TextButton(
+                                        onClick = { onRetryOutbound(bubble.outboundId) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                    ) {
+                                        Text("重试")
+                                    }
+                                }
                             }
                         }
                         if (showActions && !isUser && bubble.content.isNotBlank()) {
@@ -1940,6 +2396,8 @@ private fun ProcessTimeline(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expandingHistoryIndex: Int = -1,
     onOpenThinking: (List<ChatBubble>) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
@@ -1961,9 +2419,9 @@ private fun ProcessTimeline(
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
+                    steps.all(::isTurnStatusPlaceholder) -> "正在思考"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
-                    steps.size == 1 -> "思考了 1 步"
-                    else -> "思考了 ${steps.size} 步"
+                    else -> "思考了 ${steps.count { !isTurnStatusPlaceholder(it) }} 步"
                 },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1993,6 +2451,8 @@ private fun ThinkingSheet(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expandingHistoryIndex: Int = -1,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CloverBg) {
         LazyColumn(
@@ -2053,7 +2513,16 @@ private fun ThinkingSheet(
                 when {
                     step.role == "compact" -> CompactProgressRow(step.content)
                     step.role == "reasoning" || step.isIntermediate -> ReasoningPart(step, imageHeaders, imageBaseUrl)
-                    else -> ToolPart(step, imageHeaders, imageBaseUrl, onDownload, onQuote, onCopy)
+                    else -> ToolPart(
+                        step,
+                        imageHeaders,
+                        imageBaseUrl,
+                        onDownload,
+                        onQuote,
+                        onCopy,
+                        onExpand,
+                        expanding = expandingHistoryIndex >= 0 && expandingHistoryIndex == step.historyIndex,
+                    )
                 }
             }
         }
@@ -2096,6 +2565,8 @@ private fun ToolPart(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expanding: Boolean = false,
 ) {
     var expanded by remember(bubble.id) { mutableStateOf(false) }
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2165,6 +2636,9 @@ private fun ToolPart(
                     imageHeaders = imageHeaders,
                     imageBaseUrl = imageBaseUrl,
                 )
+                if (bubble.contentTruncated) {
+                    FullTextButton(bubble, expanding, onExpand)
+                }
             }
             bubble.attachments.forEach { media ->
                 ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload)
@@ -2216,7 +2690,12 @@ private fun ComposerBar(
 ) {
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
     val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
-    val activityWorking = chatWorking || state.commandExecuting
+    val activityLabel = composerActivityLabel(
+        agentWorking = state.isResponding,
+        commandExecuting = state.commandExecuting,
+        streaming = state.bubbles.any { it.streaming },
+    )
+    val activityWorking = activityLabel != ComposerActivityLabel.Hidden
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
     val shownActivity = activityStatusLine(state.activityLine)
@@ -2379,7 +2858,7 @@ private fun ComposerBar(
                 CloverPulseIndicator()
                 StreamingDots()
                 Text(
-                    if (state.commandExecuting) "执行中" else "生成中",
+                    if (activityLabel == ComposerActivityLabel.Executing) "执行中" else "生成中",
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
                 )
@@ -2475,7 +2954,9 @@ private fun ComposerBar(
                     onDismiss = { showLuckyCommands = false },
                 )
             }
-            if (state.commandExecuting && !chatWorking) {
+            // Same source of truth as the label above; recomputing the condition
+            // here is how the text and the spinner drift apart.
+            if (activityLabel == ComposerActivityLabel.Executing) {
                 Box(
                     Modifier.size(44.dp).clip(CircleShape).background(CloverSurface2),
                     contentAlignment = Alignment.Center,
@@ -2700,9 +3181,12 @@ private fun OutboundQueueChip(
     onRetry: () -> Unit,
 ) {
     val (label, tint) = when (item.status) {
-        OutboundQueueStatus.Sending -> "发送中" to CloverAccent
-        OutboundQueueStatus.Queued -> "排队中" to CloverText3
-        OutboundQueueStatus.Failed -> "失败" to CloverError
+        OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+        OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+        OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+        OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+        OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+        OutboundQueueStatus.Failed -> "未送达" to CloverError
     }
     Surface(
         shape = RoundedCornerShape(999.dp),
@@ -4092,7 +4576,7 @@ private fun SessionDrawer(
             )
             openNavigation?.let { onOpen ->
                 IconButton(onClick = onOpen) {
-                    Icon(Icons.Outlined.Apps, contentDescription = "功能导航", tint = CloverText2)
+                    Icon(Icons.Outlined.Apps, contentDescription = "这台电脑", tint = CloverText2)
                 }
             }
             IconButton(onClick = onCreate) {

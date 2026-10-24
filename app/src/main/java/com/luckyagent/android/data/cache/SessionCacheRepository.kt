@@ -79,7 +79,7 @@ class SessionCacheRepository internal constructor(
         val stored = dao.messages(endpoint, session.sessionId)
         if (stored.isEmpty() && session.messageCount > 0) return null
         val messages = withContext(Dispatchers.Default) {
-            stored.map { entity -> decodeMessage(entity.rawJson) ?: return@withContext null }
+            stored.map { entity -> messageFromCache(entity) ?: return@withContext null }
         } ?: return null
         if (stored.withIndex().any { (index, entity) -> entity.ordinal != session.startIndex + index }) return null
         return MessagePage(
@@ -227,7 +227,9 @@ class SessionCacheRepository internal constructor(
         content = message.content,
         createdAt = message.createdAt,
         toolCallId = message.toolCallId,
-        rawJson = json.encodeToString(message),
+        // A preview is not the stored body. Leave rawJson empty so a later open
+        // cannot decode the cap (including a trailing truncation marker) as complete.
+        rawJson = if (message.contentTruncated) "" else json.encodeToString(message),
     )
 
     suspend fun removeSession(apiBase: String, sessionId: String, apiKey: String = "") {
@@ -256,6 +258,45 @@ class SessionCacheRepository internal constructor(
             dao.deleteMessages(endpoint, stale)
             dao.deleteSession(endpoint, stale)
         }
+    }
+
+    /**
+     * Plain rows rebuild from the structured columns. rawJson is decoded only
+     * when the row carries fields those columns cannot hold, such as attachments
+     * or tool calls. An empty rawJson is a truncated preview, not a full body.
+     */
+    private fun messageFromCache(entity: CachedMessageEntity): ProviderMessage? {
+        if (entity.rawJson.isEmpty()) {
+            return ProviderMessage(
+                role = entity.role,
+                content = entity.content,
+                createdAt = entity.createdAt,
+                toolCallId = entity.toolCallId,
+                contentTruncated = true,
+            )
+        }
+        if (!rawJsonNeeded(entity.rawJson)) {
+            return ProviderMessage(
+                role = entity.role,
+                content = entity.content,
+                createdAt = entity.createdAt,
+                toolCallId = entity.toolCallId,
+            )
+        }
+        return decodeMessage(entity.rawJson)
+    }
+
+    private fun rawJsonNeeded(raw: String): Boolean {
+        // Empty lists and nulls are omitted (explicitNulls = false), so a hit
+        // means the row actually carries that field.
+        if (raw.contains("\"attachments\"")) return true
+        if (raw.contains("\"tool_calls\"")) return true
+        if (raw.contains("\"content_parts\"")) return true
+        if (raw.contains("\"reasoning_content\"")) return true
+        if (raw.contains("\"usage\"")) return true
+        if (raw.contains("\"blob_hash\"")) return true
+        if (raw.contains("\"name\"")) return true
+        return false
     }
 
     private fun decodeMessage(raw: String): ProviderMessage? =

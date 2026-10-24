@@ -26,6 +26,7 @@ import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
 import com.luckyagent.android.data.cache.olderHistoryOffset
 import com.luckyagent.android.data.cache.prependOlderPage
+import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.ModelEffortResponse
@@ -155,6 +156,10 @@ data class ChatBubble(
     val quote: MessageQuote? = null,
     /** Assistant commentary from a tool/continuation round belongs inside the process fold. */
     val isIntermediate: Boolean = false,
+    /** Server preview, not the stored body. The UI can request the full page and swap this row. */
+    val contentTruncated: Boolean = false,
+    /** Oldest-first server index of the source message. -1 for live bubbles. */
+    val historyIndex: Int = -1,
 )
 
 data class ChatMedia(
@@ -362,6 +367,8 @@ class AppViewModel(
     private var historySessionId: String? = null
     private var historyMessages: List<ProviderMessage> = emptyList()
     private var historyStartIndex = 0
+    /** Server index whose full body is currently being fetched. -1 when idle. */
+    private var expandingHistoryIndex = -1
     private var assistantBufferId: String? = null
     private var assistantBufferIndex: Int? = null
     private val assistantPending = StringBuilder()
@@ -2676,11 +2683,14 @@ class AppViewModel(
                 return@onSuccess
             }
             when (val merged = mergeLatestPage(cachedPage, history.messages, remoteCount)) {
-                is LatestMerge.Invalidate -> replaceHistoryFromServer(apiBase, apiKey, sessionId, history.messages, remoteCount, history.title)
+                is LatestMerge.Invalidate -> replaceHistoryFromServer(
+                    apiBase, apiKey, sessionId, history.messages, remoteCount, history.title,
+                    contentTruncated = history.contentTruncated == true,
+                )
                 is LatestMerge.Appended -> {
                     val page = merged.page.copy(
                         reachedOldest = merged.page.reachedOldest || history.hasMore != true && merged.page.startIndex == 0,
-                    )
+                    ).withContentTruncation(history.contentTruncated == true)
                     persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page, stored = stored)
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, page, offline = false)
@@ -2751,6 +2761,7 @@ class AppViewModel(
         messages: List<ProviderMessage>,
         remoteCount: Int,
         title: String?,
+        contentTruncated: Boolean = false,
     ) {
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
         runCatching { container.sessionCache.invalidate(apiBase, sessionId, apiKey) }
@@ -2760,7 +2771,7 @@ class AppViewModel(
             startIndex = start,
             messageCount = remoteCount,
             reachedOldest = start == 0,
-        )
+        ).withContentTruncation(contentTruncated)
         persistHistoryPage(apiBase, apiKey, sessionId, title, remoteUpdatedAt(sessionId), page)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
         applyHistoryPage(sessionId, page, offline = false)
@@ -2787,7 +2798,13 @@ class AppViewModel(
             val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
             val cached = currentHistoryPage()
-            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {
+            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset).let { result ->
+                if (result is LatestMerge.Appended) {
+                    LatestMerge.Appended(result.page.withContentTruncation(history.contentTruncated == true))
+                } else {
+                    result
+                }
+            }) {
                 is LatestMerge.Invalidate -> {
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onSuccess
                     runCatching { container.sessionCache.invalidate(apiBase, sessionId, apiKey) }
@@ -2962,6 +2979,72 @@ class AppViewModel(
                 opened = true,
                 stored = stored,
             )
+        }
+    }
+
+    /**
+     * The history API only serves full bodies for a whole page. Fetch that page
+     * and swap the one truncated row. Other preview rows stay preview, and only
+     * the complete body is written back into the cache.
+     */
+    fun expandTruncatedMessage(bubble: ChatBubble) {
+        val index = bubble.historyIndex
+        if (!bubble.contentTruncated || index < 0 || expandingHistoryIndex == index) return
+        val local = index - historyStartIndex
+        if (local !in historyMessages.indices || !historyMessages[local].contentTruncated) return
+        val sessionId = historySessionId ?: return
+        val total = currentHistoryPage().messageCount
+        // History offset skips the newest N messages. Walk back from the session
+        // end in page-sized steps until this row is inside the fetched page.
+        val pageEnd = total - ((total - 1 - index) / SessionCachePolicy.LATEST_PAGE) * SessionCachePolicy.LATEST_PAGE
+        val offset = (total - pageEnd).coerceAtLeast(0)
+        val limit = (pageEnd - (pageEnd - SessionCachePolicy.LATEST_PAGE).coerceAtLeast(0)).coerceIn(1, SessionCachePolicy.LATEST_PAGE)
+        expandingHistoryIndex = index
+        viewModelScope.launch {
+            try {
+                val connection = container.settingsRepository.snapshot()
+                val fetch = container.api.sessionHistory(
+                    sessionId,
+                    limit = limit,
+                    offset = offset,
+                    includeFull = true,
+                ).getOrElse { error ->
+                    _ui.update { it.copy(activityLine = "全文加载失败 · ${error.message}") }
+                    return@launch
+                }
+                val history = fetch.history ?: return@launch
+                if (history.contentTruncated == true) return@launch
+                if (currentSessionId() != sessionId || historySessionId != sessionId) return@launch
+                val remoteCount = history.messageCount ?: currentHistoryPage().messageCount
+                val pageStart = remoteCount - offset - history.messages.size
+                val full = history.messages.getOrNull(index - pageStart) ?: return@launch
+                val slot = index - historyStartIndex
+                if (slot !in historyMessages.indices) return@launch
+                val updated = historyMessages.toMutableList()
+                updated[slot] = full.copy(contentTruncated = false)
+                val page = currentHistoryPage().copy(
+                    messages = updated,
+                    messageCount = remoteCount,
+                    contentTruncated = updated.any { it.contentTruncated },
+                )
+                historyMessages = page.messages
+                val stored = runCatching {
+                    container.sessionCache.loadPage(connection.apiBase, sessionId, connection.apiKey)
+                }.getOrNull()
+                persistHistoryPage(
+                    connection.apiBase,
+                    connection.apiKey,
+                    sessionId,
+                    null,
+                    remoteUpdatedAt(sessionId),
+                    page,
+                    stored = stored,
+                )
+                if (currentSessionId() != sessionId || historySessionId != sessionId) return@launch
+                applyHistoryPage(sessionId, page, offline = false)
+            } finally {
+                if (expandingHistoryIndex == index) expandingHistoryIndex = -1
+            }
         }
     }
 

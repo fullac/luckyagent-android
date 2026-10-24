@@ -123,6 +123,17 @@ class ChatTimelineTest {
     }
 
     @Test
+    fun truncatedHistoryRowKeepsTheServerIndexAndThePreviewFlag() {
+        val bubble = ProviderMessage(role = "assistant", content = "preview", contentTruncated = true)
+            .toHistoryBubbles(idx = 17)
+            .single { it.role == "assistant" }
+
+        assertEquals(true, bubble.contentTruncated)
+        assertEquals(17, bubble.historyIndex)
+        assertEquals("preview", bubble.content)
+    }
+
+    @Test
     fun aConfirmedLiveToolRoundJoinsTheExistingFoldAndTheNextAnswerStaysVisible() {
         val reasoning = ChatBubble("r", "reasoning", "Think")
         val streaming = ChatBubble("a", "assistant", "Checking files", streaming = true)

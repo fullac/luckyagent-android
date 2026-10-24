@@ -52,7 +52,20 @@ data class MessagePage(
     val startIndex: Int,
     val messageCount: Int,
     val reachedOldest: Boolean,
+    /** True when this page's bodies came from the default preview cap. */
+    val contentTruncated: Boolean = false,
 )
+
+/** Mark every body on a preview page. A full fetch clears the flag. */
+fun MessagePage.withContentTruncation(truncated: Boolean): MessagePage {
+    if (!truncated && messages.none { it.contentTruncated }) return this
+    return copy(
+        contentTruncated = truncated,
+        messages = messages.map { message ->
+            if (message.contentTruncated == truncated) message else message.copy(contentTruncated = truncated)
+        },
+    )
+}
 
 sealed class LatestMerge {
     data class Appended(val page: MessagePage) : LatestMerge()

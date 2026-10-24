@@ -1115,6 +1115,7 @@ private fun ChatConversation(
                                 onDelete = vm::deleteBubble,
                                 onRetry = vm::retryLastResponse,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
+                                onExpand = vm::expandTruncatedMessage,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -1439,6 +1440,7 @@ private fun BubbleRow(
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
+    onExpand: (ChatBubble) -> Unit = {},
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -1509,6 +1511,11 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     streaming = bubble.streaming,
                                 )
+                            }
+                            if (bubble.contentTruncated) {
+                                TextButton(onClick = { onExpand(bubble) }) {
+                                    Text("查看全文", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+                                }
                             }
                         }
                         if (bubble.attachments.isNotEmpty()) {

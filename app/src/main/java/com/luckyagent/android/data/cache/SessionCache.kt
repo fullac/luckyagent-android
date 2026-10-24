@@ -46,6 +46,10 @@ data class CachedMessageEntity(
     val content: String?,
     val createdAt: String?,
     val toolCallId: String?,
+    /**
+     * Complete message JSON. Empty when the row is only a truncated preview:
+     * [content] is then the capped text and must not be treated as the stored body.
+     */
     val rawJson: String,
 )
 

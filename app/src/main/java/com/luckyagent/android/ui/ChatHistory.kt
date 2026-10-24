@@ -64,6 +64,8 @@ internal fun ProviderMessage.toHistoryBubbles(
             usage = usage,
             attachments = messageAttachments,
             isIntermediate = role == "assistant" && toolCalls.isNotEmpty(),
+            contentTruncated = contentTruncated && role != "tool",
+            historyIndex = idx,
         )
     }
     return result

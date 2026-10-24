@@ -68,6 +68,7 @@ import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.ui.screens.dismissedWorkCardIds
+import com.luckyagent.android.ui.screens.keepFocusedWorkCard
 import com.luckyagent.android.ui.screens.visibleWorkCard
 import com.luckyagent.android.data.api.toTaskNode
 import com.luckyagent.android.data.api.toTaskSummary
@@ -1833,7 +1834,7 @@ class AppViewModel(
     }
 
     fun openSessionFromNotification(sessionId: String) {
-        openSession(sessionId)
+        openSession(sessionId, keepWorkCard = focusedCardBelongsTo(sessionId))
     }
 
     /**
@@ -1841,7 +1842,7 @@ class AppViewModel(
      * Task detail state is cleared first so Android back returns to the normal
      * chat screen instead of a stale task detail overlay.
      */
-    fun openSession(sessionId: String?) {
+    fun openSession(sessionId: String?, keepWorkCard: Boolean = false) {
         val target = sessionId?.trim().orEmpty()
         if (target.isBlank()) {
             _ui.update { it.copy(snackbarMessage = "这个任务还没有关联执行会话") }
@@ -1850,7 +1851,18 @@ class AppViewModel(
         clearSelectedTask()
         clearSelectedBackgroundTask()
         navigate(AppDestination.Chat)
-        selectSession(target, keepWorkCard = true)
+        selectSession(target, keepWorkCard = keepWorkCard && focusedCardBelongsTo(target))
+    }
+
+    private fun focusedCardBelongsTo(sessionId: String): Boolean {
+        val state = _ui.value
+        return keepFocusedWorkCard(
+            state.focusedWorkCardId,
+            state.focusedWorkCardBackground,
+            sessionId,
+            state.tasks,
+            state.backgroundTasks,
+        )
     }
 
     /** Opens the execution conversation associated with a unified or legacy task. */
@@ -3921,7 +3933,7 @@ class AppViewModel(
                     _ui.update { it.copy(snackbarMessage = "已取消") }
                 }
             } else {
-                val message = result.exceptionOrNull()?.message ?: "没能取消。重试这一条。"
+                val message = if (surface == CancelSurface.Card) "没能取消。重试这一条。" else result.exceptionOrNull()?.message ?: "没能取消。重试这一条。"
                 _ui.update {
                     if (surface == CancelSurface.Card) it.copy(snackbarMessage = message)
                     else it.copy(taskDetailError = message)

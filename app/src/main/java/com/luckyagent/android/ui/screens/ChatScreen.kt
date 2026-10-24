@@ -961,12 +961,8 @@ private fun ChatConversation(
                 onCancel = { vm.cancelWorkCard(workCard.id) },
                 onOpenResult = {
                     val session = workCard.sessionId
-                    if (session.isNullOrBlank()) {
-                        vm.focusWorkCard(workCard.id, workCard.kind == WorkCardKind.Background)
-                    } else {
-                        vm.openSession(session)
-                        vm.focusWorkCard(workCard.id, workCard.kind == WorkCardKind.Background)
-                    }
+                    if (!session.isNullOrBlank()) vm.openSession(session)
+                    if (workCard.terminal) vm.dismissWorkCard(workCard.id)
                 },
                 onOpenDetail = {
                     if (workCard.kind == WorkCardKind.Background) {

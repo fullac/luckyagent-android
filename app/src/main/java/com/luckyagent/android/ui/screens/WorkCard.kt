@@ -32,6 +32,7 @@ internal fun workCardsForSession(
     val owner = sessionId.trim()
     if (owner.isEmpty()) return emptyList()
     val taskCards = tasks
+        .filter { isRootWorkCard(it.parentId) }
         .filter { taskBelongsToSession(owner, it.parentSessionId, it.sessionId, it.executionSession(), it.metadata) }
         .map { it.toWorkCard() }
     val boardCards = background
@@ -39,6 +40,9 @@ internal fun workCardsForSession(
         .map { it.toWorkCard() }
     return (taskCards + boardCards).sortedWith(workCardOrder)
 }
+
+/** A child task keeps its own transcript, but the return card names the thing the user started. */
+internal fun isRootWorkCard(parentId: String?): Boolean = parentId.isNullOrBlank()
 
 private val workCardOrder = compareByDescending<WorkCard> { it.active }
     .thenByDescending { it.terminal }
@@ -55,6 +59,22 @@ internal fun featuredWorkCard(cards: List<WorkCard>, dismissedIds: Set<String> =
  * to another session. Otherwise the open chat shows its own running or just
  * finished item.
  */
+/** Keep a notification pin only while the opened chat is the card's own session. */
+internal fun keepFocusedWorkCard(
+    focusedId: String?,
+    focusedBackground: Boolean,
+    targetSessionId: String,
+    tasks: List<TaskSummary>,
+    background: List<AutonomyTaskSummary>,
+): Boolean {
+    val focus = focusedId?.trim().orEmpty()
+    val target = targetSessionId.trim()
+    if (focus.isEmpty() || target.isEmpty()) return false
+    val card = visibleWorkCard(focus, focusedBackground, tasks, background, target) ?: return false
+    if (card.loading) return false
+    return card.sessionId?.trim() == target
+}
+
 internal fun visibleWorkCard(
     focusedId: String?,
     focusedBackground: Boolean,

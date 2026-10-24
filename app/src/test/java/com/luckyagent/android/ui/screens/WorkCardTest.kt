@@ -80,6 +80,24 @@ class WorkCardTest {
         )
     }
 
+    @Test fun aChildTaskDoesNotReplaceTheRootCard() {
+        val root = task("root", status = "running", lastActivityAt = "2026-10-23T01:00:00Z")
+        val child = task("child", parentId = "root", status = "running", lastActivityAt = "2026-10-23T03:00:00Z")
+
+        val cards = workCardsForSession(listOf(child, root), emptyList(), "chat")
+
+        assertEquals(listOf("root"), cards.map { it.id })
+    }
+
+    @Test fun notificationFocusStaysOnlyWhenTheOpenedSessionOwnsTheCard() {
+        val pinned = task("pinned", sessionId = "session-b", executionSessionId = "session-b", status = "running")
+        val other = task("other", sessionId = "session-c", executionSessionId = "session-c", status = "running")
+
+        assertTrue(keepFocusedWorkCard("pinned", false, "session-b", listOf(pinned, other), emptyList()))
+        assertFalse(keepFocusedWorkCard("pinned", false, "session-c", listOf(pinned, other), emptyList()))
+        assertFalse(keepFocusedWorkCard("missing", false, "session-c", listOf(other), emptyList()))
+    }
+
     @Test fun finishedCardUsesTheLatestActivityInsteadOfTitleOrder() {
         val older = task("older", status = "completed", lastActivityAt = "2026-10-23T01:00:00Z")
         val newer = task("newer", status = "completed", lastActivityAt = "2026-10-23T02:00:00Z")
@@ -91,12 +109,18 @@ class WorkCardTest {
 
     private fun task(
         id: String,
+        parentId: String? = null,
         parentSessionId: String? = "chat",
+        sessionId: String? = null,
+        executionSessionId: String? = null,
         status: String = "running",
         lastActivityAt: String? = null,
     ) = TaskSummary(
         id = id,
+        parentId = parentId,
         parentSessionId = parentSessionId,
+        sessionId = sessionId,
+        executionSessionId = executionSessionId,
         source = "tool",
         mode = "single",
         status = status,

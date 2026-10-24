@@ -12,9 +12,8 @@ import com.luckyagent.android.data.api.RuntimeSession
  */
 object SessionCachePolicy {
     const val LATEST_PAGE = 40
-    const val MAX_MESSAGES = 200
-    const val MAX_SESSIONS = 30
     const val OFFLINE_LABEL = "离线，显示上次内容"
+    const val REFRESH_FAILED_LABEL = "刷新失败，显示上次内容"
 }
 
 data class CachedSessionMeta(
@@ -26,9 +25,9 @@ data class CachedSessionMeta(
 enum class HistorySync {
     /** updated_at and message_count are unchanged. Skip the body fetch. */
     Unchanged,
-    /** Fetch limit=40&offset=0 and append the non-overlapping tail. */
+    /** Fetch the latest full-content page and append the non-overlapping tail. */
     MergeLatest,
-    /** Overlap missing, count shrank, or the cache was never aligned. Refetch. */
+    /** Overlap missing, count shrank, or the cache is partial. Fetch the full history. */
     Invalidate,
 }
 
@@ -39,9 +38,11 @@ fun historySyncAction(cached: CachedSessionMeta?, remote: RuntimeSession): Histo
         return HistorySync.Invalidate
     }
     if (remoteCount < cached.messageCount) return HistorySync.Invalidate
+    if (!cached.reachedOldest) return HistorySync.Invalidate
     if (remoteCount == cached.messageCount && remote.updatedAt == cached.updatedAt) {
         return HistorySync.Unchanged
     }
+    if (remoteCount == cached.messageCount) return HistorySync.Invalidate
     return HistorySync.MergeLatest
 }
 
@@ -145,17 +146,76 @@ fun prependOlderPage(
     )
 }
 
-fun capLatestMessages(page: MessagePage, max: Int = SessionCachePolicy.MAX_MESSAGES): MessagePage {
-    if (page.messages.size <= max) return page
-    val dropped = page.messages.size - max
-    return page.copy(
-        messages = page.messages.takeLast(max),
-        startIndex = page.startIndex + dropped,
-        reachedOldest = false,
+/**
+ * How a refreshed page should be written.
+ *
+ * [Unchanged] means every stored message still matches, so Room must not
+ * delete and rewrite `cached_messages`. [Patch] inserts ordinals that are
+ * new and deletes rows that fell outside the window. A changed overlapping
+ * row, a gap, or an unaligned cache uses [Replace].
+ */
+sealed class HistoryCacheWrite {
+    data object Unchanged : HistoryCacheWrite()
+    data class Patch(
+        val inserts: List<IndexedMessage>,
+        val deleteBefore: Int,
+        val deleteFrom: Int,
+    ) : HistoryCacheWrite()
+    data object Replace : HistoryCacheWrite()
+}
+
+data class IndexedMessage(
+    val ordinal: Int,
+    val message: ProviderMessage,
+)
+
+fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCacheWrite {
+    if (stored == null || stored.messages.isEmpty() || stored.startIndex < 0) return HistoryCacheWrite.Replace
+    if (pagesMatch(stored, incoming)) return HistoryCacheWrite.Unchanged
+
+    val storedStart = stored.startIndex
+    val storedEnd = storedStart + stored.messages.size
+    val nextStart = incoming.startIndex
+    val nextEnd = nextStart + incoming.messages.size
+    if (nextStart < 0 || nextEnd < nextStart) return HistoryCacheWrite.Replace
+    // Replace deletes every cached row for this session and writes only the
+    // incoming page, so a start index past the stored prefix drops that prefix.
+    // Callers must not hand a narrower page here unless losing the prefix is
+    // acceptable. There is no "keep the prefix" variant.
+    if (nextStart > storedStart) {
+        return HistoryCacheWrite.Replace
+    }
+    val overlapStart = maxOf(storedStart, nextStart)
+    val overlapEnd = minOf(storedEnd, nextEnd)
+    if (overlapStart >= overlapEnd) return HistoryCacheWrite.Replace
+    for (ordinal in overlapStart until overlapEnd) {
+        val previous = stored.messages[ordinal - storedStart]
+        val next = incoming.messages[ordinal - nextStart]
+        if (!messagesEquivalent(previous, next)) return HistoryCacheWrite.Replace
+    }
+    val inserts = incoming.messages.mapIndexedNotNull { index, message ->
+        val ordinal = nextStart + index
+        if (ordinal < storedStart || ordinal >= storedEnd) IndexedMessage(ordinal, message) else null
+    }
+    if (inserts.isEmpty() && nextStart == storedStart && nextEnd == storedEnd) {
+        return HistoryCacheWrite.Unchanged
+    }
+    return HistoryCacheWrite.Patch(
+        inserts = inserts,
+        deleteBefore = nextStart,
+        deleteFrom = nextEnd,
     )
 }
 
+private fun pagesMatch(stored: MessagePage, incoming: MessagePage): Boolean =
+    stored.startIndex == incoming.startIndex &&
+        stored.messageCount == incoming.messageCount &&
+        stored.reachedOldest == incoming.reachedOldest &&
+        stored.messages.size == incoming.messages.size &&
+        stored.messages.zip(incoming.messages).all { (left, right) -> messagesEquivalent(left, right) }
+
 fun messageIdentity(message: ProviderMessage): String {
+    message.clientMessageId?.trim()?.takeIf { it.isNotEmpty() }?.let { return "client:$it" }
     val toolId = message.toolCallId?.trim().orEmpty()
     if (toolId.isNotEmpty()) return "tool:$toolId"
     return listOf(
@@ -168,6 +228,22 @@ fun messageIdentity(message: ProviderMessage): String {
 
 private fun messagesEquivalent(left: ProviderMessage, right: ProviderMessage): Boolean =
     messageIdentity(left) == messageIdentity(right)
+
+/**
+ * The fetched latest page is already present at the tail of [stored].
+ * Older cached rows outside that page are left untouched. Identity overlap is
+ * not enough: attachments and other fields must also be unchanged.
+ */
+internal fun latestPageAlreadyStored(
+    stored: MessagePage,
+    latest: List<ProviderMessage>,
+    remoteCount: Int,
+): Boolean {
+    if (latest.isEmpty() || stored.messages.isEmpty() || remoteCount < latest.size) return false
+    if (stored.startIndex + stored.messages.size != remoteCount) return false
+    if (stored.messages.size < latest.size) return false
+    return stored.messages.takeLast(latest.size) == latest
+}
 
 /**
  * Length of the prefix of [incoming] that already sits at the tail of [cached].

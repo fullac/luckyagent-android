@@ -34,6 +34,24 @@ data class RuntimeSession(
     @SerialName("updated_at") val updatedAt: String? = null,
 )
 
+/**
+ * A history fetch. [notModified] means the refresh has nothing to apply: the
+ * server answered 304, or it answered 200 with an empty body on its unchanged
+ * check. Until the server sends validators, callers still decode the body and
+ * compare it with the stored page before writing cache.
+ */
+data class SessionHistoryFetch(
+    val history: SessionHistory? = null,
+    val notModified: Boolean = false,
+)
+
+internal fun sessionHistoryFetch(code: Int, body: String, decode: (String) -> SessionHistory): SessionHistoryFetch {
+    if (code == 304) return SessionHistoryFetch(notModified = true)
+    if (code !in 200..299) error("session history $code: $body")
+    if (body.isBlank()) return SessionHistoryFetch(notModified = true)
+    return SessionHistoryFetch(history = decode(body))
+}
+
 @Serializable
 data class SessionHistory(
     val id: String? = null,
@@ -52,6 +70,8 @@ data class SessionHistory(
     val offset: Int? = null,
     val returned: Int? = null,
     @SerialName("has_more") val hasMore: Boolean? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 /** POST /api/v1/sessions/{id}/compact response. */
@@ -112,6 +132,8 @@ data class ProviderMessage(
     /** Present when large tool/assistant bodies are externalized server-side. */
     @SerialName("blob_hash") val blobHash: String? = null,
     @SerialName("blob_bytes") val blobBytes: Int? = null,
+    /** Stable client id used to reconcile a local outbox bubble with server history. */
+    @SerialName("client_message_id") val clientMessageId: String? = null,
 )
 
 @Serializable
@@ -180,7 +202,7 @@ data class WsChatHandle(
 data class ChatOutboundData(
     val message: String,
     val stream: Boolean = true,
-    @SerialName("max_iterations") val maxIterations: Int = 8,
+    @SerialName("max_iterations") val maxIterations: Int = 0,
     val attachments: List<MediaAttachment> = emptyList(),
 )
 

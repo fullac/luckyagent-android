@@ -10,10 +10,11 @@ internal fun ProviderMessage.toHistoryBubbles(
 ): List<ChatBubble> {
     val role = role ?: "assistant"
     val base = capUiText(content.orEmpty(), MAX_UI_MESSAGE_CHARS)
+    val bubbleBase = clientMessageId?.trim()?.takeIf { it.isNotEmpty() } ?: "h-$idx"
     val result = mutableListOf<ChatBubble>()
     reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
         result += ChatBubble(
-            id = "h-$idx-reasoning",
+            id = "$bubbleBase-reasoning",
             role = "reasoning",
             content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
             reasoningHasContent = true,
@@ -21,7 +22,7 @@ internal fun ProviderMessage.toHistoryBubbles(
     }
     toolCalls.forEachIndexed { toolIndex, tool ->
         result += ChatBubble(
-            id = "h-$idx-tool-$toolIndex",
+            id = "$bubbleBase-tool-$toolIndex",
             role = "tool",
             content = buildToolContent(
                 name = tool.name ?: "tool",
@@ -39,7 +40,7 @@ internal fun ProviderMessage.toHistoryBubbles(
     }
     if (role == "tool") {
         result += ChatBubble(
-            id = "h-$idx-tool-result",
+            id = "$bubbleBase-tool-result",
             role = "tool",
             content = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS),
             toolName = name ?: "tool",
@@ -50,20 +51,21 @@ internal fun ProviderMessage.toHistoryBubbles(
         )
     } else if (role == "system" && compactLabel != null) {
         result += ChatBubble(
-            id = "h-$idx-compact",
+            id = "$bubbleBase-compact",
             role = "compact",
             content = compactLabel,
             createdAt = createdAt,
         )
     } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
         result += ChatBubble(
-            id = "h-$idx-${role.hashCode()}",
+            id = if (role.equals("user", ignoreCase = true)) bubbleBase else "$bubbleBase-${role.hashCode()}",
             role = role,
             content = base,
             createdAt = createdAt,
             usage = usage,
             attachments = messageAttachments,
             isIntermediate = role == "assistant" && toolCalls.isNotEmpty(),
+            outboundId = clientMessageId,
         )
     }
     return result

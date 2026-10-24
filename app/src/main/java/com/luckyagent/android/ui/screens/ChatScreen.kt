@@ -170,6 +170,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
@@ -191,6 +192,7 @@ import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.ReplacedBubbleList
 import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
@@ -404,6 +406,58 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     }
     flushSteps()
     return result
+}
+
+/**
+ * Reuse the existing timeline while a streaming answer replaces its last
+ * bubble. History/tool changes still take the full projection path because
+ * they can change process-fold boundaries.
+ */
+internal class ChatTimelineCache {
+    private var bubbles: List<ChatBubble>? = null
+    private var timeline: List<ChatTimelineItem> = emptyList()
+
+    fun update(next: List<ChatBubble>): List<ChatTimelineItem> {
+        val previous = bubbles
+        if (next === previous) return timeline
+        val replacement = next as? ReplacedBubbleList
+        val incremental = replacement
+            ?.takeIf {
+                it.source === previous ||
+                    (previous is ReplacedBubbleList &&
+                        previous.source === it.source &&
+                        previous.replacementIndex == it.replacementIndex)
+            }
+            ?.let(::replaceLastBubble)
+        timeline = incremental ?: buildTimeline(next)
+        bubbles = next
+        return timeline
+    }
+
+    private fun replaceLastBubble(change: ReplacedBubbleList): List<ChatTimelineItem>? {
+        if (change.replacementIndex != change.source.lastIndex) return null
+        val previous = change.source.lastOrNull() ?: return null
+        val replacement = change.replacement
+        if (isProcessBubble(previous) != isProcessBubble(replacement)) return null
+        val lastIndex = timeline.lastIndex
+        if (lastIndex < 0) return null
+
+        val updated = when (val item = timeline[lastIndex]) {
+            is ChatTimelineItem.Message -> {
+                if (isProcessBubble(replacement) || item.bubble.id != previous.id) return null
+                item.copy(bubble = replacement)
+            }
+            is ChatTimelineItem.Process -> {
+                if (!isProcessBubble(replacement) || item.steps.lastOrNull()?.id != previous.id) return null
+                item.copy(steps = item.steps.dropLast(1) + replacement)
+            }
+        }
+        return timeline.toMutableList().also { it[lastIndex] = updated }
+    }
+
+    private fun isProcessBubble(bubble: ChatBubble): Boolean =
+        bubble.role == "reasoning" || bubble.role == "tool" || bubble.role == "compact" ||
+            bubble.toolName != null || (bubble.role == "assistant" && bubble.isIntermediate)
 }
 
 @Composable
@@ -939,7 +993,8 @@ private fun ChatConversation(
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
         val refreshState = rememberPullToRefreshState()
-        val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        val timelineCache = remember { ChatTimelineCache() }
+        val timeline = remember(state.bubbles) { timelineCache.update(state.bubbles) }
         val latestAssistantId = remember(state.bubbles) {
             state.bubbles
                 .lastOrNull { it.role.equals("assistant", ignoreCase = true) && !it.isIntermediate && it.content.isNotBlank() }
@@ -1014,13 +1069,13 @@ private fun ChatConversation(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
                 state = refreshState,
-                isRefreshing = state.historyLoading,
+                isRefreshing = state.historyLoading || state.historyRefreshing,
                 onRefresh = { vm.loadHistory(reset = true) },
                 modifier = Modifier.fillMaxSize(),
                 indicator = {
                     PullToRefreshDefaults.Indicator(
                         state = refreshState,
-                        isRefreshing = state.historyLoading,
+                        isRefreshing = state.historyLoading || state.historyRefreshing,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
                 },
@@ -1059,6 +1114,7 @@ private fun ChatConversation(
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
                                 onRetry = vm::retryLastResponse,
+                                onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
@@ -1107,7 +1163,20 @@ private fun ChatConversation(
                     item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
             }
-            if (state.historyLoading || state.historyLoadingMore) {
+            if ((state.showingOfflineCache || state.activityLine == SessionCachePolicy.REFRESH_FAILED_LABEL) && state.bubbles.isNotEmpty()) {
+                Text(
+                    state.activityLine ?: SessionCachePolicy.OFFLINE_LABEL,
+                    color = CloverText3,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 36.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(CloverSurface.copy(alpha = .94f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+            if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
                 CircularProgressIndicator(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -1370,6 +1439,7 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
+    onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -1466,6 +1536,35 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     onDownload = onDownload,
                                 )
+                            }
+                        }
+                        bubble.outboundStatus?.let { status ->
+                            val (label, tint) = when (status) {
+                                OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+                                OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+                                OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+                                OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+                                OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+                                OutboundQueueStatus.Failed -> "未送达" to CloverError
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(top = 5.dp),
+                            ) {
+                                Text(
+                                    bubble.outboundError?.let { "$label · $it" } ?: label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = tint,
+                                )
+                                if (status == OutboundQueueStatus.Failed && bubble.outboundId != null) {
+                                    TextButton(
+                                        onClick = { onRetryOutbound(bubble.outboundId) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                    ) {
+                                        Text("重试")
+                                    }
+                                }
                             }
                         }
                         if (showActions && !isUser && bubble.content.isNotBlank()) {
@@ -2204,7 +2303,12 @@ private fun ComposerBar(
 ) {
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
     val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
-    val activityWorking = chatWorking || state.commandExecuting
+    val activityLabel = composerActivityLabel(
+        agentWorking = state.isResponding,
+        commandExecuting = state.commandExecuting,
+        streaming = state.bubbles.any { it.streaming },
+    )
+    val activityWorking = activityLabel != ComposerActivityLabel.Hidden
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
     val attachmentActivity = state.activityLine?.takeIf {
@@ -2369,7 +2473,7 @@ private fun ComposerBar(
                 CloverPulseIndicator()
                 StreamingDots()
                 Text(
-                    if (state.commandExecuting) "执行中" else "生成中",
+                    if (activityLabel == ComposerActivityLabel.Executing) "执行中" else "生成中",
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
                 )
@@ -2690,9 +2794,12 @@ private fun OutboundQueueChip(
     onRetry: () -> Unit,
 ) {
     val (label, tint) = when (item.status) {
-        OutboundQueueStatus.Sending -> "发送中" to CloverAccent
-        OutboundQueueStatus.Queued -> "排队中" to CloverText3
-        OutboundQueueStatus.Failed -> "失败" to CloverError
+        OutboundQueueStatus.Queued -> "等待发送" to CloverText3
+        OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
+        OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
+        OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
+        OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
+        OutboundQueueStatus.Failed -> "未送达" to CloverError
     }
     Surface(
         shape = RoundedCornerShape(999.dp),

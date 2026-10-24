@@ -9,14 +9,21 @@ import org.junit.Test
 class SessionCacheMergeTest {
     @Test
     fun unchangedCountAndUpdatedAtSkipsBodyFetch() {
-        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t2", reachedOldest = false)
+        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t2", reachedOldest = true)
         val remote = RuntimeSession(id = "s", messageCount = 12, updatedAt = "t2")
         assertEquals(HistorySync.Unchanged, historySyncAction(cached, remote))
     }
 
     @Test
+    fun partialCacheForcesFullReplacementEvenWhenMetadataIsUnchanged() {
+        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t2", reachedOldest = false)
+        val remote = RuntimeSession(id = "s", messageCount = 12, updatedAt = "t2")
+        assertEquals(HistorySync.Invalidate, historySyncAction(cached, remote))
+    }
+
+    @Test
     fun grownCountMergesLatestPage() {
-        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t1", reachedOldest = false)
+        val cached = CachedSessionMeta(messageCount = 12, updatedAt = "t1", reachedOldest = true)
         val remote = RuntimeSession(id = "s", messageCount = 14, updatedAt = "t2")
         assertEquals(HistorySync.MergeLatest, historySyncAction(cached, remote))
     }
@@ -74,7 +81,8 @@ class SessionCacheMergeTest {
 
         val merged = mergeLatestPage(cached, remote, remoteCount = 2) as LatestMerge.Appended
 
-        assertEquals(listOf("running", "after"), merged.page.messages.map { it.content })
+        // Same tool call, newer body. The finished result replaces the running row.
+        assertEquals(listOf("done", "after"), merged.page.messages.map { it.content })
     }
 
     @Test
@@ -126,21 +134,204 @@ class SessionCacheMergeTest {
     }
 
     @Test
-    fun capKeepsTheNewest200AndMarksOldestMissing() {
-        val page = page(
+    fun latestPageAlreadyAtTheTailSkipsRewrite() {
+        val stored = page(start = 0, count = 80, messages = (0 until 80).map { msg("m$it", created = "c$it") })
+        val latest = (40 until 80).map { msg("m$it", created = "c$it") }
+        assertTrue(latestPageAlreadyStored(stored, latest, remoteCount = 80))
+    }
+
+    @Test
+    fun storedPreviewOfTheSameRemoteTailStillNeedsARewrite() {
+        val stored = page(
             start = 0,
-            count = 250,
-            messages = (0 until 250).map { msg("m$it") },
-            reachedOldest = true,
+            count = 1,
+            messages = listOf(msg("hello\n...[truncated]", created = "c0").copy(contentTruncated = true)),
+        )
+        val latest = listOf(msg("hello\n...[truncated]", created = "c0").copy(contentTruncated = true))
+
+        // Same text is not enough. The disk row is still a preview, so refresh must not skip it.
+        assertEquals(false, latestPageAlreadyStored(stored, latest, remoteCount = 1))
+    }
+
+    @Test
+    fun attachmentChangeOnTheTailRequiresRewrite() {
+        val stored = page(start = 0, count = 1, messages = listOf(msg("a")))
+        val latest = listOf(msg("a").copy(attachments = listOf(
+            com.luckyagent.android.data.api.MediaAttachment(fileName = "note.txt"),
+        )))
+        assertEquals(false, latestPageAlreadyStored(stored, latest, remoteCount = 1))
+    }
+
+    @Test
+    fun unchangedPageDoesNotRewriteCachedMessages() {
+        val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
+        assertEquals(HistoryCacheWrite.Unchanged, historyCacheWrite(stored, stored.copy()))
+    }
+
+    @Test
+    fun grownTailInsertsOnlyNewOrdinals() {
+        val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
+        val incoming = page(start = 10, count = 16, messages = (10 until 16).map { msg("m$it", created = "c$it") })
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(14, 15), write.inserts.map { it.ordinal })
+        assertEquals(listOf("m14", "m15"), write.inserts.map { it.message.content })
+        assertEquals(10, write.deleteBefore)
+        assertEquals(16, write.deleteFrom)
+    }
+
+    @Test
+    fun narrowerWindowReplacesInsteadOfDroppingThePrefix() {
+        val stored = page(start = 0, count = 4, messages = (0 until 4).map { msg("m$it", created = "c$it") })
+        val incoming = page(start = 2, count = 6, messages = (2 until 6).map { msg("m$it", created = "c$it") })
+
+        // Replace drops the stored prefix. Callers must not pass a narrower page
+        // unless losing rows 0 and 1 is acceptable.
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun aNarrowerWindowReplacesInsteadOfDroppingUnboundedHistory() {
+        val stored = page(
+            start = 0,
+            count = 200,
+            messages = (0 until 200).map { msg("m$it", created = "c$it") },
+        )
+        val incoming = page(
+            start = 1,
+            count = 201,
+            messages = (1 until 201).map { msg("m$it", created = "c$it") },
         )
 
-        val capped = capLatestMessages(page)
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
 
-        assertEquals(200, capped.messages.size)
-        assertEquals(50, capped.startIndex)
-        assertEquals("m50", capped.messages.first().content)
-        assertEquals("m249", capped.messages.last().content)
-        assertEquals(false, capped.reachedOldest)
+    @Test
+    fun expandingAStoredPreviewPatchesThatRowInsteadOfReplacingThePage() {
+        val preview = "hello\n...[truncated]"
+        val full = "hello world, now stored in full"
+        val stored = page(
+            start = 0,
+            count = 2,
+            messages = listOf(
+                msg(preview, created = "c0").copy(contentTruncated = true),
+                msg("next", created = "c1"),
+            ),
+        )
+        val incoming = page(
+            start = 0,
+            count = 2,
+            messages = listOf(msg(full, created = "c0"), msg("next", created = "c1")),
+        )
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(0), write.inserts.map { it.ordinal })
+        assertEquals(full, write.inserts.single().message.content)
+        assertEquals(false, write.inserts.single().message.contentTruncated)
+    }
+
+    @Test
+    fun previewSuffixDoesNotMakeAnExpandedRowLookNew() {
+        val full = "hello world, this is the stored body"
+        val preview = "hello\n...[truncated]"
+        val stored = page(start = 0, count = 1, messages = listOf(msg(full, created = "c0")))
+        val incoming = page(
+            start = 0,
+            count = 1,
+            messages = listOf(msg(preview, created = "c0").copy(contentTruncated = true)),
+        )
+
+        // Same window: leave the stored full body alone. Rewriting it would put the preview back.
+        assertEquals(HistoryCacheWrite.Unchanged, historyCacheWrite(stored, incoming))
+
+        val grown = page(
+            start = 0,
+            count = 2,
+            messages = listOf(
+                msg(preview, created = "c0").copy(contentTruncated = true),
+                msg("newer", created = "c1"),
+            ),
+        )
+        val write = historyCacheWrite(stored, grown) as HistoryCacheWrite.Patch
+        assertEquals(listOf(1), write.inserts.map { it.ordinal })
+        assertEquals("newer", write.inserts.single().message.content)
+    }
+
+    @Test
+    fun expandedBodySurvivesARefreshThatBringsThePreviewBack() {
+        val cached = page(
+            start = 0,
+            count = 1,
+            messages = listOf(msg("hello world, stored in full", created = "c0")),
+            reachedOldest = true,
+        )
+        val remote = listOf(msg("hello\n...[truncated]", created = "c0").copy(contentTruncated = true))
+
+        val merged = mergeLatestPage(cached, remote, remoteCount = 1) as LatestMerge.Appended
+
+        assertEquals("hello world, stored in full", merged.page.messages.single().content)
+        assertEquals(false, merged.page.messages.single().contentTruncated)
+    }
+
+    @Test
+    fun fullPageKeepsAnOlderPreviewMarker() {
+        val marked = page(
+            start = 0,
+            count = 2,
+            messages = listOf(
+                msg("older preview\n...[truncated]").copy(contentTruncated = true),
+                msg("fresh full body"),
+            ),
+        ).withContentTruncation(false)
+
+        assertEquals(true, marked.messages[0].contentTruncated)
+        assertEquals(false, marked.messages[1].contentTruncated)
+    }
+
+    @Test
+    fun pageFlagOnlyMarksBodiesThatCarryTheServerMarker() {
+        val marked = page(
+            start = 0,
+            count = 2,
+            messages = listOf(msg("short"), msg("long body\n...[truncated]")),
+        ).withContentTruncation(true)
+
+        assertEquals(false, marked.messages[0].contentTruncated)
+        assertEquals(true, marked.messages[1].contentTruncated)
+        assertEquals(false, marked.messages[0].content?.endsWith("\n...[truncated]"))
+    }
+
+    @Test
+    fun changedOverlapStillReplacesThePage() {
+        val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
+        val incoming = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("edited")))
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun attachmentOnlyChangeStillRewritesTheRow() {
+        // Identity is unchanged (same role/content/created_at); only the
+        // attachment list differs. The stored raw_json must not survive that.
+        val stored = page(start = 0, count = 1, messages = listOf(msg("a", created = "c0")))
+        val incoming = page(
+            start = 0,
+            count = 1,
+            messages = listOf(
+                msg("a", created = "c0").copy(
+                    attachments = listOf(com.luckyagent.android.data.api.MediaAttachment(fileName = "note.txt")),
+                ),
+            ),
+        )
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun disjointWindowReplacesInsteadOfAppendingAGap() {
+        val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
+        val incoming = page(start = 4, count = 6, messages = listOf(msg("new-a"), msg("new-b")))
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
     }
 
     private fun msg(

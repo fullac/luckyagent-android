@@ -82,8 +82,9 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = "Tool trajectory",
-            subtitle = state.settings.sessionId.ifBlank { "Select a chat session first" },
+            title = "本轮轨迹",
+            subtitle = state.settings.sessionId.ifBlank { "先打开一个会话" },
+            onBack = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
             actions = {
                 IconButton(onClick = vm::refreshTrajectory) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
@@ -167,7 +168,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No session selected",
                     body = "Open Chat, pick a session, then return here to inspect tool calls.",
                     modifier = Modifier.padding(16.dp),
-                    actionLabel = "打开 Chat",
+                    actionLabel = "打开聊天",
                     onAction = { vm.navigate(AppDestination.Chat) },
                 )
             }

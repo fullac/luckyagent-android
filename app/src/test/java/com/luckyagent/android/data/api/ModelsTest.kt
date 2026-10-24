@@ -8,6 +8,21 @@ import org.junit.Test
 
 class ModelsTest {
     @Test
+    fun chatFrameLeavesIterationLimitToServerConfig() {
+        val json = Json { encodeDefaults = true }
+        val frame = json.encodeToString(
+            ChatOutbound.serializer(),
+            ChatOutbound(
+                id = "req-1",
+                sessionId = "session-1",
+                data = ChatOutboundData(message = "hello"),
+            ),
+        )
+        assertTrue(frame.contains("\"max_iterations\":0"))
+        assertTrue(!frame.contains("\"max_iterations\":8"))
+    }
+
+    @Test
     fun gatewayStartRequestCarriesOptionalToken() {
         val json = Json { explicitNulls = false }
         val request = json.decodeFromString<GatewayStartRequest>("{\"token\":\"tg-token\"}")
@@ -82,6 +97,26 @@ class ModelsTest {
     }
 
     @Test
+    fun sessionHistory304SkipsDecoding() {
+        val fetch = sessionHistoryFetch(304, "") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun blankSuccessEndsTheRefreshWithoutDecoding() {
+        val fetch = sessionHistoryFetch(200, "   ") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun sessionHistoryErrorDoesNotLookUnchanged() {
+        val error = runCatching { sessionHistoryFetch(500, "boom") { error("unused") } }.exceptionOrNull()
+        assertTrue(error?.message?.contains("500") == true)
+    }
+
+    @Test
     fun sessionHistoryDecodesStorageAndTruncationFields() {
         val raw = """
             {
@@ -97,7 +132,8 @@ class ModelsTest {
                   "name": "file_read",
                   "content": "preview",
                   "blob_hash": "abc",
-                  "blob_bytes": 99999
+                  "blob_bytes": 99999,
+                  "client_message_id": "outbound-1"
                 }
               ],
               "limit": 40,
@@ -114,5 +150,6 @@ class ModelsTest {
         assertEquals(true, parsed.contentTruncated)
         assertEquals("abc", parsed.messages.single().blobHash)
         assertEquals(99999, parsed.messages.single().blobBytes)
+        assertEquals("outbound-1", parsed.messages.single().clientMessageId)
     }
 }

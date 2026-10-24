@@ -80,7 +80,7 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Capabilities",
-            title = "Skills",
+            title = "技能",
             subtitle = state.skillsDir?.let { "dir · $it" } ?: "Loaded skill packs from the host runtime",
             actions = {
                 IconButton(onClick = vm::refreshSkills) {

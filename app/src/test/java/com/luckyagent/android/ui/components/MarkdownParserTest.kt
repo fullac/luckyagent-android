@@ -1,6 +1,8 @@
 package com.luckyagent.android.ui.components
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -108,6 +110,16 @@ class MarkdownParserTest {
         assertTrue(blocks.any { it is MdBlock.Paragraph && it.text.contains("**bold**") })
         assertTrue(blocks.any { it is MdBlock.ListItem })
         assertTrue(blocks.any { it is MdBlock.Code && it.body == "code" })
+    }
+
+    @Test
+    fun cachesCompletedMarkdownBySourceAndStreamingMode() {
+        val source = "# Heading\n\n**body**"
+
+        val first = MarkdownParseCache.getOrParse(source, streaming = false)
+
+        assertSame(first, MarkdownParseCache.getOrParse(source, streaming = false))
+        assertNotSame(first, MarkdownParseCache.getOrParse(source, streaming = true))
     }
 
     @Test

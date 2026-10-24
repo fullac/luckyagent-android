@@ -2,7 +2,12 @@ package com.luckyagent.android.ui
 
 import com.luckyagent.android.data.api.ProviderMessage
 
-/** Shared history projection, kept pure so tool-round commentary and final answers can be regression tested. */
+/**
+ * Shared history projection, kept pure so tool-round commentary and final answers can be regression tested.
+ * Every bubble carries [idx], the session-wide oldest-first index of the server
+ * message it came from. That index is the identity a live turn is reconciled
+ * against; a page offset moves when the window moves, this does not.
+ */
 internal fun ProviderMessage.toHistoryBubbles(
     idx: Int,
     messageAttachments: List<ChatMedia> = emptyList(),
@@ -18,6 +23,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             role = "reasoning",
             content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
             reasoningHasContent = true,
+            serverOrdinal = idx,
         )
     }
     toolCalls.forEachIndexed { toolIndex, tool ->
@@ -36,6 +42,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             toolDone = true,
             stepId = tool.id,
             attachments = messageAttachments,
+            serverOrdinal = idx,
         )
     }
     if (role == "tool") {
@@ -50,6 +57,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             attachments = messageAttachments,
             contentTruncated = contentTruncated,
             historyIndex = idx,
+            serverOrdinal = idx,
         )
     } else if (role == "system" && compactLabel != null) {
         result += ChatBubble(
@@ -57,6 +65,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             role = "compact",
             content = compactLabel,
             createdAt = createdAt,
+            serverOrdinal = idx,
         )
     } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
         result += ChatBubble(
@@ -70,6 +79,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             contentTruncated = contentTruncated,
             historyIndex = idx,
             outboundId = clientMessageId,
+            serverOrdinal = idx,
         )
     }
     return result

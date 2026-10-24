@@ -1047,6 +1047,7 @@ class AppViewModel(
         if (handle != null) {
             markOutboundSent(item.id, handle)
             registerRun(handle)
+            if (activeRuns[sessionId]?.size == 1) anchorForegroundTurn()
             dispatchNextOutbound(sessionId)
             return
         }
@@ -1070,6 +1071,7 @@ class AppViewModel(
             } else {
                 markOutboundSent(item.id, retryHandle)
                 registerRun(retryHandle)
+                if (activeRuns[sessionId]?.size == 1) anchorForegroundTurn()
             }
             outboundDispatchJobs.remove(sessionId)
             dispatchNextOutbound(sessionId)
@@ -1448,7 +1450,19 @@ class AppViewModel(
         if (sessionId != currentSessionId() || activeRuns[sessionId].isNullOrEmpty()) return
         resetAssistantStream()
         currentTurnId = "turn-${System.currentTimeMillis()}"
+        anchorForegroundTurn()
         _ui.update { it.copy(isResponding = true, activityLine = "Next message queued · continuing") }
+    }
+
+    /**
+     * Message count at the moment a queued item becomes the foreground turn.
+     * The count taken when it was only queued is stale once the previous turn
+     * has been stored.
+     */
+    private fun anchorForegroundTurn() {
+        turnSendBaseline = historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size)
+        turnUserOrdinal = null
+        toolStepIndex.clear()
     }
 
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
@@ -3280,6 +3294,10 @@ class AppViewModel(
      */
     private fun resolveTurnOrdinal(page: MessagePage): Int? {
         val baseline = turnSendBaseline ?: return null
+        // The count is only an anchor after history includes the rows that existed
+        // when this turn started. An older count can land on a previous user row.
+        val covered = page.messageCount.coerceAtLeast(page.startIndex + page.messages.size)
+        if (covered < baseline) return null
         val offset = baseline - page.startIndex
         if (offset < 0 || offset >= page.messages.size) return null
         val candidate = page.messages[offset]

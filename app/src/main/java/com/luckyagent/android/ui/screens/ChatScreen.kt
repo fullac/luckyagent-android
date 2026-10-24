@@ -340,16 +340,19 @@ internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: 
 /**
  * Session ordinals a live turn will get once the runtime stores it.
  *
- * History stamps every bubble of one server message with that message's index,
- * so the live turn uses the same groups: the user message, then each assistant
- * round (reasoning, tool calls, that round's commentary), then a tool result,
- * then the final answer. A status placeholder shares the next ordinal without
- * consuming it, because history never stores that box.
+ * History stamps every bubble of one server message with that message's index.
+ * A live tool bubble holds both the call and its output, while history stores
+ * the call on the assistant message and the output as the next tool message.
+ * The combined bubble keeps the call's ordinal and reserves the following
+ * result ordinal. Commentary before the result stays on the call. The answer
+ * uses the ordinal past the result. A status placeholder shares the next
+ * ordinal without consuming it, because history never stores that box.
  */
 internal fun liveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<Int> {
     val ordinals = MutableList(turn.size) { userOrdinal }
     var next = userOrdinal
     var groupOpen = false
+    var reservedResult: Int? = null
     turn.forEachIndexed { index, bubble ->
         val role = bubble.role.lowercase()
         when {
@@ -357,12 +360,25 @@ internal fun liveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<In
                 ordinals[index] = userOrdinal
                 next = userOrdinal + 1
                 groupOpen = false
+                reservedResult = null
             }
             isTurnStatusPlaceholder(bubble) -> ordinals[index] = next
-            role == "tool" && bubble.toolOutput != null && bubble.toolArgs == null -> {
-                if (groupOpen) next += 1
+            role == "tool" && bubble.toolArgs != null && bubble.toolOutput != null -> {
+                if (!groupOpen) groupOpen = true
                 ordinals[index] = next
-                next += 1
+                reservedResult = next + 1
+            }
+            role == "tool" && bubble.toolOutput != null && bubble.toolArgs == null -> {
+                val result = reservedResult
+                if (result != null) {
+                    ordinals[index] = result
+                    next = result + 1
+                    reservedResult = null
+                } else {
+                    if (groupOpen) next += 1
+                    ordinals[index] = next
+                    next += 1
+                }
                 groupOpen = false
             }
             role == "reasoning" || role == "tool" || (role == "assistant" && bubble.isIntermediate) -> {
@@ -370,10 +386,16 @@ internal fun liveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<In
                 ordinals[index] = next
             }
             else -> {
-                if (groupOpen) next += 1
+                val result = reservedResult
+                next = when {
+                    result != null -> result + 1
+                    groupOpen -> next + 1
+                    else -> next
+                }
                 ordinals[index] = next
                 next += 1
                 groupOpen = false
+                reservedResult = null
             }
         }
     }
@@ -405,10 +427,16 @@ internal fun dedupeLiveTurn(
         if (ordinal > storedThrough) return@filterIndexed true
         // The status box is the turn's own marker, not a stored row.
         if (isTurnStatusPlaceholder(bubble)) return@filterIndexed true
-        if (bubble.role.equals("user", ignoreCase = true)) return@filterIndexed false
-        storedByOrdinal[ordinal].orEmpty().none { stored ->
-            stored.role.equals(bubble.role, ignoreCase = true)
+        val stored = storedByOrdinal[ordinal].orEmpty()
+        if (bubble.role.equals("user", ignoreCase = true)) {
+            return@filterIndexed stored.none { it.role.equals("user", ignoreCase = true) }
         }
+        // A finished live tool spans the call ordinal and the following result.
+        if (bubble.role.equals("tool", ignoreCase = true) && bubble.toolArgs != null && bubble.toolOutput != null) {
+            val resultStored = storedByOrdinal[ordinal + 1].orEmpty().any { it.role.equals("tool", ignoreCase = true) }
+            if (!resultStored) return@filterIndexed true
+        }
+        stored.none { it.role.equals(bubble.role, ignoreCase = true) }
     }
 }
 

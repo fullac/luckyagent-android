@@ -310,22 +310,63 @@ class ChatTimelineTest {
         val live = listOf(
             ChatBubble("u-live", "user", "what is in the file"),
             ChatBubble("reasoning-$turn-0", "reasoning", "reading", reasoningHasContent = true),
-            ChatBubble("tool-$turn:1", "tool", "file_read", toolName = "file_read", toolArgs = "{}", stepId = "$turn:1"),
-            ChatBubble("a-round", "assistant", "looking", isIntermediate = true),
             ChatBubble(
-                "tool-$turn:1-result",
+                "tool-$turn:1",
                 "tool",
-                "file contents",
+                "file_read",
                 toolName = "file_read",
+                toolArgs = "{}",
                 toolOutput = "file contents",
                 toolDone = true,
                 stepId = "$turn:1",
             ),
+            ChatBubble("a-round", "assistant", "looking", isIntermediate = true),
             ChatBubble("a-live", "assistant", "still streaming", streaming = true),
         )
 
-        // user | reasoning+tool+commentary | tool result | answer
-        assertEquals(listOf(40, 41, 41, 41, 42, 43), liveTurnOrdinals(live, 40))
+        // user | assistant call | commentary still on the call | result reserved | answer
+        assertEquals(listOf(40, 41, 41, 41, 43), liveTurnOrdinals(live, 40))
+    }
+
+    @Test
+    fun aMergedToolBubbleDropsTheFinalAnswerOnceHistoryStoresTheResult() {
+        val live = listOf(
+            ChatBubble("u-live", "user", "read it"),
+            ChatBubble("reasoning-turn-1", "reasoning", "reading", reasoningHasContent = true),
+            ChatBubble(
+                "tool-turn-1",
+                "tool",
+                "file_read",
+                toolName = "file_read",
+                toolArgs = "{}",
+                toolOutput = "contents",
+                toolDone = true,
+            ),
+            ChatBubble("a-live", "assistant", "the file says hello", streaming = true),
+        )
+        val stored = listOf(
+            ChatBubble("h-0", "user", "read it", serverOrdinal = 0),
+            ChatBubble("h-1-reasoning", "reasoning", "reading", serverOrdinal = 1),
+            ChatBubble("h-1-tool", "tool", "file_read", serverOrdinal = 1, toolName = "file_read", toolArgs = "{}"),
+            ChatBubble("h-2-result", "tool", "contents", serverOrdinal = 2, toolName = "file_read", toolOutput = "contents"),
+            ChatBubble("h-3", "assistant", "the file says hello", serverOrdinal = 3),
+        )
+
+        assertEquals(emptyList<String>(), dedupeLiveTurn(stored, live, turnOrdinal = 0).map { it.id })
+    }
+
+    @Test
+    fun aUserRowStaysWhenThatOrdinalIsNotAUserMessage() {
+        val live = listOf(
+            ChatBubble("u-live", "user", "again"),
+            ChatBubble("a-live", "assistant", "new answer", streaming = true),
+        )
+        val stored = listOf(
+            ChatBubble("h-0", "user", "again", serverOrdinal = 0),
+            ChatBubble("h-1", "assistant", "old answer", serverOrdinal = 1),
+        )
+
+        assertEquals(listOf("u-live", "a-live"), dedupeLiveTurn(stored, live, turnOrdinal = 1).map { it.id })
     }
 
     @Test

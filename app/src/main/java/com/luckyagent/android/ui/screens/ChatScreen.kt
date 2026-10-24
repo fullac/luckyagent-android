@@ -999,13 +999,15 @@ private fun ChatConversation(
             sessionId = state.settings.sessionId,
             tasks = state.tasks,
             background = state.backgroundTasks,
+            tasksError = state.tasksError,
+            backgroundError = state.backgroundError,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             onOpenTask = { taskId ->
-                vm.selectTask(taskId)
+                if (taskId != null) vm.selectTask(taskId)
                 vm.navigate(AppDestination.Tasks)
             },
             onOpenBackground = { taskId ->
-                vm.selectBackgroundTask(taskId)
+                if (taskId != null) vm.selectBackgroundTask(taskId)
                 vm.navigate(AppDestination.Background)
             },
             onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
@@ -1321,9 +1323,11 @@ private fun SessionNavigationCard(
     sessionId: String,
     tasks: List<TaskSummary>,
     background: List<AutonomyTaskSummary>,
+    tasksError: String? = null,
+    backgroundError: String? = null,
     modifier: Modifier = Modifier,
-    onOpenTask: (String) -> Unit,
-    onOpenBackground: (String) -> Unit,
+    onOpenTask: (String?) -> Unit,
+    onOpenBackground: (String?) -> Unit,
     onOpenTrace: () -> Unit,
     onOpenMemory: () -> Unit,
 ) {
@@ -1332,6 +1336,15 @@ private fun SessionNavigationCard(
     val featured = remember(mine) { sessionNavigationTask(mine) }
     val featuredBoard = remember(board) { sessionNavigationBackground(board) }
     val quiet = featured == null && featuredBoard == null
+    // The task and background entries are gone from the drawer, so this card must
+    // open them unconditionally. Otherwise a session with no task of its own has
+    // no way to reach the global task list or the board.
+    val failure = when {
+        tasksError != null && backgroundError != null -> "任务和后台列表读取失败"
+        tasksError != null -> "任务列表读取失败"
+        backgroundError != null -> "后台列表读取失败"
+        else -> null
+    }
     CloverCard(modifier = modifier) {
         Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
         when {
@@ -1351,6 +1364,9 @@ private fun SessionNavigationCard(
             )
             else -> Text("这轮还没有单独的任务。轨迹和记忆从这里进入。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
         }
+        if (failure != null) {
+            Text(failure, color = CloverWarning, style = MaterialTheme.typography.labelMedium)
+        }
         if (!quiet) {
             val tone = when {
                 featured?.status?.taskNeedsAttention() == true || featuredBoard?.state?.taskNeedsAttention() == true -> CloverWarning
@@ -1363,19 +1379,15 @@ private fun SessionNavigationCard(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (featured != null) {
-                TextButton(onClick = { onOpenTask(featured.id) }) {
-                    Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("任务")
-                }
+            TextButton(onClick = { onOpenTask(featured?.id) }) {
+                Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("任务")
             }
-            if (featuredBoard != null) {
-                TextButton(onClick = { onOpenBackground(featuredBoard.id) }) {
-                    Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("后台")
-                }
+            TextButton(onClick = { onOpenBackground(featuredBoard?.id) }) {
+                Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("后台")
             }
             TextButton(onClick = onOpenTrace) {
                 Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))

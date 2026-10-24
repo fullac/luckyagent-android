@@ -4,6 +4,7 @@ import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.ui.AppDestination
 
 /**
  * Tasks that belong to the open chat, so the session card does not become a
@@ -53,5 +54,14 @@ internal fun sessionNavigationBackground(tasks: List<AutonomyTaskSummary>): Auto
 /**
  * Phone drawer and wide rail share this list. Session progress is a card on
  * chat, so tasks, traces, memory, and the background board are not peers here.
+ *
+ * Keyed by [AppDestination], not by label: labels are UI copy and change often,
+ * and a lookup by text would either crash or silently pick the wrong page.
  */
-internal val computerNavDestinations = listOf("定时", "渠道", "插件", "技能", "服务器配置")
+internal val computerNavDestinations = listOf(
+    AppDestination.Cron,
+    AppDestination.Gateways,
+    AppDestination.Plugins,
+    AppDestination.Skills,
+    AppDestination.RuntimeConfig,
+)

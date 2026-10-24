@@ -2,6 +2,7 @@ package com.luckyagent.android.ui.screens
 
 import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.ui.AppDestination
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -52,12 +53,21 @@ class ChatNavigationTest {
     }
 
     @Test fun navigationKeepsSessionProgressOffTheModuleList() {
-        assertEquals(listOf("定时", "渠道", "插件", "技能", "服务器配置"), computerNavDestinations)
-        assertFalse(computerNavDestinations.contains("任务"))
-        assertFalse(computerNavDestinations.contains("本轮轨迹"))
-        assertFalse(computerNavDestinations.contains("记忆"))
-        assertFalse(computerNavDestinations.contains("后台黑板"))
-        assertFalse(computerNavDestinations.contains("聊天"))
+        assertEquals(
+            listOf(
+                AppDestination.Cron,
+                AppDestination.Gateways,
+                AppDestination.Plugins,
+                AppDestination.Skills,
+                AppDestination.RuntimeConfig,
+            ),
+            computerNavDestinations,
+        )
+        assertFalse(computerNavDestinations.contains(AppDestination.Tasks))
+        assertFalse(computerNavDestinations.contains(AppDestination.Trajectory))
+        assertFalse(computerNavDestinations.contains(AppDestination.Memory))
+        assertFalse(computerNavDestinations.contains(AppDestination.Background))
+        assertFalse(computerNavDestinations.contains(AppDestination.Chat))
     }
 
     private fun task(

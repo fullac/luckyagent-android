@@ -30,9 +30,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.Assignment
-import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
@@ -41,7 +38,6 @@ import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Timeline
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -106,14 +102,10 @@ private data class NavSpec(
 
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "聊天", Icons.Outlined.ChatBubbleOutline),
-    NavSpec(AppDestination.Tasks, "任务", Icons.AutoMirrored.Outlined.Assignment),
-    NavSpec(AppDestination.Trajectory, "本轮轨迹", Icons.Outlined.Timeline),
-    NavSpec(AppDestination.Memory, "记忆", Icons.Outlined.AccountTree),
     NavSpec(AppDestination.Cron, "定时", Icons.Outlined.Schedule),
     NavSpec(AppDestination.Gateways, "渠道", Icons.Outlined.Hub),
     NavSpec(AppDestination.Plugins, "插件", Icons.Outlined.Widgets),
     NavSpec(AppDestination.Skills, "技能", Icons.Outlined.Extension),
-    NavSpec(AppDestination.Background, "后台黑板", Icons.Outlined.Autorenew),
     NavSpec(AppDestination.RuntimeConfig, "服务器配置", Icons.Outlined.Code),
     NavSpec(AppDestination.Settings, "基础设置", Icons.Outlined.Settings),
 )
@@ -125,7 +117,7 @@ private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
  * out of the current session card. Host controls — including the server config —
  * stay under one computer, not beside chat.
  */
-private val computerNavItems = computerNavDestinations.map { name -> navItems.first { it.label == name } }
+private val computerNavItems = computerNavDestinations.map(::nav)
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
 private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (dest) {
@@ -138,15 +130,6 @@ private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (
     AppDestination.Gateways -> when {
         state.gatewaysError != null -> CloverError
         state.gateways.isNotEmpty() && state.gateways.none { it.running } -> CloverWarning
-        else -> null
-    }
-    AppDestination.Tasks -> when {
-        state.tasksError != null -> CloverError
-        state.tasks.any { it.status.equals("failed", ignoreCase = true) } -> CloverWarning
-        else -> null
-    }
-    AppDestination.Background -> when {
-        state.backgroundError != null -> CloverError
         else -> null
     }
     AppDestination.Cron -> when {

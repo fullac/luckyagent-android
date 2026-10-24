@@ -85,7 +85,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             eyebrow = "Channels",
-            title = "Gateways",
+            title = "渠道",
             subtitle = "Start and stop channels on the connected lh serve host",
             actions = {
                 IconButton(onClick = vm::refreshGateways, enabled = !state.gatewaysLoading && state.gatewayAction == null) {

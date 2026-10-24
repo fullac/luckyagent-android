@@ -111,7 +111,7 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
             } else {
                 detail.task.id
             },
-            onBack = if (detail != null) vm::clearSelectedBackgroundTask else null,
+            onBack = if (detail != null) vm::clearSelectedBackgroundTask else ({ vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) }),
             actions = {
                 IconButton(onClick = { if (detail == null) vm.refreshBackground() else vm.selectBackgroundTask(detail.task.id) }) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "刷新后台黑板")

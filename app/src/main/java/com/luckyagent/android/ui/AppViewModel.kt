@@ -2067,6 +2067,10 @@ class AppViewModel(
             clearSelectedBackgroundTask()
             return true
         }
+        if (_ui.value.destination == AppDestination.RuntimeConfig) {
+            navigate(AppDestination.Settings)
+            return true
+        }
         if (_ui.value.destination == AppDestination.Chat) return false
         navigate(AppDestination.Chat)
         return true

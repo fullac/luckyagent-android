@@ -224,6 +224,8 @@ data class AppUiState(
     val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
     val historyHasMore: Boolean = false,
+    /** Server index whose full body is being fetched. -1 when idle. */
+    val expandingHistoryIndex: Int = -1,
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
     /** Messages already handed to the runtime's per-session FIFO. */
@@ -2992,6 +2994,7 @@ class AppViewModel(
         if (!bubble.contentTruncated || index < 0 || expandingHistoryIndex == index) return
         val local = index - historyStartIndex
         if (local !in historyMessages.indices || !historyMessages[local].contentTruncated) return
+        val expected = historyMessages[local]
         val sessionId = historySessionId ?: return
         val total = currentHistoryPage().messageCount
         // History offset skips the newest N messages. Walk back from the session
@@ -3000,6 +3003,7 @@ class AppViewModel(
         val offset = (total - pageEnd).coerceAtLeast(0)
         val limit = (pageEnd - (pageEnd - SessionCachePolicy.LATEST_PAGE).coerceAtLeast(0)).coerceIn(1, SessionCachePolicy.LATEST_PAGE)
         expandingHistoryIndex = index
+        _ui.update { it.copy(expandingHistoryIndex = index, activityLine = "正在加载全文") }
         viewModelScope.launch {
             try {
                 val connection = container.settingsRepository.snapshot()
@@ -3012,14 +3016,31 @@ class AppViewModel(
                     _ui.update { it.copy(activityLine = "全文加载失败 · ${error.message}") }
                     return@launch
                 }
-                val history = fetch.history ?: return@launch
-                if (history.contentTruncated == true) return@launch
+                val history = fetch.history ?: run {
+                    _ui.update { it.copy(activityLine = "服务端未返回完整正文") }
+                    return@launch
+                }
+                if (history.contentTruncated == true) {
+                    _ui.update { it.copy(activityLine = "服务端未返回完整正文") }
+                    return@launch
+                }
                 if (currentSessionId() != sessionId || historySessionId != sessionId) return@launch
                 val remoteCount = history.messageCount ?: currentHistoryPage().messageCount
+                if (remoteCount != total) {
+                    _ui.update { it.copy(activityLine = "会话已更新，请重新展开") }
+                    return@launch
+                }
                 val pageStart = remoteCount - offset - history.messages.size
-                val full = history.messages.getOrNull(index - pageStart) ?: return@launch
+                val full = history.messages.getOrNull(index - pageStart) ?: run {
+                    _ui.update { it.copy(activityLine = "服务端未返回完整正文") }
+                    return@launch
+                }
+                if (!sameExpandedRow(expected, full)) {
+                    _ui.update { it.copy(activityLine = "会话已更新，请重新展开") }
+                    return@launch
+                }
                 val slot = index - historyStartIndex
-                if (slot !in historyMessages.indices) return@launch
+                if (slot !in historyMessages.indices || historyMessages[slot] != expected) return@launch
                 val updated = historyMessages.toMutableList()
                 updated[slot] = full.copy(contentTruncated = false)
                 val page = currentHistoryPage().copy(
@@ -3042,10 +3063,30 @@ class AppViewModel(
                 )
                 if (currentSessionId() != sessionId || historySessionId != sessionId) return@launch
                 applyHistoryPage(sessionId, page, offline = false)
+                _ui.update { it.copy(activityLine = "已展开全文") }
             } finally {
-                if (expandingHistoryIndex == index) expandingHistoryIndex = -1
+                if (expandingHistoryIndex == index) {
+                    expandingHistoryIndex = -1
+                    _ui.update { state ->
+                        if (state.expandingHistoryIndex == index) state.copy(expandingHistoryIndex = -1) else state
+                    }
+                }
             }
         }
+    }
+
+    /** The fetched row is the one the user tapped, not a neighbor shifted by a new message. */
+    private fun sameExpandedRow(expected: ProviderMessage, fetched: ProviderMessage): Boolean {
+        if (expected.role != fetched.role) return false
+        if (expected.createdAt != fetched.createdAt) return false
+        val expectedTool = expected.toolCallId?.trim().orEmpty()
+        val fetchedTool = fetched.toolCallId?.trim().orEmpty()
+        if (expectedTool.isNotEmpty() || fetchedTool.isNotEmpty()) return expectedTool == fetchedTool
+        val preview = expected.content.orEmpty()
+        val full = fetched.content.orEmpty()
+        val marker = "\n...[truncated]"
+        if (!preview.endsWith(marker)) return preview == full
+        return full.startsWith(preview.removeSuffix(marker))
     }
 
     private fun remoteUpdatedAt(sessionId: String): String? =

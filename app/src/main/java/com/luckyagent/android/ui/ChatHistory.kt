@@ -47,6 +47,8 @@ internal fun ProviderMessage.toHistoryBubbles(
             toolDone = true,
             stepId = toolCallId,
             attachments = messageAttachments,
+            contentTruncated = contentTruncated,
+            historyIndex = idx,
         )
     } else if (role == "system" && compactLabel != null) {
         result += ChatBubble(
@@ -64,7 +66,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             usage = usage,
             attachments = messageAttachments,
             isIntermediate = role == "assistant" && toolCalls.isNotEmpty(),
-            contentTruncated = contentTruncated && role != "tool",
+            contentTruncated = contentTruncated,
             historyIndex = idx,
         )
     }

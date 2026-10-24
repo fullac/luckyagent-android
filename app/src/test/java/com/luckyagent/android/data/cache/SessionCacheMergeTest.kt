@@ -74,7 +74,8 @@ class SessionCacheMergeTest {
 
         val merged = mergeLatestPage(cached, remote, remoteCount = 2) as LatestMerge.Appended
 
-        assertEquals(listOf("running", "after"), merged.page.messages.map { it.content })
+        // Same tool call, newer body. The finished result replaces the running row.
+        assertEquals(listOf("done", "after"), merged.page.messages.map { it.content })
     }
 
     @Test
@@ -188,6 +189,62 @@ class SessionCacheMergeTest {
         assertEquals(listOf(200), write.inserts.map { it.ordinal })
         assertEquals(1, write.deleteBefore)
         assertEquals(201, write.deleteFrom)
+    }
+
+    @Test
+    fun previewSuffixDoesNotMakeAnExpandedRowLookNew() {
+        val full = "hello world, this is the stored body"
+        val preview = "hello\n...[truncated]"
+        val stored = page(start = 0, count = 1, messages = listOf(msg(full, created = "c0")))
+        val incoming = page(
+            start = 0,
+            count = 1,
+            messages = listOf(msg(preview, created = "c0").copy(contentTruncated = true)),
+        )
+
+        // Same window: leave the stored full body alone. Rewriting it would put the preview back.
+        assertEquals(HistoryCacheWrite.Unchanged, historyCacheWrite(stored, incoming))
+
+        val grown = page(
+            start = 0,
+            count = 2,
+            messages = listOf(
+                msg(preview, created = "c0").copy(contentTruncated = true),
+                msg("newer", created = "c1"),
+            ),
+        )
+        val write = historyCacheWrite(stored, grown) as HistoryCacheWrite.Patch
+        assertEquals(listOf(1), write.inserts.map { it.ordinal })
+        assertEquals("newer", write.inserts.single().message.content)
+    }
+
+    @Test
+    fun expandedBodySurvivesARefreshThatBringsThePreviewBack() {
+        val cached = page(
+            start = 0,
+            count = 1,
+            messages = listOf(msg("hello world, stored in full", created = "c0")),
+            reachedOldest = true,
+        )
+        val remote = listOf(msg("hello\n...[truncated]", created = "c0").copy(contentTruncated = true))
+
+        val merged = mergeLatestPage(cached, remote, remoteCount = 1) as LatestMerge.Appended
+
+        assertEquals("hello world, stored in full", merged.page.messages.single().content)
+        assertEquals(false, merged.page.messages.single().contentTruncated)
+    }
+
+    @Test
+    fun pageFlagOnlyMarksBodiesThatCarryTheServerMarker() {
+        val marked = page(
+            start = 0,
+            count = 2,
+            messages = listOf(msg("short"), msg("long body\n...[truncated]")),
+        ).withContentTruncation(true)
+
+        assertEquals(false, marked.messages[0].contentTruncated)
+        assertEquals(true, marked.messages[1].contentTruncated)
+        assertEquals(false, marked.messages[0].content?.endsWith("\n...[truncated]"))
     }
 
     @Test

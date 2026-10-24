@@ -56,15 +56,25 @@ data class MessagePage(
     val contentTruncated: Boolean = false,
 )
 
-/** Mark every body on a preview page. A full fetch clears the flag. */
+/**
+ * Server history truncation marker. Only a body that actually ends with this
+ * suffix was capped. A page-level flag must not blank every other row.
+ */
+internal const val HISTORY_TRUNCATION_MARKER = "\n...[truncated]"
+
+internal fun ProviderMessage.withPreviewFlag(pageTruncated: Boolean): ProviderMessage {
+    if (!pageTruncated) {
+        return if (contentTruncated) copy(contentTruncated = false) else this
+    }
+    val capped = content?.endsWith(HISTORY_TRUNCATION_MARKER) == true
+    return if (contentTruncated == capped) this else copy(contentTruncated = capped)
+}
+
+/** Mark only the bodies this preview page actually capped. A full fetch clears the flag. */
 fun MessagePage.withContentTruncation(truncated: Boolean): MessagePage {
-    if (!truncated && messages.none { it.contentTruncated }) return this
-    return copy(
-        contentTruncated = truncated,
-        messages = messages.map { message ->
-            if (message.contentTruncated == truncated) message else message.copy(contentTruncated = truncated)
-        },
-    )
+    val marked = messages.map { it.withPreviewFlag(truncated) }
+    if (marked == messages && contentTruncated == truncated) return this
+    return copy(contentTruncated = truncated, messages = marked)
 }
 
 sealed class LatestMerge {
@@ -104,7 +114,13 @@ fun mergeLatestPage(
     if (cached.startIndex + cached.messages.size != expectedStart + overlap) {
         return LatestMerge.Invalidate
     }
-    val merged = cached.messages + incoming
+    // A finished tool result replaces the running row. An already expanded body
+    // stays when the refresh only brought its preview back.
+    val kept = cached.messages.dropLast(overlap) +
+        remoteMessages.take(overlap).mapIndexed { index, remote ->
+            preferStoredBody(cached.messages[cached.messages.size - overlap + index], remote)
+        }
+    val merged = kept + incoming
     return LatestMerge.Appended(
         MessagePage(
             messages = merged,
@@ -145,8 +161,9 @@ fun prependOlderPage(
     if (olderStart < 0) return LatestMerge.Invalidate
     if (olderStart + older.size != cached.startIndex) return LatestMerge.Invalidate
     // A touching identity means the offset drifted into rows we already stored.
+    // An expanded body and its own preview are the same row, not drift.
     val driftedIntoCache = older.any { olderMessage ->
-        cached.messages.any { cachedMessage -> messagesEquivalent(olderMessage, cachedMessage) }
+        cached.messages.any { cachedMessage -> sameDistinctRow(olderMessage, cachedMessage) }
     }
     if (driftedIntoCache) return LatestMerge.Invalidate
     return LatestMerge.Appended(
@@ -170,6 +187,7 @@ fun prependOlderPage(
 sealed class HistoryCacheWrite {
     data object Unchanged : HistoryCacheWrite()
     data class Patch(
+        /** New ordinals, plus overlap rows whose stored body must be rewritten. */
         val inserts: List<IndexedMessage>,
         val deleteBefore: Int,
         val deleteFrom: Int,
@@ -200,15 +218,18 @@ fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCache
     val overlapStart = maxOf(storedStart, nextStart)
     val overlapEnd = minOf(storedEnd, nextEnd)
     if (overlapStart >= overlapEnd) return HistoryCacheWrite.Replace
+    val updates = mutableListOf<IndexedMessage>()
     for (ordinal in overlapStart until overlapEnd) {
         val previous = stored.messages[ordinal - storedStart]
         val next = capped.messages[ordinal - nextStart]
-        if (!messagesEquivalent(previous, next)) return HistoryCacheWrite.Replace
+        if (!sameHistoryRow(previous, next)) return HistoryCacheWrite.Replace
+        val kept = preferStoredBody(previous, next)
+        if (kept != previous) updates += IndexedMessage(ordinal, kept)
     }
     val inserts = capped.messages.mapIndexedNotNull { index, message ->
         val ordinal = nextStart + index
         if (ordinal < storedStart || ordinal >= storedEnd) IndexedMessage(ordinal, message) else null
-    }
+    } + updates
     if (inserts.isEmpty() && nextStart == storedStart && nextEnd == storedEnd) {
         return HistoryCacheWrite.Unchanged
     }
@@ -250,6 +271,28 @@ fun messageIdentity(message: ProviderMessage): String {
 private fun messagesEquivalent(left: ProviderMessage, right: ProviderMessage): Boolean =
     messageIdentity(left) == messageIdentity(right)
 
+/** Same row for a cache rewrite. A stored full body still matches its own preview. */
+private fun sameHistoryRow(stored: ProviderMessage, incoming: ProviderMessage): Boolean {
+    if (messagesEquivalent(stored, incoming)) return true
+    if (stored.createdAt != incoming.createdAt || stored.role != incoming.role) return false
+    if (stored.name != incoming.name || stored.toolCallId != incoming.toolCallId) return false
+    val full = stored.content.orEmpty()
+    val preview = incoming.content.orEmpty()
+    if (!incoming.contentTruncated || !preview.endsWith(HISTORY_TRUNCATION_MARKER)) return false
+    return full.startsWith(preview.removeSuffix(HISTORY_TRUNCATION_MARKER))
+}
+
+/** Same identity, but not merely a preview of a body we already expanded. */
+private fun sameDistinctRow(left: ProviderMessage, right: ProviderMessage): Boolean {
+    if (!messagesEquivalent(left, right)) return false
+    val leftPreview = left.content?.endsWith(HISTORY_TRUNCATION_MARKER) == true
+    val rightPreview = right.content?.endsWith(HISTORY_TRUNCATION_MARKER) == true
+    if (leftPreview == rightPreview) return true
+    val full = if (leftPreview) right.content.orEmpty() else left.content.orEmpty()
+    val preview = if (leftPreview) left.content.orEmpty() else right.content.orEmpty()
+    return !full.startsWith(preview.dropLast(HISTORY_TRUNCATION_MARKER.length))
+}
+
 /**
  * The fetched latest page is already present at the tail of [stored].
  * Older cached rows outside that page are left untouched. Identity overlap is
@@ -263,7 +306,24 @@ internal fun latestPageAlreadyStored(
     if (latest.isEmpty() || stored.messages.isEmpty() || remoteCount < latest.size) return false
     if (stored.startIndex + stored.messages.size != remoteCount) return false
     if (stored.messages.size < latest.size) return false
-    return stored.messages.takeLast(latest.size) == latest
+    val tail = stored.messages.takeLast(latest.size)
+    return tail.indices.all { index -> sameStoredTailRow(tail[index], latest[index]) }
+}
+
+/** Full text already stored for a row still matches the preview the server just sent. */
+private fun sameStoredTailRow(stored: ProviderMessage, remote: ProviderMessage): Boolean {
+    if (stored == remote) return true
+    if (!sameHistoryRow(stored, remote)) return false
+    // Attachments, tool arguments, or a finished tool body still need a rewrite.
+    // The preview suffix and the truncation flag do not.
+    return stored.copy(content = remote.content, contentTruncated = remote.contentTruncated) == remote
+}
+
+/** Keep an expanded body when the refresh only brought back its preview. */
+internal fun preferStoredBody(stored: ProviderMessage, remote: ProviderMessage): ProviderMessage {
+    if (!remote.contentTruncated || stored.contentTruncated) return remote
+    if (!sameHistoryRow(stored, remote)) return remote
+    return stored
 }
 
 /**
@@ -272,16 +332,17 @@ internal fun latestPageAlreadyStored(
  */
 internal fun overlapLength(cached: List<ProviderMessage>, incoming: List<ProviderMessage>): Int {
     if (cached.isEmpty() || incoming.isEmpty()) return -1
-    val cachedIds = cached.map(::messageIdentity)
-    val incomingIds = incoming.map(::messageIdentity)
-    val max = minOf(cachedIds.size, incomingIds.size)
+    val max = minOf(cached.size, incoming.size)
     for (len in max downTo 1) {
-        if (cachedIds.takeLast(len) == incomingIds.take(len)) return len
+        if (rowsMatch(cached.takeLast(len), incoming.take(len))) return len
     }
-    val incomingStart = incomingIds.first()
-    val cachedPos = cachedIds.indexOfLast { it == incomingStart }
-    if (cachedPos >= 0 && cachedIds.drop(cachedPos) == incomingIds.take(cachedIds.size - cachedPos)) {
-        return cachedIds.size - cachedPos
+    val incomingStart = incoming.first()
+    val cachedPos = cached.indexOfLast { sameHistoryRow(it, incomingStart) }
+    if (cachedPos >= 0 && rowsMatch(cached.drop(cachedPos), incoming.take(cached.size - cachedPos))) {
+        return cached.size - cachedPos
     }
     return -1
 }
+
+private fun rowsMatch(left: List<ProviderMessage>, right: List<ProviderMessage>): Boolean =
+    left.size == right.size && left.indices.all { index -> sameHistoryRow(left[index], right[index]) }

@@ -15,6 +15,7 @@ object SessionCachePolicy {
     const val MAX_MESSAGES = 200
     const val MAX_SESSIONS = 30
     const val OFFLINE_LABEL = "离线，显示上次内容"
+    const val REFRESH_FAILED_LABEL = "刷新失败，显示上次内容"
 }
 
 data class CachedSessionMeta(
@@ -145,6 +146,73 @@ fun prependOlderPage(
     )
 }
 
+/**
+ * How a refreshed page should be written.
+ *
+ * [Unchanged] means every stored message still matches, so Room must not
+ * delete and rewrite `cached_messages`. [Patch] inserts ordinals that are
+ * new and deletes rows that fell outside the window. A changed overlapping
+ * row, a gap, or an unaligned cache uses [Replace].
+ */
+sealed class HistoryCacheWrite {
+    data object Unchanged : HistoryCacheWrite()
+    data class Patch(
+        val inserts: List<IndexedMessage>,
+        val deleteBefore: Int,
+        val deleteFrom: Int,
+    ) : HistoryCacheWrite()
+    data object Replace : HistoryCacheWrite()
+}
+
+data class IndexedMessage(
+    val ordinal: Int,
+    val message: ProviderMessage,
+)
+
+fun historyCacheWrite(stored: MessagePage?, incoming: MessagePage): HistoryCacheWrite {
+    val capped = capLatestMessages(incoming)
+    if (stored == null || stored.messages.isEmpty() || stored.startIndex < 0) return HistoryCacheWrite.Replace
+    if (pagesMatch(stored, capped)) return HistoryCacheWrite.Unchanged
+
+    val storedStart = stored.startIndex
+    val storedEnd = storedStart + stored.messages.size
+    val nextStart = capped.startIndex
+    val nextEnd = nextStart + capped.messages.size
+    if (nextStart < 0 || nextEnd < nextStart) return HistoryCacheWrite.Replace
+    // Head rows may only fall out because the 200-message window is full. A page
+    // that merely starts later must not delete a prefix that is still valid.
+    if (nextStart > storedStart && capped.messages.size < SessionCachePolicy.MAX_MESSAGES) {
+        return HistoryCacheWrite.Replace
+    }
+    val overlapStart = maxOf(storedStart, nextStart)
+    val overlapEnd = minOf(storedEnd, nextEnd)
+    if (overlapStart >= overlapEnd) return HistoryCacheWrite.Replace
+    for (ordinal in overlapStart until overlapEnd) {
+        val previous = stored.messages[ordinal - storedStart]
+        val next = capped.messages[ordinal - nextStart]
+        if (!messagesEquivalent(previous, next)) return HistoryCacheWrite.Replace
+    }
+    val inserts = capped.messages.mapIndexedNotNull { index, message ->
+        val ordinal = nextStart + index
+        if (ordinal < storedStart || ordinal >= storedEnd) IndexedMessage(ordinal, message) else null
+    }
+    if (inserts.isEmpty() && nextStart == storedStart && nextEnd == storedEnd) {
+        return HistoryCacheWrite.Unchanged
+    }
+    return HistoryCacheWrite.Patch(
+        inserts = inserts,
+        deleteBefore = nextStart,
+        deleteFrom = nextEnd,
+    )
+}
+
+private fun pagesMatch(stored: MessagePage, incoming: MessagePage): Boolean =
+    stored.startIndex == incoming.startIndex &&
+        stored.messageCount == incoming.messageCount &&
+        stored.reachedOldest == incoming.reachedOldest &&
+        stored.messages.size == incoming.messages.size &&
+        stored.messages.zip(incoming.messages).all { (left, right) -> messagesEquivalent(left, right) }
+
 fun capLatestMessages(page: MessagePage, max: Int = SessionCachePolicy.MAX_MESSAGES): MessagePage {
     if (page.messages.size <= max) return page
     val dropped = page.messages.size - max
@@ -168,6 +236,22 @@ fun messageIdentity(message: ProviderMessage): String {
 
 private fun messagesEquivalent(left: ProviderMessage, right: ProviderMessage): Boolean =
     messageIdentity(left) == messageIdentity(right)
+
+/**
+ * The fetched latest page is already present at the tail of [stored].
+ * Older cached rows outside that page are left untouched. Identity overlap is
+ * not enough: attachments and other fields must also be unchanged.
+ */
+internal fun latestPageAlreadyStored(
+    stored: MessagePage,
+    latest: List<ProviderMessage>,
+    remoteCount: Int,
+): Boolean {
+    if (latest.isEmpty() || stored.messages.isEmpty() || remoteCount < latest.size) return false
+    if (stored.startIndex + stored.messages.size != remoteCount) return false
+    if (stored.messages.size < latest.size) return false
+    return stored.messages.takeLast(latest.size) == latest
+}
 
 /**
  * Length of the prefix of [incoming] that already sits at the tail of [cached].

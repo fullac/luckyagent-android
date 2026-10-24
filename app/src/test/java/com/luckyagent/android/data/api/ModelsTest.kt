@@ -8,6 +8,21 @@ import org.junit.Test
 
 class ModelsTest {
     @Test
+    fun chatFrameLeavesIterationLimitToServerConfig() {
+        val json = Json { encodeDefaults = true }
+        val frame = json.encodeToString(
+            ChatOutbound.serializer(),
+            ChatOutbound(
+                id = "req-1",
+                sessionId = "session-1",
+                data = ChatOutboundData(message = "hello"),
+            ),
+        )
+        assertTrue(frame.contains("\"max_iterations\":0"))
+        assertTrue(!frame.contains("\"max_iterations\":8"))
+    }
+
+    @Test
     fun gatewayStartRequestCarriesOptionalToken() {
         val json = Json { explicitNulls = false }
         val request = json.decodeFromString<GatewayStartRequest>("{\"token\":\"tg-token\"}")
@@ -79,6 +94,26 @@ class ModelsTest {
         )
 
         assertEquals("metadata-execution", record.toTaskSummary().executionSession())
+    }
+
+    @Test
+    fun sessionHistory304SkipsDecoding() {
+        val fetch = sessionHistoryFetch(304, "") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun blankSuccessEndsTheRefreshWithoutDecoding() {
+        val fetch = sessionHistoryFetch(200, "   ") { error("body must not be decoded") }
+        assertTrue(fetch.notModified)
+        assertEquals(null, fetch.history)
+    }
+
+    @Test
+    fun sessionHistoryErrorDoesNotLookUnchanged() {
+        val error = runCatching { sessionHistoryFetch(500, "boom") { error("unused") } }.exceptionOrNull()
+        assertTrue(error?.message?.contains("500") == true)
     }
 
     @Test

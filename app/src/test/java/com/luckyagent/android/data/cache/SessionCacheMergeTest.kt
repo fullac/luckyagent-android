@@ -126,6 +126,85 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun latestPageAlreadyAtTheTailSkipsRewrite() {
+        val stored = page(start = 0, count = 80, messages = (0 until 80).map { msg("m$it", created = "c$it") })
+        val latest = (40 until 80).map { msg("m$it", created = "c$it") }
+        assertTrue(latestPageAlreadyStored(stored, latest, remoteCount = 80))
+    }
+
+    @Test
+    fun attachmentChangeOnTheTailRequiresRewrite() {
+        val stored = page(start = 0, count = 1, messages = listOf(msg("a")))
+        val latest = listOf(msg("a").copy(attachments = listOf(
+            com.luckyagent.android.data.api.MediaAttachment(fileName = "note.txt"),
+        )))
+        assertEquals(false, latestPageAlreadyStored(stored, latest, remoteCount = 1))
+    }
+
+    @Test
+    fun unchangedPageDoesNotRewriteCachedMessages() {
+        val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
+        assertEquals(HistoryCacheWrite.Unchanged, historyCacheWrite(stored, stored.copy()))
+    }
+
+    @Test
+    fun grownTailInsertsOnlyNewOrdinals() {
+        val stored = page(start = 10, count = 14, messages = (10 until 14).map { msg("m$it", created = "c$it") })
+        val incoming = page(start = 10, count = 16, messages = (10 until 16).map { msg("m$it", created = "c$it") })
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(14, 15), write.inserts.map { it.ordinal })
+        assertEquals(listOf("m14", "m15"), write.inserts.map { it.message.content })
+        assertEquals(10, write.deleteBefore)
+        assertEquals(16, write.deleteFrom)
+    }
+
+    @Test
+    fun narrowerWindowReplacesInsteadOfDroppingThePrefix() {
+        val stored = page(start = 0, count = 4, messages = (0 until 4).map { msg("m$it", created = "c$it") })
+        val incoming = page(start = 2, count = 6, messages = (2 until 6).map { msg("m$it", created = "c$it") })
+
+        // Rows 0 and 1 are still valid and the window is not at the 200 cap, so
+        // sliding the start forward must not delete them piecemeal.
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun fullWindowDropsTheHeadRowAndKeepsTheRest() {
+        val stored = page(
+            start = 0,
+            count = 200,
+            messages = (0 until 200).map { msg("m$it", created = "c$it") },
+        )
+        val incoming = page(
+            start = 1,
+            count = 201,
+            messages = (1 until 201).map { msg("m$it", created = "c$it") },
+        )
+
+        val write = historyCacheWrite(stored, incoming) as HistoryCacheWrite.Patch
+
+        assertEquals(listOf(200), write.inserts.map { it.ordinal })
+        assertEquals(1, write.deleteBefore)
+        assertEquals(201, write.deleteFrom)
+    }
+
+    @Test
+    fun changedOverlapStillReplacesThePage() {
+        val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
+        val incoming = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("edited")))
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
+    fun disjointWindowReplacesInsteadOfAppendingAGap() {
+        val stored = page(start = 0, count = 2, messages = listOf(msg("old-a"), msg("old-b")))
+        val incoming = page(start = 4, count = 6, messages = listOf(msg("new-a"), msg("new-b")))
+        assertEquals(HistoryCacheWrite.Replace, historyCacheWrite(stored, incoming))
+    }
+
+    @Test
     fun capKeepsTheNewest200AndMarksOldestMissing() {
         val page = page(
             start = 0,

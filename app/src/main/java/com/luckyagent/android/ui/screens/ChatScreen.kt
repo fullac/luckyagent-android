@@ -2239,7 +2239,7 @@ private fun ComposerBar(
         if (!isRecordingVoice && !activityWorking && !shownActivity.isNullOrBlank()) {
             Text(
                 shownActivity,
-                color = if (shownActivity.contains("失败") || shownActivity.contains("未连接")) CloverError else CloverText3,
+                color = if (activityStatusFailed(state.activityLine, shownActivity)) CloverError else CloverText3,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(start = 4.dp, bottom = 7.dp),
                 maxLines = 1,

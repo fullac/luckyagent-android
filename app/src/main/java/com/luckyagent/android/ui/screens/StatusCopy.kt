@@ -48,6 +48,12 @@ internal fun connectionFailureLine(addressMissing: Boolean): String =
 internal fun activityStatusLine(raw: String?): String? {
     val text = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     return when (text) {
+        "Preparing response" -> "正在回复"
+        "Thinking through the request" -> "正在思考"
+        "Working on your request" -> "正在执行"
+        "Reviewing tool results" -> "正在整理工具结果"
+        "Analyzing the request" -> "正在分析请求"
+        "Request failed" -> "请求失败"
         "complete", "completed" -> "已回复"
         "cancelled", "canceled", "cancel requested" -> "已取消。可以重新发送这一条。"
         "health ok" -> "已连接"
@@ -92,6 +98,35 @@ private fun mappedActivityLine(text: String): String {
         text.startsWith("loaded ") && text.endsWith(" messages") -> return "已读到这轮对话"
     }
     return text
+}
+
+/**
+ * Whether an activity sentence is a failure. Callers color from this, not from
+ * a substring of the Chinese copy.
+ */
+internal fun activityStatusFailed(raw: String?, shown: String? = activityStatusLine(raw)): Boolean {
+    val text = raw?.trim().orEmpty()
+    if (text.isEmpty() && shown.isNullOrBlank()) return false
+    if (
+        text == "health failed" ||
+        text == "Request failed" ||
+        text.startsWith("history:") ||
+        text.startsWith("error ·") ||
+        text.startsWith("WebSocket event ignored") ||
+        text.startsWith("rename:") ||
+        text.startsWith("create session:") ||
+        text.startsWith("delete:") ||
+        text.startsWith("pin:") ||
+        text.startsWith("project:") ||
+        text.endsWith("· start failed") ||
+        text.endsWith("· stop failed") ||
+        text.startsWith("tool failed ·") ||
+        (text.startsWith("/") && text.endsWith(" failed"))
+    ) {
+        return true
+    }
+    val line = shown.orEmpty()
+    return line.contains("失败") || line.contains("未连接") || line.contains("没能")
 }
 
 private fun toolActivity(text: String): String? {

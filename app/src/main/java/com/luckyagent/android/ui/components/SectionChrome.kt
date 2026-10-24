@@ -279,15 +279,33 @@ fun DetailDisclosure(label: String, value: String?, json: Boolean = false, previ
 
 @Composable
 fun StatusChip(status: String) {
-    val color = when (status.lowercase()) {
+    val raw = status.lowercase()
+    val color = when (raw) {
         "failed", "failure", "error", "blocked" -> MaterialTheme.colorScheme.error
         "retrying", "warning", "reconnecting" -> com.luckyagent.android.ui.theme.CloverWarning
         "connected", "success", "completed", "done", "running", "in_progress", "active", "enabled", "healthy" -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(color = color.copy(alpha = .1f), shape = RoundedCornerShape(999.dp)) {
-        Text(status, color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+        Text(statusChipLabel(status), color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
     }
+}
+
+/** Chinese label for a status chip. Callers may already pass a Chinese sentence. */
+fun statusChipLabel(status: String): String = when (status.trim().lowercase()) {
+    "success", "completed", "done", "healthy" -> "成功"
+    "failure", "failed", "error" -> "失败"
+    "running", "in_progress", "in-progress", "active" -> "进行中"
+    "pending", "queued" -> "排队中"
+    "blocked", "waiting" -> "需要处理"
+    "timeout" -> "超时"
+    "cancelled", "canceled" -> "已取消"
+    "connected" -> "已连接"
+    "enabled" -> "已启用"
+    "retrying", "reconnecting" -> "重试中"
+    "warning" -> "注意"
+    "unknown", "" -> "未知"
+    else -> status.trim().ifBlank { "未知" }
 }
 
 @Composable

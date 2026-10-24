@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui.screens
 
 import com.luckyagent.android.data.api.SocketState
+import com.luckyagent.android.ui.components.statusChipLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -38,6 +39,30 @@ class StatusCopyTest {
         assertNull(activityStatusLine("  "))
         assertFalse(activityStatusLine("complete")!!.contains("complete"))
         assertFalse(activityStatusLine("tool done · 搜索")!!.contains("tool done"))
+        assertEquals("正在思考", activityStatusLine("Thinking through the request"))
+        assertEquals("正在执行", activityStatusLine("Working on your request"))
+        assertEquals("正在整理工具结果", activityStatusLine("Reviewing tool results"))
+        assertEquals("正在分析请求", activityStatusLine("Analyzing the request"))
+        assertEquals("正在回复", activityStatusLine("Preparing response"))
+    }
+
+    @Test fun failureColorDoesNotDependOnTheChineseWordFailed() {
+        assertTrue(activityStatusFailed("history: timeout"))
+        assertTrue(activityStatusFailed("rename: no"))
+        assertTrue(activityStatusFailed("create session: no"))
+        assertTrue(activityStatusFailed("WebSocket event ignored · boom"))
+        assertTrue(activityStatusFailed("telegram · start failed"))
+        assertFalse(activityStatusFailed("renamed · chat"))
+        assertFalse(activityStatusFailed("new session · chat"))
+        assertFalse(activityStatusFailed("Thinking through the request"))
+    }
+
+    @Test fun statusChipUsesChineseIncludingUnknown() {
+        assertEquals("成功", statusChipLabel("success"))
+        assertEquals("失败", statusChipLabel("failure"))
+        assertEquals("未知", statusChipLabel("unknown"))
+        assertEquals("未知", statusChipLabel("  "))
+        assertEquals("运行中", statusChipLabel("运行中"))
     }
 
     @Test fun pageTitlesMatchNavigation() {

@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.api.MemoryEntry
+import com.luckyagent.android.data.cache.CachedOutboundMessage
 import com.luckyagent.android.data.cache.HistorySync
 import com.luckyagent.android.data.cache.LatestMerge
 import com.luckyagent.android.data.cache.MessagePage
@@ -155,6 +156,10 @@ data class ChatBubble(
     val quote: MessageQuote? = null,
     /** Assistant commentary from a tool/continuation round belongs inside the process fold. */
     val isIntermediate: Boolean = false,
+    /** Non-null only while a locally persisted user message awaits server history. */
+    val outboundId: String? = null,
+    val outboundStatus: OutboundQueueStatus? = null,
+    val outboundError: String? = null,
 )
 
 data class ChatMedia(
@@ -221,7 +226,7 @@ data class AppUiState(
     val historyHasMore: Boolean = false,
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
-    /** Messages already handed to the runtime's per-session FIFO. */
+    /** Locally persisted outbound messages, including frames waiting for delivery or acknowledgement. */
     val outboundQueue: List<OutboundQueueItem> = emptyList(),
     val socketState: SocketState = SocketState.Idle,
     val socketError: String? = null,
@@ -362,6 +367,7 @@ class AppViewModel(
     private var historySessionId: String? = null
     private var historyMessages: List<ProviderMessage> = emptyList()
     private var historyStartIndex = 0
+    private var historyMessageCount = 0
     private var assistantBufferId: String? = null
     private var assistantBufferIndex: Int? = null
     private val assistantPending = StringBuilder()
@@ -372,7 +378,9 @@ class AppViewModel(
     private val toolStepIndex = mutableMapOf<String, String>()
     private val mediaUploadSemaphore = Semaphore(1)
     private val outboundChatQueue = OutboundChatQueue()
-    /** One local dispatcher per session keeps sends FIFO even while the user keeps typing. */
+    private var outboundRestored = false
+    private val outboundPersistenceJobs = mutableMapOf<String, Job>()
+    /** One local dispatcher per session prevents connection retries from racing. */
     private val outboundDispatchJobs = mutableMapOf<String, Job>()
     private val luckyPending = LinkedHashMap<String, LuckyPendingSegment>()
     private data class ActiveRun(
@@ -449,6 +457,8 @@ class AppViewModel(
         if (container.settingsRepository.snapshot().connectionMode == "standalone") {
             showStandaloneSession()
         }
+        historySessionId = currentSessionId()
+        restoreOutboundQueue()
         restoreCachedSession()
         refreshSessions()
         refreshPersona()
@@ -471,6 +481,9 @@ class AppViewModel(
         historySessionId = target
         historyMessages = emptyList()
         historyStartIndex = 0
+        historyMessageCount = 0
+        outboundRestored = false
+        outboundChatQueue.clear()
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
@@ -499,6 +512,7 @@ class AppViewModel(
                 activityLine = "loading history…",
             )
         }
+        restoreOutboundQueue()
         loadHistory(target)
         refreshContextInspect(target)
     }
@@ -629,6 +643,7 @@ class AppViewModel(
                 try {
                     val env = event.envelope
                     ensureReplayedRun(event)
+                    markOutboundAccepted(event)
                     val foreground = isForegroundEvent(event)
                     when (env.type) {
                         "stream_chunk", "assistant_delta", "delta", "chunk" -> {
@@ -858,35 +873,180 @@ class AppViewModel(
             current.apiKey.trim() == apiKey.trim()
     }
 
+    private fun restoreOutboundQueue() {
+        viewModelScope.launch {
+            val settings = container.settingsRepository.snapshot()
+            val restored = runCatching {
+                container.sessionCache.listOutbound(settings.apiBase, settings.apiKey)
+            }.getOrDefault(emptyList())
+            if (!currentCacheConnectionMatches(settings.apiBase, settings.apiKey)) return@launch
+            val restoredItems = restored.map { cached ->
+                OutboundQueueItem(
+                    id = cached.clientMessageId,
+                    sessionId = cached.sessionId,
+                    preview = cached.preview,
+                    message = cached.message,
+                    attachments = cached.attachments,
+                    // A process restart cannot know whether a previous frame
+                    // reached the computer. Replay the same client id. This is
+                    // safe only while the runtime dedupes on client_message_id,
+                    // including after the idempotency window expires. Accepted,
+                    // ServerQueued, and Running are replayed too; there is no
+                    // local proof they were stored.
+                    requestId = null,
+                    status = if (cached.status == OutboundQueueStatus.Failed.name) {
+                        OutboundQueueStatus.Failed
+                    } else {
+                        OutboundQueueStatus.Queued
+                    },
+                    error = cached.error,
+                    createdAt = cached.createdAt,
+                )
+            }
+            val inMemoryItems = outboundChatQueue.sessionIds().flatMap(outboundChatQueue::items)
+            outboundChatQueue.replace(
+                (restoredItems + inMemoryItems)
+                    .associateBy(OutboundQueueItem::id)
+                    .values
+                    .sortedBy(OutboundQueueItem::createdAt),
+            )
+            outboundRestored = true
+            val current = currentSessionId()
+            val cachedPage = runCatching {
+                container.sessionCache.loadPage(settings.apiBase, current, settings.apiKey)
+            }.getOrNull()
+            if (cachedPage != null) {
+                confirmedOutbound(current, cachedPage.messages).forEach { id ->
+                    outboundChatQueue.remove(id)?.let(::removePersistedOutbound)
+                }
+            }
+            publishOutboundQueue(currentSessionId())
+            dispatchPendingSessions()
+        }
+    }
+
+    private fun persistOutbound(item: OutboundQueueItem): Job {
+        val settings = container.settingsRepository.snapshot()
+        return enqueueOutboundPersistence(item.id) {
+            runCatching {
+                container.sessionCache.saveOutbound(
+                    apiBase = settings.apiBase,
+                    apiKey = settings.apiKey,
+                    item = CachedOutboundMessage(
+                        sessionId = item.sessionId,
+                        clientMessageId = item.id,
+                        preview = item.preview,
+                        message = item.message,
+                        attachments = item.attachments,
+                        status = item.status.name,
+                        requestId = item.requestId,
+                        error = item.error,
+                        createdAt = item.createdAt,
+                        updatedAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun removePersistedOutbound(item: OutboundQueueItem): Job {
+        val settings = container.settingsRepository.snapshot()
+        return enqueueOutboundPersistence(item.id) {
+            runCatching {
+                container.sessionCache.removeOutbound(
+                    apiBase = settings.apiBase,
+                    apiKey = settings.apiKey,
+                    sessionId = item.sessionId,
+                    clientMessageId = item.id,
+                )
+            }
+        }
+    }
+
+    private fun enqueueOutboundPersistence(
+        clientMessageId: String,
+        operation: suspend () -> Unit,
+    ): Job {
+        lateinit var next: Job
+        synchronized(outboundPersistenceJobs) {
+            val previous = outboundPersistenceJobs[clientMessageId]
+            next = viewModelScope.launch(Dispatchers.IO) {
+                previous?.join()
+                operation()
+            }
+            outboundPersistenceJobs[clientMessageId] = next
+        }
+        next.invokeOnCompletion {
+            synchronized(outboundPersistenceJobs) {
+                if (outboundPersistenceJobs[clientMessageId] === next) {
+                    outboundPersistenceJobs.remove(clientMessageId)
+                }
+            }
+        }
+        return next
+    }
+
     private fun publishOutboundQueue(sessionId: String = currentSessionId()) {
         val items = outboundChatQueue.items(sessionId)
         _ui.update { current ->
-            if (currentSessionId() == sessionId) current.copy(outboundQueue = items) else current
+            if (currentSessionId() != sessionId) {
+                current
+            } else {
+                val byId = items.associateBy(OutboundQueueItem::id)
+                current.copy(
+                    outboundQueue = items,
+                    bubbles = current.bubbles.map { bubble ->
+                        val outboundId = bubble.outboundId ?: return@map bubble
+                        val item = byId[outboundId]
+                        if (item == null) {
+                            bubble.copy(outboundStatus = null, outboundError = null)
+                        } else {
+                            bubble.copy(
+                                outboundStatus = item.status,
+                                outboundError = item.error,
+                            )
+                        }
+                    },
+                )
+            }
         }
     }
 
     private fun queueItemId(): String = "outbound-${System.currentTimeMillis()}-${UUID.randomUUID()}"
 
     private fun dispatchNextOutbound(sessionId: String) {
-        if (activeRuns[sessionId]?.isNotEmpty() == true) return
+        if (!outboundRestored) return
         if (outboundDispatchJobs[sessionId]?.isActive == true) return
         val item = outboundChatQueue.firstQueued(sessionId) ?: return
-        outboundChatQueue.update(item.id, status = OutboundQueueStatus.Sending, clearError = true)
+        val sending = outboundChatQueue.update(item.id, status = OutboundQueueStatus.Sending, clearError = true)
+        if (sending != null) persistOutbound(sending)
         publishOutboundQueue(sessionId)
-        val handle = container.wsClient.sendChat(item.message, attachments = item.attachments, sessionId = sessionId)
+        val handle = container.wsClient.sendChat(
+            item.message,
+            attachments = item.attachments,
+            sessionId = sessionId,
+            requestId = item.id,
+        )
         if (handle != null) {
             markOutboundSent(item.id, handle)
             registerRun(handle)
+            dispatchNextOutbound(sessionId)
             return
         }
 
         // Wait for the HTTP upgrade. Later submits share this session's dispatch
         // job instead of racing the handshake with a fixed-delay retry.
-        outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, error = "正在连接")
+        val waiting = outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, error = "正在连接")
+        if (waiting != null) persistOutbound(waiting)
         publishOutboundQueue(sessionId)
         outboundDispatchJobs[sessionId] = viewModelScope.launch {
             val retryHandle = if (container.wsClient.awaitConnected(sessionId)) {
-                container.wsClient.sendChat(item.message, attachments = item.attachments, sessionId = sessionId)
+                container.wsClient.sendChat(
+                    item.message,
+                    attachments = item.attachments,
+                    sessionId = sessionId,
+                    requestId = item.id,
+                )
             } else null
             if (retryHandle == null) {
                 markOutboundFailed(item.id, sessionId, container.wsClient.lastError.value ?: "WebSocket 连接超时，请检查网络后重试")
@@ -895,17 +1055,18 @@ class AppViewModel(
                 registerRun(retryHandle)
             }
             outboundDispatchJobs.remove(sessionId)
-            if (activeRuns[sessionId].isNullOrEmpty()) dispatchNextOutbound(sessionId)
+            dispatchNextOutbound(sessionId)
         }
     }
 
     private fun markOutboundSent(itemId: String, handle: WsChatHandle) {
-        outboundChatQueue.update(
+        val updated = outboundChatQueue.update(
             id = itemId,
             status = OutboundQueueStatus.Sending,
             requestId = handle.requestId,
             clearError = true,
         )
+        if (updated != null) persistOutbound(updated)
         publishOutboundQueue(handle.sessionId)
     }
 
@@ -918,20 +1079,32 @@ class AppViewModel(
         if (requestId.isNullOrBlank()) return
         val item = outboundChatQueue.findByRequest(sessionId, requestId) ?: return
         if (success) {
-            outboundChatQueue.remove(item.id)
+            val accepted = outboundChatQueue.update(
+                item.id,
+                status = OutboundQueueStatus.Accepted,
+                clearError = true,
+            )
+            if (accepted != null) persistOutbound(accepted)
         } else {
-            outboundChatQueue.update(
+            val failed = outboundChatQueue.update(
                 item.id,
                 status = OutboundQueueStatus.Failed,
                 error = error ?: "消息发送失败",
             )
+            if (failed != null) persistOutbound(failed)
         }
         publishOutboundQueue(sessionId)
+        if (success && sessionId == currentSessionId()) {
+            // The server stored this turn, so pull the tail and retire the
+            // outbound row. Merging keeps this to the newest page.
+            loadHistory(sessionId, reset = true, forceSync = true)
+        }
         dispatchNextOutbound(sessionId)
     }
 
     private fun markOutboundFailed(itemId: String, sessionId: String, error: String) {
-        outboundChatQueue.update(itemId, status = OutboundQueueStatus.Failed, error = error)
+        val failed = outboundChatQueue.update(itemId, status = OutboundQueueStatus.Failed, error = error)
+        if (failed != null) persistOutbound(failed)
         publishOutboundQueue(sessionId)
     }
 
@@ -941,7 +1114,8 @@ class AppViewModel(
         if (item.status != OutboundQueueStatus.Failed) return
         // A user retry may recover a connection stopped after a 401/403.
         container.wsClient.connect(item.sessionId, force = true)
-        outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, clearError = true)
+        val retried = outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, clearError = true)
+        if (retried != null) persistOutbound(retried)
         publishOutboundQueue(item.sessionId)
         dispatchNextOutbound(item.sessionId)
     }
@@ -1193,16 +1367,64 @@ class AppViewModel(
     /**
      * An error frame without a request id cannot close its queue item by lookup,
      * so the message the user just sent would stay on 「发送中」 while the composer
-     * already says the request failed. Fail whatever is still in flight by id.
+     * already says the request failed. Fail whatever is still awaiting a receipt
+     * by id, using the same persisted row so a retry keeps its client id.
      */
     private fun failInFlightOutbound(sessionId: String, message: String) {
-        val stuck = outboundChatQueue.items(sessionId)
-            .filter { it.status == OutboundQueueStatus.Sending }
+        val stuck = outboundChatQueue.items(sessionId).filter { item ->
+            item.status == OutboundQueueStatus.Sending || item.status == OutboundQueueStatus.Queued
+        }
         if (stuck.isEmpty()) return
         stuck.forEach { item ->
-            outboundChatQueue.update(item.id, status = OutboundQueueStatus.Failed, error = message)
+            val failed = outboundChatQueue.update(item.id, status = OutboundQueueStatus.Failed, error = message)
+            if (failed != null) persistOutbound(failed)
         }
         publishOutboundQueue(sessionId)
+    }
+
+    private fun markOutboundAccepted(event: WsEvent) {
+        val requestId = eventRequestId(event) ?: return
+        val item = outboundChatQueue.findByRequest(event.sessionId, requestId)
+            ?: outboundChatQueue.items(event.sessionId).firstOrNull { it.id == requestId }
+            ?: return
+        val state = extractField(event.envelope.data, "state")?.lowercase().orEmpty()
+        val message = listOfNotNull(
+            extractField(event.envelope.data, "message"),
+            extractField(event.envelope.data, "summary"),
+            extractText(event.envelope.data),
+        ).firstOrNull().orEmpty().lowercase()
+        val type = event.envelope.type.lowercase()
+        val next = when {
+            type == "error" -> return
+            state in setOf("queued", "pending", "waiting", "enqueued") ||
+                message.contains("message queued") ||
+                message.contains("queued") ||
+                type in setOf("queued", "message_queued", "run_queued") -> OutboundQueueStatus.ServerQueued
+            state in setOf("thinking", "executing", "running", "processing") ||
+                type in setOf(
+                    "running",
+                    "stream_chunk",
+                    "assistant_delta",
+                    "delta",
+                    "chunk",
+                    "tool_call",
+                    "tool",
+                    "tool_result",
+                    "reasoning",
+                ) -> OutboundQueueStatus.Running
+            type in setOf("ack", "accepted", "run_accepted", "chat_accepted", "message_accepted") ||
+                event.envelope.parentId != null -> OutboundQueueStatus.Accepted
+            else -> return
+        }
+        if (item.status == next) return
+        val updated = outboundChatQueue.update(
+            item.id,
+            status = next,
+            requestId = requestId,
+            clearError = true,
+        ) ?: return
+        persistOutbound(updated)
+        publishOutboundQueue(event.sessionId)
     }
 
     private fun prepareNextForeground(sessionId: String) {
@@ -2511,6 +2733,7 @@ class AppViewModel(
         historySessionId = target
         historyMessages = emptyList()
         historyStartIndex = 0
+        historyMessageCount = 0
         viewModelScope.launch {
             runCatching { container.sessionCache.touchOpened(connection.apiBase, target, apiKey = connection.apiKey) }
         }
@@ -2525,7 +2748,11 @@ class AppViewModel(
         }
         _ui.update {
             it.copy(
-                bubbles = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.bubbles else emptyList(),
+                bubbles = if (parked != null && activeRuns[target]?.isNotEmpty() == true) {
+                    parked.bubbles
+                } else {
+                    pendingOutboundBubbles(target)
+                },
                 historyLoading = true,
                 historyLoadingMore = false,
                 historyHasMore = false,
@@ -2551,7 +2778,11 @@ class AppViewModel(
         refreshContextInspect()
     }
 
-    fun loadHistory(sessionId: String = currentSessionId(), reset: Boolean = true) {
+    fun loadHistory(
+        sessionId: String = currentSessionId(),
+        reset: Boolean = true,
+        forceSync: Boolean = false,
+    ) {
         val target = sessionId.ifBlank { "android-main" }
         if (target != currentSessionId()) return
         if (!reset && (_ui.value.historyLoading || _ui.value.historyLoadingMore || !_ui.value.historyHasMore)) return
@@ -2588,7 +2819,14 @@ class AppViewModel(
                     if (!painted && currentSessionId() == target) {
                         historyMessages = emptyList()
                         historyStartIndex = 0
-                        _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
+                        historyMessageCount = 0
+                        _ui.update {
+                            it.copy(
+                                bubbles = pendingOutboundBubbles(target),
+                                historyLoading = true,
+                                activityLine = "loading history…",
+                            )
+                        }
                     }
                 }
                 if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) {
@@ -2596,7 +2834,7 @@ class AppViewModel(
                     return@launch
                 }
                 if (reset) {
-                    syncLatestHistory(apiBase, apiKey, target)
+                    syncLatestHistory(apiBase, apiKey, target, forceSync = forceSync)
                 } else {
                     syncOlderHistory(apiBase, apiKey, target)
                 }
@@ -2656,11 +2894,42 @@ class AppViewModel(
         return true
     }
 
-    private suspend fun syncLatestHistory(apiBase: String, apiKey: String, sessionId: String) {
+    private suspend fun syncLatestHistory(
+        apiBase: String,
+        apiKey: String,
+        sessionId: String,
+        forceSync: Boolean = false,
+    ) {
         if (!currentCacheConnectionMatches(apiBase, apiKey)) return
-        // The in-memory session list can lag behind messages pushed over the WebSocket,
-        // so never skip the latest-page fetch based on it; the merge keeps this cheap.
-        val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = 0)
+        val cached = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId, apiKey) }.getOrNull()
+        val remote = _ui.value.sessions.firstOrNull { it.id == sessionId }
+        val action = when {
+            historyMessages.isEmpty() && (remote?.messageCount ?: cached?.messageCount ?: 0) > 0 ->
+                HistorySync.Invalidate
+            else -> historySyncAction(cached, remote ?: RuntimeSession(id = sessionId))
+        }
+        // A turn that just finished, or an explicit pull, can land before the
+        // session list reflects it. Do not trust an "unchanged" verdict then.
+        if (action == HistorySync.Unchanged && !forceSync &&
+            (historyMessages.isNotEmpty() || cached?.messageCount == 0)
+        ) {
+            finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+            return
+        }
+        if (action == HistorySync.Invalidate) {
+            syncFullHistory(apiBase, apiKey, sessionId)
+            return
+        }
+
+        // The in-memory session list can lag behind messages pushed over the
+        // WebSocket, but a contiguous cache only needs the latest full-content
+        // page when its metadata says the count grew.
+        val result = container.api.sessionHistory(
+            sessionId,
+            limit = SessionCachePolicy.LATEST_PAGE,
+            offset = 0,
+            includeFull = true,
+        )
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { fetch ->
             if (fetch.notModified) {
@@ -2676,16 +2945,64 @@ class AppViewModel(
                 return@onSuccess
             }
             when (val merged = mergeLatestPage(cachedPage, history.messages, remoteCount)) {
-                is LatestMerge.Invalidate -> replaceHistoryFromServer(apiBase, apiKey, sessionId, history.messages, remoteCount, history.title)
+                is LatestMerge.Invalidate -> syncFullHistory(apiBase, apiKey, sessionId)
                 is LatestMerge.Appended -> {
                     val page = merged.page.copy(
-                        reachedOldest = merged.page.reachedOldest || history.hasMore != true && merged.page.startIndex == 0,
+                        reachedOldest = merged.page.reachedOldest ||
+                            (history.hasMore != true && merged.page.startIndex == 0),
                     )
-                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page, stored = stored)
+                    persistHistoryPage(
+                        apiBase,
+                        apiKey,
+                        sessionId,
+                        history.title,
+                        history.updatedAt ?: remoteUpdatedAt(sessionId),
+                        page,
+                        stored = stored,
+                    )
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, page, offline = false)
                 }
             }
+        }.onFailure { error ->
+            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
+            failHistoryRefresh(sessionId, error.message)
+        }
+    }
+
+    private suspend fun syncFullHistory(apiBase: String, apiKey: String, sessionId: String) {
+        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
+        val result = container.api.sessionHistory(
+            sessionId,
+            limit = null,
+            offset = 0,
+            includeFull = true,
+        )
+        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
+        result.onSuccess { fetch ->
+            if (fetch.notModified) {
+                finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
+                return@onSuccess
+            }
+            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
+            val remoteCount = history.messageCount ?: history.messages.size
+            val start = (remoteCount - history.messages.size).coerceAtLeast(0)
+            val page = MessagePage(
+                messages = history.messages,
+                startIndex = start,
+                messageCount = remoteCount,
+                reachedOldest = start == 0 && history.hasMore != true && history.contentTruncated != true,
+            )
+            persistHistoryPage(
+                apiBase,
+                apiKey,
+                sessionId,
+                history.title,
+                history.updatedAt ?: remoteUpdatedAt(sessionId),
+                page,
+            )
+            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+            applyHistoryPage(sessionId, page, offline = false)
         }.onFailure { error ->
             if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
             failHistoryRefresh(sessionId, error.message)
@@ -2744,28 +3061,6 @@ class AppViewModel(
         }
     }
 
-    private suspend fun replaceHistoryFromServer(
-        apiBase: String,
-        apiKey: String,
-        sessionId: String,
-        messages: List<ProviderMessage>,
-        remoteCount: Int,
-        title: String?,
-    ) {
-        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
-        runCatching { container.sessionCache.invalidate(apiBase, sessionId, apiKey) }
-        val start = (remoteCount - messages.size).coerceAtLeast(0)
-        val page = MessagePage(
-            messages = messages,
-            startIndex = start,
-            messageCount = remoteCount,
-            reachedOldest = start == 0,
-        )
-        persistHistoryPage(apiBase, apiKey, sessionId, title, remoteUpdatedAt(sessionId), page)
-        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
-        applyHistoryPage(sessionId, page, offline = false)
-    }
-
     private suspend fun syncOlderHistory(apiBase: String, apiKey: String, sessionId: String) {
         if (!currentCacheConnectionMatches(apiBase, apiKey)) return
         if (historyMessages.isEmpty()) {
@@ -2777,7 +3072,12 @@ class AppViewModel(
             _ui.update { it.copy(historyLoadingMore = false, historyHasMore = false) }
             return
         }
-        val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = offset)
+        val result = container.api.sessionHistory(
+            sessionId,
+            limit = SessionCachePolicy.LATEST_PAGE,
+            offset = offset,
+            includeFull = true,
+        )
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { fetch ->
             if (fetch.notModified) {
@@ -2790,11 +3090,11 @@ class AppViewModel(
             when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {
                 is LatestMerge.Invalidate -> {
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onSuccess
-                    runCatching { container.sessionCache.invalidate(apiBase, sessionId, apiKey) }
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     historyMessages = emptyList()
                     historyStartIndex = 0
-                    syncLatestHistory(apiBase, apiKey, sessionId)
+                    historyMessageCount = 0
+                    syncFullHistory(apiBase, apiKey, sessionId)
                 }
                 is LatestMerge.Appended -> {
                     persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), merged.page)
@@ -2834,7 +3134,7 @@ class AppViewModel(
     private fun currentHistoryPage(): MessagePage = MessagePage(
         messages = historyMessages,
         startIndex = historyStartIndex,
-        messageCount = historyStartIndex + historyMessages.size,
+        messageCount = historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size),
         reachedOldest = historyStartIndex == 0,
     )
 
@@ -2870,6 +3170,7 @@ class AppViewModel(
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
         historyMessages = page.messages
         historyStartIndex = page.startIndex
+        historyMessageCount = page.messageCount
         val settleUnowned = historyPageEndsWithFinalAssistant(historyMessages)
         val activity = if (offline) SessionCachePolicy.OFFLINE_LABEL else historyLoadedLine(sessionId)
         // History projection runs off the main thread. Bubble ids are only touched on main.
@@ -2912,6 +3213,13 @@ class AppViewModel(
         preserveLiveTurn: Boolean = false,
     ) {
         val bubbles = historyBubbles
+        val confirmedIds = confirmedOutbound(sessionId, historyMessages)
+        confirmedIds.forEach { id ->
+            outboundChatQueue.remove(id)?.let(::removePersistedOutbound)
+        }
+        val pendingItems = outboundChatQueue.items(sessionId)
+            .filter { item -> item.id !in confirmedIds }
+        val pendingBubbles = pendingOutboundBubbles(sessionId, confirmedIds)
         val running = activeRuns[sessionId]?.isNotEmpty() == true
         _ui.update { current ->
             val live = if (preserveLiveTurn && running) {
@@ -2922,9 +3230,10 @@ class AppViewModel(
             } else {
                 emptyList()
             }
-            val shown = bubbles + live
+            val shown = bubbles + live + pendingBubbles
             current.copy(
                 bubbles = shown,
+                outboundQueue = pendingItems,
                 activityLine = if (running && !offline) "Agent running · history loaded" else activity,
                 isResponding = running,
                 historyLoading = false,
@@ -2939,6 +3248,30 @@ class AppViewModel(
             )
         }
     }
+
+    /**
+     * Outbox rows the server already stored, by request id or a later identical text.
+     */
+    private fun confirmedOutbound(sessionId: String, messages: List<ProviderMessage>): Set<String> =
+        confirmedOutboundIds(outboundChatQueue.items(sessionId), messages)
+
+    private fun pendingOutboundBubbles(
+        sessionId: String,
+        excludedIds: Set<String> = emptySet(),
+    ): List<ChatBubble> = outboundChatQueue.items(sessionId)
+        .filter { item -> item.id !in excludedIds }
+        .map { item ->
+            ChatBubble(
+                id = item.id,
+                role = "user",
+                content = item.preview.ifBlank { item.message },
+                createdAt = java.time.Instant.ofEpochMilli(item.createdAt).toString(),
+                attachments = item.attachments.map(::ChatMedia),
+                outboundId = item.id,
+                outboundStatus = item.status,
+                outboundError = item.error,
+            )
+        }
 
     private suspend fun persistHistoryPage(
         apiBase: String,
@@ -3411,17 +3744,17 @@ class AppViewModel(
                 else -> message
             }
         }.take(120)
-        outboundChatQueue.add(
-            OutboundQueueItem(
-                id = outboundId,
-                sessionId = sessionId,
-                preview = preview,
-                message = message,
-                attachments = descriptors,
-                // The dispatcher promotes exactly one queued item to Sending.
-                status = OutboundQueueStatus.Queued,
-            ),
+        val item = OutboundQueueItem(
+            id = outboundId,
+            sessionId = sessionId,
+            preview = preview,
+            message = message,
+            attachments = descriptors,
+            // The dispatcher promotes exactly one queued item to Sending.
+            status = OutboundQueueStatus.Queued,
         )
+        outboundChatQueue.add(item)
+        val persisted = persistOutbound(item)
         if (!wasRunning) {
             currentTurnId = "turn-${System.currentTimeMillis()}"
             toolStepIndex.clear()
@@ -3430,12 +3763,14 @@ class AppViewModel(
         if (showUserBubble) {
             pushBubble(
                 ChatBubble(
-                    id = "u-${System.currentTimeMillis()}",
+                    id = outboundId,
                     role = "user",
-                    content = displayText,
-                    createdAt = nowIsoTimestamp(),
+                    content = displayText.ifBlank { if (descriptors.isNotEmpty()) "请查看附件" else message },
+                    createdAt = java.time.Instant.ofEpochMilli(item.createdAt).toString(),
                     attachments = media,
                     quote = quote,
+                    outboundId = outboundId,
+                    outboundStatus = item.status,
                 ),
             )
         }
@@ -3456,9 +3791,11 @@ class AppViewModel(
                 progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
             )
         }
-        // Only the dispatcher sends. Subsequent messages remain local Queue
-        // entries until the preceding request reaches a terminal event.
-        dispatchNextOutbound(sessionId)
+        // Only the dispatcher sends, and only after this row is durable. A
+        // process death before that replays the same id instead of losing it.
+        persisted.invokeOnCompletion { cause ->
+            if (cause == null) dispatchNextOutbound(sessionId)
+        }
     }
 
     private fun dispatchPendingSessions() {
@@ -4203,6 +4540,7 @@ class AppViewModel(
                 historySessionId = session.id
                 historyMessages = emptyList()
                 historyStartIndex = 0
+                historyMessageCount = 0
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
                 foregroundRequestIds.remove(session.id)
                 resetAssistantStream()

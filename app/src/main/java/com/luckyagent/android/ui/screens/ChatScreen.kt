@@ -256,18 +256,55 @@ internal sealed interface ChatTimelineItem {
 
 /**
  * One line for the latest chat fold.
- * A running turn shows only the newest summary. A finished turn yields to the answer,
- * except cancel and failure, which replace the summary with an end state.
+ * A running turn shows only the newest summary, and only on the fold that
+ * belongs to that turn. A finished turn yields to the answer, except cancel
+ * and failure, which replace the summary with an end state.
  */
 internal fun outerProcessLabel(
     liveSummary: String?,
     processNotice: String?,
     isResponding: Boolean,
     isLatestProcess: Boolean,
+    ownsCurrentTurn: Boolean = true,
 ): String? {
-    if (!isLatestProcess) return null
+    if (!isLatestProcess || !ownsCurrentTurn) return null
     if (!isResponding) return processNotice?.trim()?.ifBlank { null }
     return liveSummary?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+}
+
+/** A status box opened for a new turn before any reasoning or tool text arrives. */
+internal fun isTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+    bubble.role == "reasoning" && !bubble.reasoningHasContent && bubble.content.isBlank()
+
+/** A placeholder is hidden while the same fold already has a real step. */
+internal fun visibleProcessSteps(steps: List<ChatBubble>): List<ChatBubble> =
+    if (steps.any { !isTurnStatusPlaceholder(it) }) steps.filterNot(::isTurnStatusPlaceholder) else steps
+
+/**
+ * The fold that owns the open turn: it is the last fold, and a user message
+ * opened it after the fold before it. A stored fold — even the only one on
+ * screen — does not own a new turn, so the previous turn's box cannot show the
+ * new turn's status.
+ */
+internal fun processOwnsTurn(steps: List<ChatBubble>, timeline: List<ChatTimelineItem>): Boolean {
+    val index = timeline.indexOfFirst { item ->
+        item is ChatTimelineItem.Process && item.steps === steps
+    }.takeIf { it >= 0 } ?: timeline.indexOfFirst { item ->
+        item is ChatTimelineItem.Process && item.steps.map { it.id } == steps.map { it.id }
+    }
+    if (index < 0) return false
+    val after = timeline.subList(index + 1, timeline.size)
+    if (after.any { it is ChatTimelineItem.Process }) return false
+    if (after.any { item ->
+            item is ChatTimelineItem.Message &&
+                item.bubble.role.equals("assistant", ignoreCase = true) &&
+                !item.bubble.isIntermediate
+        }
+    ) return false
+    val previous = timeline.subList(0, index).indexOfLast { it is ChatTimelineItem.Process }
+    return timeline.subList(previous + 1, index).any { item ->
+        item is ChatTimelineItem.Message && item.bubble.role.equals("user", ignoreCase = true)
+    }
 }
 
 /**
@@ -284,8 +321,7 @@ internal fun liveTurnBubbles(bubbles: List<ChatBubble>, turnId: String, bufferId
 /**
  * Index of the in-memory turn that history has not stored yet.
  * The user bubble that opened the turn is included, so a refresh can put the
- * whole turn back after the server page. A later server copy of the same user
- * text drops that local bubble instead of showing it twice.
+ * whole turn back after the server page.
  */
 internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): Int {
     if (turnId.isBlank() && bufferId.isNullOrBlank()) return -1
@@ -302,27 +338,79 @@ internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: 
 }
 
 /**
- * Drop the in-memory turn once the server page already ends with the same rows.
- * A stored user message alone is not enough: the live reasoning and answer stay
- * until the page carries those rows too. An older copy of the same text, with
- * a different reply after it, does not count as this turn.
+ * Session ordinals a live turn will get once the runtime stores it.
+ *
+ * History stamps every bubble of one server message with that message's index,
+ * so the live turn uses the same groups: the user message, then each assistant
+ * round (reasoning, tool calls, that round's commentary), then a tool result,
+ * then the final answer. A status placeholder shares the next ordinal without
+ * consuming it, because history never stores that box.
  */
-internal fun dedupeLiveTurn(history: List<ChatBubble>, live: List<ChatBubble>): List<ChatBubble> {
-    if (live.isEmpty()) return emptyList()
-    val start = live.indexOfFirst { it.role.equals("user", ignoreCase = true) }.let { index ->
-        if (index >= 0) index else 0
+internal fun liveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<Int> {
+    val ordinals = MutableList(turn.size) { userOrdinal }
+    var next = userOrdinal
+    var groupOpen = false
+    turn.forEachIndexed { index, bubble ->
+        val role = bubble.role.lowercase()
+        when {
+            role == "user" -> {
+                ordinals[index] = userOrdinal
+                next = userOrdinal + 1
+                groupOpen = false
+            }
+            isTurnStatusPlaceholder(bubble) -> ordinals[index] = next
+            role == "tool" && bubble.toolOutput != null && bubble.toolArgs == null -> {
+                if (groupOpen) next += 1
+                ordinals[index] = next
+                next += 1
+                groupOpen = false
+            }
+            role == "reasoning" || role == "tool" || (role == "assistant" && bubble.isIntermediate) -> {
+                if (!groupOpen) groupOpen = true
+                ordinals[index] = next
+            }
+            else -> {
+                if (groupOpen) next += 1
+                ordinals[index] = next
+                next += 1
+                groupOpen = false
+            }
+        }
     }
-    val comparable = live.drop(start)
-    if (history.size >= comparable.size &&
-        history.takeLast(comparable.size).map(::liveTurnSignature) == comparable.map(::liveTurnSignature)
-    ) {
-        return emptyList()
-    }
-    return comparable
+    return ordinals
 }
 
-private fun liveTurnSignature(bubble: ChatBubble): String =
-    listOf(bubble.role, bubble.content, bubble.toolName.orEmpty(), bubble.stepId.orEmpty()).joinToString("\u0000")
+/**
+ * Replace live rows the server already stored.
+ *
+ * Identity is the session-wide oldest-first index, not a page offset and not
+ * full-text equality. [turnOrdinal] is the index of the stored user message that
+ * opened this turn; without it nothing can be proven, so the whole live turn
+ * stays. A row is dropped only when history holds a bubble of the same role at
+ * that index, so a grouping mismatch keeps a row instead of deleting content.
+ * Rows past the stored tail stay, including a second send with the same text.
+ */
+internal fun dedupeLiveTurn(
+    history: List<ChatBubble>,
+    live: List<ChatBubble>,
+    turnOrdinal: Int? = null,
+): List<ChatBubble> {
+    if (live.isEmpty()) return emptyList()
+    if (turnOrdinal == null) return live
+    val storedThrough = history.mapNotNull { it.serverOrdinal }.maxOrNull() ?: return live
+    val storedByOrdinal = history.filter { it.serverOrdinal != null }.groupBy { it.serverOrdinal!! }
+    val ordinals = liveTurnOrdinals(live, turnOrdinal)
+    return live.filterIndexed { index, bubble ->
+        val ordinal = ordinals[index]
+        if (ordinal > storedThrough) return@filterIndexed true
+        // The status box is the turn's own marker, not a stored row.
+        if (isTurnStatusPlaceholder(bubble)) return@filterIndexed true
+        if (bubble.role.equals("user", ignoreCase = true)) return@filterIndexed false
+        storedByOrdinal[ordinal].orEmpty().none { stored ->
+            stored.role.equals(bubble.role, ignoreCase = true)
+        }
+    }
+}
 
 /**
  * Where to land when a session opens.
@@ -389,8 +477,9 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
         return candidate
     }
     fun flushSteps() {
-        if (steps.isNotEmpty()) {
-            result += ChatTimelineItem.Process(steps.toList(), uniqueKey(steps.first().id))
+        val visible = visibleProcessSteps(steps)
+        if (visible.isNotEmpty()) {
+            result += ChatTimelineItem.Process(visible, uniqueKey(visible.first().id))
             steps.clear()
         }
     }
@@ -1119,12 +1208,13 @@ private fun ChatConversation(
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
-                                isResponding = state.isResponding,
+                                isResponding = state.isResponding && processOwnsTurn(item.steps, timeline),
                                 liveSummary = outerProcessLabel(
                                     liveSummary = state.liveSummary,
                                     processNotice = state.processNotice,
                                     isResponding = state.isResponding,
                                     isLatestProcess = item.key == timeline.lastOrNull { it is ChatTimelineItem.Process }?.key,
+                                    ownsCurrentTurn = processOwnsTurn(item.steps, timeline),
                                 ),
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
@@ -1137,7 +1227,7 @@ private fun ChatConversation(
                                     vm.notifyCopied()
                                 },
                                 onOpenThinking = {
-                                    selectedThinkingSteps = item.steps
+                                    selectedThinkingSteps = item.steps.filterNot(::isTurnStatusPlaceholder)
                                     showThinkingSheet = true
                                 },
                                 collabLabel = collabFoldLabel(
@@ -2048,9 +2138,9 @@ private fun ProcessTimeline(
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
+                    steps.all(::isTurnStatusPlaceholder) -> "正在思考"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
-                    steps.size == 1 -> "思考了 1 步"
-                    else -> "思考了 ${steps.size} 步"
+                    else -> "思考了 ${steps.count { !isTurnStatusPlaceholder(it) }} 步"
                 },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

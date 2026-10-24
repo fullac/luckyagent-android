@@ -160,6 +160,12 @@ data class ChatBubble(
     val outboundId: String? = null,
     val outboundStatus: OutboundQueueStatus? = null,
     val outboundError: String? = null,
+    /**
+     * Session-wide oldest-first index of the server message this bubble renders.
+     * Null for rows that exist only in memory. This is the identity a refresh
+     * reconciles against; a page offset moves, this does not.
+     */
+    val serverOrdinal: Int? = null,
 )
 
 data class ChatMedia(
@@ -373,6 +379,13 @@ class AppViewModel(
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
+    /**
+     * Messages the runtime had stored when the current turn was sent. The first
+     * stored row past it is that turn's user message.
+     */
+    private var turnSendBaseline: Int? = null
+    /** Server ordinal of that user message, resolved once history catches up. */
+    private var turnUserOrdinal: Int? = null
     /** In-progress turn for a session that is not on screen. Keyed by session id. */
     private val parkedTurns = mutableMapOf<String, ParkedTurn>()
     private val toolStepIndex = mutableMapOf<String, String>()
@@ -389,6 +402,8 @@ class AppViewModel(
 
     private data class ParkedTurn(
         val turnId: String,
+        val sendBaseline: Int?,
+        val userOrdinal: Int?,
         val bufferId: String?,
         val pending: String,
         val bubbles: List<ChatBubble>,
@@ -484,6 +499,8 @@ class AppViewModel(
         historyMessageCount = 0
         outboundRestored = false
         outboundChatQueue.clear()
+        turnSendBaseline = null
+        turnUserOrdinal = null
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
@@ -1979,11 +1996,23 @@ class AppViewModel(
                     attachments = safeAttachments,
                 )
             }
-            st.copy(bubbles = list, isResponding = false, liveSummary = null, processNotice = null)
+            st.copy(
+                bubbles = list.filterNot(::isEmptyTurnStatusPlaceholder),
+                isResponding = false,
+                liveSummary = null,
+                processNotice = null,
+            )
         }
         assistantBufferId = null
         assistantBufferIndex = null
+        // The turn is over, so its anchor no longer applies to the next one.
+        turnSendBaseline = null
+        turnUserOrdinal = null
     }
+
+    /** The status box opened before any reasoning arrived. It is not a stored step. */
+    private fun isEmptyTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+        com.luckyagent.android.ui.screens.isTurnStatusPlaceholder(bubble)
 
     private fun mediaKey(media: ChatMedia): String {
         val descriptor = media.descriptor
@@ -2015,6 +2044,28 @@ class AppViewModel(
             })
         }
         resetAssistantStream()
+    }
+
+    /**
+     * A new turn gets its own status fold before the first reasoning or tool
+     * event, so its status never lands in the previous turn's fold. The id is the
+     * one [upsertReasoningBubble] uses for round 0, so real reasoning replaces
+     * this box instead of opening a second one.
+     */
+    private fun openTurnStatusBox() {
+        val id = "reasoning-$currentTurnId-0"
+        _ui.update { state ->
+            if (state.bubbles.any { it.id == id }) return@update state
+            state.copy(
+                bubbles = state.bubbles + ChatBubble(
+                    id = id,
+                    role = "reasoning",
+                    content = "",
+                    reasoningRound = 0,
+                    reasoningHasContent = false,
+                ),
+            )
+        }
     }
 
     private fun pushBubble(bubble: ChatBubble) {
@@ -2743,8 +2794,13 @@ class AppViewModel(
         val parked = parkedTurns.remove(target)
         if (parked != null && activeRuns[target]?.isNotEmpty() == true) {
             currentTurnId = parked.turnId
+            turnSendBaseline = parked.sendBaseline
+            turnUserOrdinal = parked.userOrdinal
             assistantBufferId = parked.bufferId
             assistantPending.append(parked.pending)
+        } else {
+            turnSendBaseline = null
+            turnUserOrdinal = null
         }
         _ui.update {
             it.copy(
@@ -3147,6 +3203,8 @@ class AppViewModel(
         val state = _ui.value
         parkedTurns[sessionId] = ParkedTurn(
             turnId = currentTurnId,
+            sendBaseline = turnSendBaseline,
+            userOrdinal = turnUserOrdinal,
             bufferId = assistantBufferId,
             pending = assistantPending.toString(),
             bubbles = state.bubbles,
@@ -3188,6 +3246,12 @@ class AppViewModel(
                 resetAssistantStream()
             }
             val stillOwned = ownsOutboundLease(sessionId) && activeRuns[sessionId]?.isNotEmpty() == true
+            if (keepLiveTurn && stillOwned) {
+                turnUserOrdinal = resolveTurnOrdinal(page) ?: turnUserOrdinal
+            } else {
+                turnSendBaseline = null
+                turnUserOrdinal = null
+            }
             val shownActivity = if (offline) {
                 activity
             } else if (activeRuns[sessionId]?.isNotEmpty() == true) {
@@ -3203,6 +3267,33 @@ class AppViewModel(
                 preserveLiveTurn = keepLiveTurn && stillOwned,
             )
         }
+    }
+
+    /**
+     * The stored user message that opened the current turn, or null while the
+     * runtime has not written it yet.
+     *
+     * [turnSendBaseline] is the message count when the turn was sent, so the row
+     * at that ordinal is the candidate. It must still be a user row carrying this
+     * turn's text: a stale count or an older identical message must not make the
+     * live turn look stored.
+     */
+    private fun resolveTurnOrdinal(page: MessagePage): Int? {
+        val baseline = turnSendBaseline ?: return null
+        val offset = baseline - page.startIndex
+        if (offset < 0 || offset >= page.messages.size) return null
+        val candidate = page.messages[offset]
+        if (!candidate.role.equals("user", ignoreCase = true)) return null
+        val live = com.luckyagent.android.ui.screens.liveTurnBubbles(
+            _ui.value.bubbles,
+            currentTurnId,
+            assistantBufferId,
+        ).firstOrNull { it.role.equals("user", ignoreCase = true) } ?: return null
+        val storedText = candidate.content?.trim().orEmpty()
+        val sameRequest = !candidate.clientMessageId.isNullOrBlank() &&
+            candidate.clientMessageId == live.outboundId
+        if (!sameRequest && storedText != live.content.trim()) return null
+        return baseline
     }
 
     private fun publishHistory(
@@ -3226,11 +3317,13 @@ class AppViewModel(
                 com.luckyagent.android.ui.screens.dedupeLiveTurn(
                     bubbles,
                     com.luckyagent.android.ui.screens.liveTurnBubbles(current.bubbles, currentTurnId, assistantBufferId),
+                    turnUserOrdinal,
                 )
             } else {
                 emptyList()
             }
-            val shown = bubbles + live + pendingBubbles
+            // A pending outbox bubble and the live user bubble are one message.
+            val shown = (bubbles + live + pendingBubbles).distinctBy { it.id }
             current.copy(
                 bubbles = shown,
                 outboundQueue = pendingItems,
@@ -3757,6 +3850,8 @@ class AppViewModel(
         val persisted = persistOutbound(item)
         if (!wasRunning) {
             currentTurnId = "turn-${System.currentTimeMillis()}"
+            turnSendBaseline = historyMessageCount.coerceAtLeast(historyStartIndex + historyMessages.size)
+            turnUserOrdinal = null
             toolStepIndex.clear()
             resetAssistantStream()
         }
@@ -3773,6 +3868,9 @@ class AppViewModel(
                     outboundStatus = item.status,
                 ),
             )
+            // The new turn gets its own status box now. Without it the status of
+            // this turn paints into the previous turn's fold.
+            if (!wasRunning) openTurnStatusBox()
         }
         _ui.update {
             it.copy(

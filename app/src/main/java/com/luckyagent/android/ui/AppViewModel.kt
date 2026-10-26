@@ -3248,7 +3248,7 @@ class AppViewModel(
                         apiKey,
                         sessionId,
                         history.title,
-                        history.updatedAt ?: remoteUpdatedAt(sessionId),
+                        history.updatedAt,
                         page,
                         stored = stored,
                     )
@@ -3290,7 +3290,7 @@ class AppViewModel(
                 apiKey,
                 sessionId,
                 history.title,
-                history.updatedAt ?: remoteUpdatedAt(sessionId),
+                history.updatedAt,
                 page,
             )
             if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
@@ -3396,7 +3396,7 @@ class AppViewModel(
                     syncFullHistory(apiBase, apiKey, sessionId)
                 }
                 is LatestMerge.Appended -> {
-                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), merged.page)
+                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, history.updatedAt, merged.page)
                     if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, merged.page, offline = false)
                 }
@@ -3648,7 +3648,7 @@ class AppViewModel(
                 sessionId = sessionId,
                 apiKey = apiKey,
                 title = title ?: known?.title,
-                updatedAt = updatedAt ?: known?.updatedAt,
+                updatedAt = updatedAt,
                 createdAt = known?.createdAt,
                 page = page,
                 opened = true,
@@ -3731,7 +3731,9 @@ class AppViewModel(
                     connection.apiKey,
                     sessionId,
                     null,
-                    remoteUpdatedAt(sessionId),
+                    // Expanding one row does not validate the rest of the
+                    // snapshot against a newer session-list timestamp.
+                    null,
                     page,
                     stored = stored,
                 )
@@ -3763,39 +3765,15 @@ class AppViewModel(
         return full.startsWith(preview.removeSuffix(marker))
     }
 
-    private fun remoteUpdatedAt(sessionId: String): String? =
-        _ui.value.sessions.firstOrNull { it.id == sessionId }?.updatedAt
-
     private fun historyLoadedLine(sessionId: String): String {
         val running = activeRuns[sessionId]?.isNotEmpty() == true
         return if (running) "正在回复" else "已读到这轮对话"
     }
 
-    private fun historyToBubbles(messages: List<ProviderMessage>, startIndex: Int = 0): List<ChatBubble> {
-        val bubbles = mutableListOf<ChatBubble>()
-        messages.forEachIndexed { index, message ->
-            message.toBubbles(startIndex + index).forEach { bubble ->
-                val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
-                    bubbles.indexOfLast { it.role == "tool" && it.stepId == message.toolCallId }
-                } else -1
-                if (callIndex >= 0) {
-                    val call = bubbles[callIndex]
-                    bubbles[callIndex] = call.copy(
-                        content = bubble.content,
-                        toolOutput = bubble.toolOutput,
-                        attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
-                        // The call bubble is built from the assistant tool_calls row.
-                        // Truncation lives on the following tool result.
-                        contentTruncated = bubble.contentTruncated,
-                        historyIndex = bubble.historyIndex,
-                    )
-                } else {
-                    bubbles += bubble
-                }
-            }
+    private fun historyToBubbles(messages: List<ProviderMessage>, startIndex: Int = 0): List<ChatBubble> =
+        projectHistoryBubbles(messages, startIndex) { message, index ->
+            message.toBubbles(index)
         }
-        return bubbles
-    }
 
     private fun ProviderMessage.toBubbles(idx: Int): List<ChatBubble> {
         val role = role ?: "assistant"

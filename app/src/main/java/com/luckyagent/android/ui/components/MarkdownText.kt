@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -158,12 +157,12 @@ fun MarkdownText(
 
 @Composable
 internal fun CodeText(source: String, modifier: Modifier = Modifier) {
-    SelectionContainer {
-        Text(source, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = CloverText2),
-            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)
-                .background(CloverBgSide, RoundedCornerShape(8.dp)).border(1.dp, CloverLine, RoundedCornerShape(8.dp))
-                .horizontalScroll(rememberScrollState()).padding(10.dp))
-    }
+    // SelectionContainer walks the whole subtree. One per code fence makes a
+    // long reply expensive to scroll; the message body stays selectable.
+    Text(source, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = CloverText2),
+        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)
+            .background(CloverBgSide, RoundedCornerShape(8.dp)).border(1.dp, CloverLine, RoundedCornerShape(8.dp))
+            .horizontalScroll(rememberScrollState()).padding(10.dp))
 }
 
 @Composable

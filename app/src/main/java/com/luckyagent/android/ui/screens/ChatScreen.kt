@@ -145,6 +145,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
@@ -1219,7 +1221,9 @@ private fun ChatConversation(
                 }
         }
         LaunchedEffect(state.settings.sessionId) {
+            @OptIn(FlowPreview::class)
             snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+                .debounce(400)
                 .collect { (index, offset) ->
                     if (restoredSession == state.settings.sessionId) {
                         vm.saveScrollAnchor(state.settings.sessionId, index, offset)

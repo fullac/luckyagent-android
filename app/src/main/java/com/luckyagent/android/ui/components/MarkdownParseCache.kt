@@ -21,7 +21,7 @@ internal data class ParsedMarkdown(
  * assistant reply should not be retained twice just to look itself up.
  */
 internal object MarkdownParseCache {
-    const val MAX_ENTRIES = 64
+    const val MAX_ENTRIES = 256
 
     private data class Key(
         val hash: Int,

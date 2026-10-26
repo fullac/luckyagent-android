@@ -151,6 +151,7 @@ import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -197,7 +198,6 @@ import com.luckyagent.android.data.api.ContextBucketUsage
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.ContextSection
 import com.luckyagent.android.data.api.TokenUsage
-import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppViewModel
@@ -211,7 +211,6 @@ import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
-import com.luckyagent.android.ui.components.socketStateLabel
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -1183,13 +1182,19 @@ private fun ChatConversation(
                 },
             )
         }
+        if (!hiddenSessionCard(state.hiddenSessionCards, state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)) {
         SessionNavigationCard(
             sessionId = state.settings.sessionId,
             tasks = state.tasks,
             background = state.backgroundTasks,
+            hiddenCards = state.hiddenSessionCards,
             tasksError = state.tasksError,
             backgroundError = state.backgroundError,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            onHideCard = { kind, id -> vm.hideSessionCard(state.settings.sessionId, kind, id) },
+            onHidePanel = {
+                vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)
+            },
             onOpenTask = { taskId ->
                 if (taskId != null) vm.selectTask(taskId)
                 vm.navigate(AppDestination.Tasks)
@@ -1201,6 +1206,7 @@ private fun ChatConversation(
             onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
             onOpenMemory = { vm.navigate(AppDestination.Memory) },
         )
+        }
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
@@ -1579,9 +1585,12 @@ private fun SessionNavigationCard(
     sessionId: String,
     tasks: List<TaskSummary>,
     background: List<AutonomyTaskSummary>,
+    hiddenCards: Set<String> = emptySet(),
     tasksError: String? = null,
     backgroundError: String? = null,
     modifier: Modifier = Modifier,
+    onHideCard: (SessionCardKind, String) -> Unit = { _, _ -> },
+    onHidePanel: () -> Unit = {},
     onOpenTask: (String?) -> Unit,
     onOpenBackground: (String?) -> Unit,
     onOpenTrace: () -> Unit,
@@ -1601,8 +1610,34 @@ private fun SessionNavigationCard(
         backgroundError != null -> "后台列表读取失败"
         else -> null
     }
+    var confirmHidePanel by remember { mutableStateOf(false) }
+    if (confirmHidePanel) {
+        SessionCardHideDialog(
+            name = "这张卡片",
+            onDismiss = { confirmHidePanel = false },
+            onConfirm = {
+                confirmHidePanel = false
+                onHidePanel()
+            },
+        )
+    }
     CloverCard(modifier = modifier) {
-        Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "当前会话",
+                style = MaterialTheme.typography.labelMedium,
+                color = CloverText3,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { confirmHidePanel = true }, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    contentDescription = "删除当前会话卡片",
+                    modifier = Modifier.size(16.dp),
+                    tint = CloverText3,
+                )
+            }
+        }
         when {
             featured != null -> Text(
                 featured.description.ifBlank { "正在处理的任务" },
@@ -1634,29 +1669,113 @@ private fun SessionNavigationCard(
                 style = MaterialTheme.typography.labelMedium,
             )
         }
+        var pendingHide by remember { mutableStateOf<Pair<SessionCardKind, String>?>(null) }
+        pendingHide?.let { (kind, id) ->
+            SessionCardHideDialog(
+                kind = kind,
+                onDismiss = { pendingHide = null },
+                onConfirm = {
+                    pendingHide = null
+                    onHideCard(kind, id)
+                },
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { onOpenTask(featured?.id) }) {
-                Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("任务")
-            }
-            TextButton(onClick = { onOpenBackground(featuredBoard?.id) }) {
-                Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("后台")
-            }
-            TextButton(onClick = onOpenTrace) {
-                Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("轨迹")
-            }
-            TextButton(onClick = onOpenMemory) {
-                Icon(Icons.Outlined.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("记忆")
+            SessionCardLink(
+                label = "任务",
+                icon = Icons.AutoMirrored.Outlined.Assignment,
+                hidden = featured?.id?.let { hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Task, it) } == true,
+                onOpen = { onOpenTask(featured?.id) },
+                onHide = featured?.id?.let { id -> { pendingHide = SessionCardKind.Task to id } },
+            )
+            SessionCardLink(
+                label = "后台",
+                icon = Icons.Outlined.Autorenew,
+                hidden = featuredBoard?.id?.let { hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Background, it) } == true,
+                onOpen = { onOpenBackground(featuredBoard?.id) },
+                onHide = featuredBoard?.id?.let { id -> { pendingHide = SessionCardKind.Background to id } },
+            )
+            SessionCardLink(
+                label = "轨迹",
+                icon = Icons.Outlined.Timeline,
+                hidden = hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Trace, "page"),
+                onOpen = onOpenTrace,
+                onHide = { pendingHide = SessionCardKind.Trace to "page" },
+            )
+            SessionCardLink(
+                label = "记忆",
+                icon = Icons.Outlined.AccountTree,
+                hidden = hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Memory, "page"),
+                onOpen = onOpenMemory,
+                onHide = { pendingHide = SessionCardKind.Memory to "page" },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionCardLink(
+    label: String,
+    icon: ImageVector,
+    hidden: Boolean,
+    onOpen: () -> Unit,
+    onHide: (() -> Unit)?,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TextButton(
+            onClick = onOpen,
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(label)
+        }
+        if (!hidden && onHide != null) {
+            IconButton(onClick = onHide, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    contentDescription = "删除$label",
+                    modifier = Modifier.size(15.dp),
+                    tint = CloverText3,
+                )
             }
         }
     }
+}
+
+@Composable
+private fun SessionCardHideDialog(
+    kind: SessionCardKind,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val name = when (kind) {
+        SessionCardKind.Task -> "任务"
+        SessionCardKind.Background -> "后台"
+        SessionCardKind.Trace -> "轨迹"
+        SessionCardKind.Memory -> "记忆"
+        SessionCardKind.Panel -> "这张卡片"
+    }
+    SessionCardHideDialog(name = name, onDismiss = onDismiss, onConfirm = onConfirm)
+}
+
+@Composable
+private fun SessionCardHideDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从当前会话拿掉$name") },
+        text = { Text("只从这台手机的当前会话拿掉。电脑上的记录还在。") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("删除") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 private fun sessionProgressLabel(task: TaskSummary?, background: AutonomyTaskSummary?): String {
@@ -1699,23 +1818,11 @@ private fun ChatTopBar(
                     Icon(Icons.Outlined.Menu, contentDescription = "打开会话", tint = CloverText2)
                 }
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-                ModelSwitchButton(
-                    state = state,
-                    onClick = onOpenModel,
-                )
-                Text(
-                    socketStateLabel(
-                        state.socketState,
-                        responding = state.isResponding,
-                        addressMissing = state.settings.apiBase.isBlank(),
-                    ),
-                    modifier = Modifier.padding(start = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (connectionNeedsAction(state.socketState, state.settings.apiBase.isBlank())) CloverError else CloverText3,
-                    maxLines = 1,
-                )
-            }
+            ModelSwitchButton(
+                state = state,
+                onClick = onOpenModel,
+                modifier = Modifier.weight(1f),
+            )
             IconButton(onClick = onNewSession) {
                 Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = CloverText2)
             }
@@ -3519,13 +3626,14 @@ private fun contextSectionLabel(label: String): String = when (label) {
 private fun ModelSwitchButton(
     state: AppUiState,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val activeChat = state.activeModels["chat"]
         ?: state.models.firstOrNull { it.kind.equals("chat", ignoreCase = true) && it.current }
     val label = activeChat?.displayName?.takeIf { it.isNotBlank() } ?: activeChat?.id ?: "模型"
     val switching = state.modelSwitchingKey?.startsWith("chat|") == true
     Row(
-        modifier = Modifier
+        modifier = modifier
             .widthIn(max = 180.dp)
             .heightIn(min = 48.dp)
             .clickable(enabled = !switching, role = Role.Button, onClick = onClick)

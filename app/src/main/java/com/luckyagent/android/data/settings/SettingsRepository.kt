@@ -220,6 +220,26 @@ class SettingsRepository(context: Context) {
         }
     }
 
+    /**
+     * Cards hidden from the current session only. The computer still has the
+     * task, background item, trace, and memory.
+     */
+    fun hiddenSessionCards(): Set<String> = synchronized(prefs) {
+        prefs.getStringSet(KEY_HIDDEN_SESSION_CARDS, emptySet()).orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    fun hideSessionCard(key: String) {
+        val cardKey = key.trim()
+        if (cardKey.isEmpty()) return
+        synchronized(prefs) {
+            val next = hiddenSessionCards() + cardKey
+            prefs.edit().putStringSet(KEY_HIDDEN_SESSION_CARDS, next).apply()
+        }
+    }
+
     /** Last visible chat position, keyed by session so switching chats keeps context. */
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
         if (sessionId.isBlank()) return@synchronized null
@@ -287,6 +307,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_STANDALONE_MODEL = "standalone_model"
         private const val KEY_STANDALONE_SESSION = "standalone_session_id"
         private const val KEY_DISMISSED_WORK_CARDS = "dismissed_work_cards"
+        private const val KEY_HIDDEN_SESSION_CARDS = "hidden_session_cards"
     }
 }
 

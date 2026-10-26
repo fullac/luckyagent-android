@@ -19,10 +19,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,8 +76,10 @@ import java.util.Locale
 @Composable
 fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
     val query = state.backgroundQuery.trim().lowercase()
-    val tasks = remember(state.backgroundTasks, state.backgroundFilter, state.backgroundQuery) {
+    val sessionId = state.settings.sessionId
+    val tasks = remember(state.backgroundTasks, state.backgroundFilter, state.backgroundQuery, state.hiddenSessionCards, sessionId) {
         state.backgroundTasks.filter { task ->
+            if (hiddenSessionCard(state.hiddenSessionCards, sessionId, SessionCardKind.Background, task.id)) return@filter false
             val matchesFilter = when (state.backgroundFilter) {
                 BackgroundFilter.All -> true
                 BackgroundFilter.Ready -> task.state.equals("ready", ignoreCase = true)
@@ -249,6 +253,7 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
                         task,
                         onClick = { vm.selectBackgroundTask(task.id) },
                         onOpenSession = task.executionSession()?.let { { vm.openBackgroundSession(it) } },
+                        onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Background, task.id) },
                     )
                 }
             }
@@ -363,12 +368,33 @@ private fun BackgroundTaskCard(
     task: AutonomyTaskSummary,
     onClick: () -> Unit,
     onOpenSession: (() -> Unit)? = null,
+    onHide: (() -> Unit)? = null,
 ) {
+    var confirmHide by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "后台",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     CloverCard(onClick = onClick) {
         CardTitleRow(
             title = task.title.ifBlank { task.id },
             subtitle = task.id.takeIf { task.title.isNotBlank() },
-            trailing = { StatusChip(task.state.ifBlank { "unknown" }) },
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onHide != null) {
+                        IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除后台", modifier = Modifier.size(16.dp), tint = CloverText3)
+                        }
+                    }
+                    StatusChip(task.state.ifBlank { "unknown" })
+                }
+            },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(task.priority.ifBlank { "normal" })

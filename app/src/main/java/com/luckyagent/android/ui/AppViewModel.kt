@@ -70,7 +70,9 @@ import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.executionSession
 import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.ui.screens.SessionCardKind
 import com.luckyagent.android.ui.screens.dismissedWorkCardIds
+import com.luckyagent.android.ui.screens.sessionCardKey
 import com.luckyagent.android.ui.screens.keepFocusedWorkCard
 import com.luckyagent.android.ui.screens.visibleWorkCard
 import com.luckyagent.android.data.api.toTaskNode
@@ -320,6 +322,8 @@ data class AppUiState(
     val focusedWorkCardId: String? = null,
     val focusedWorkCardBackground: Boolean = false,
     val dismissedWorkCardIds: Set<String> = emptySet(),
+    /** Session cards hidden on this phone. The computer still has the records. */
+    val hiddenSessionCards: Set<String> = emptySet(),
     val backgroundLoading: Boolean = false,
     val backgroundError: String? = null,
     val backgroundFilter: BackgroundFilter = BackgroundFilter.All,
@@ -378,6 +382,7 @@ class AppViewModel(
         AppUiState(
             settings = container.settingsRepository.snapshot(),
             dismissedWorkCardIds = container.settingsRepository.dismissedWorkCardIds(),
+            hiddenSessionCards = container.settingsRepository.hiddenSessionCards(),
         ),
     )
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
@@ -2369,6 +2374,14 @@ class AppViewModel(
                 focusedWorkCardBackground = if (it.focusedWorkCardId == id) false else it.focusedWorkCardBackground,
             )
         }
+    }
+
+    /** Hides one session card on this phone. The computer's record stays. */
+    fun hideSessionCard(sessionId: String, kind: SessionCardKind, id: String) {
+        val key = sessionCardKey(sessionId, kind, id)
+        if (key.isEmpty()) return
+        container.settingsRepository.hideSessionCard(key)
+        _ui.update { it.copy(hiddenSessionCards = it.hiddenSessionCards + key) }
     }
 
     fun openDestinationFromNotification(destination: String) {

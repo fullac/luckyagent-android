@@ -601,6 +601,7 @@ data class ReceivedMemoryTrace(val trace: MemorySearchTrace, val receivedAt: Lon
 
 @Serializable
 data class ToolTraceRecord(
+    val id: String? = null,
     val name: String = "",
     val arguments: String? = null,
     val result: String? = null,

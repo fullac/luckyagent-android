@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.PlaylistRemove
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
@@ -27,7 +28,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,9 +61,12 @@ import com.luckyagent.android.ui.theme.CloverText3
 @Composable
 fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
     val trace = state.trajectory
-    val records = remember(trace, state.trajectoryFilter, state.trajectoryQuery) {
+    val records = remember(trace, state.trajectoryFilter, state.trajectoryQuery, state.hiddenSessionCards, state.settings.sessionId) {
         val q = state.trajectoryQuery.trim().lowercase()
-        (trace?.tools.orEmpty()).filter { record ->
+        val sessionId = state.settings.sessionId
+        (trace?.tools.orEmpty()).filterIndexed { index, record ->
+            val key = traceRecordKey(record, index, trace?.offset ?: 0)
+            if (hiddenSessionCard(state.hiddenSessionCards, sessionId, SessionCardKind.Trace, key)) return@filterIndexed false
             val okFilter = when (state.trajectoryFilter) {
                 TrajectoryFilter.All -> true
                 TrajectoryFilter.Success -> record.success
@@ -205,8 +212,18 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    itemsIndexed(records, key = { idx, r -> "${r.name}-$idx-${r.arguments.orEmpty().hashCode()}" }) { _, record ->
-                        TrajectoryEventCard(record)
+                    itemsIndexed(records, key = { idx, r -> traceRecordKey(r, idx, trace?.offset ?: 0) }) { index, record ->
+                        val hideKey = traceRecordKey(record, index, trace?.offset ?: 0)
+                        TrajectoryEventCard(
+                            record,
+                            onHide = {
+                                vm.hideSessionCard(
+                                    state.settings.sessionId,
+                                    SessionCardKind.Trace,
+                                    hideKey,
+                                )
+                            },
+                        )
                     }
                 }
             }
@@ -224,8 +241,28 @@ private fun SummaryStat(label: String, value: String, modifier: Modifier = Modif
     }
 }
 
+internal fun traceRecordKey(record: ToolTraceRecord, index: Int, offset: Int): String {
+    val id = record.id?.trim().orEmpty()
+    if (id.isNotEmpty()) return id
+    return "page-${offset + index}-${record.name}-${record.arguments.orEmpty().hashCode()}"
+}
+
 @Composable
-private fun TrajectoryEventCard(record: ToolTraceRecord) {
+private fun TrajectoryEventCard(
+    record: ToolTraceRecord,
+    onHide: (() -> Unit)? = null,
+) {
+    var confirmHide by remember { mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "轨迹",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     val ok = record.success
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -242,6 +279,11 @@ private fun TrajectoryEventCard(record: ToolTraceRecord) {
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            if (onHide != null) {
+                IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除轨迹", modifier = Modifier.size(16.dp), tint = CloverText3)
+                }
+            }
             StatusChip(if (ok) "success" else "failure")
             record.durationMs?.let {
                 Spacer(Modifier.width(6.dp))

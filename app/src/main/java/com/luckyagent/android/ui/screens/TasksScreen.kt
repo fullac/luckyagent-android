@@ -22,10 +22,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -87,8 +89,10 @@ import java.util.Locale
 @Composable
 fun TasksScreen(state: AppUiState, vm: AppViewModel) {
     val query = state.taskQuery.trim().lowercase()
-    val tasks = remember(state.tasks, state.taskFilter, state.taskQuery) {
+    val sessionId = state.settings.sessionId
+    val tasks = remember(state.tasks, state.taskFilter, state.taskQuery, state.hiddenSessionCards, sessionId) {
         state.tasks.filter { task ->
+            if (hiddenSessionCard(state.hiddenSessionCards, sessionId, SessionCardKind.Task, task.id)) return@filter false
             val status = task.status.lowercase()
             val matchesFilter = when (state.taskFilter) {
                 TaskFilter.All -> true
@@ -226,6 +230,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                             task,
                             onClick = { vm.selectTask(task.id) },
                             onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                            onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Task, task.id) },
                         )
                     }
                 }
@@ -236,6 +241,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                             task,
                             onClick = { vm.selectTask(task.id) },
                             onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                            onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Task, task.id) },
                         )
                     }
                 }
@@ -246,6 +252,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                             task,
                             onClick = { vm.selectTask(task.id) },
                             onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                            onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Task, task.id) },
                         )
                     }
                 }
@@ -293,12 +300,33 @@ private fun TaskSummaryCard(
     task: TaskSummary,
     onClick: () -> Unit,
     onOpenSession: (() -> Unit)? = null,
+    onHide: (() -> Unit)? = null,
 ) {
+    var confirmHide by remember { mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "任务",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     CloverCard(onClick = onClick) {
         CardTitleRow(
             title = task.description,
             subtitle = task.id,
-            trailing = { StatusChip(friendlyTaskStatus(task.status)) },
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onHide != null) {
+                        IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除任务", modifier = Modifier.size(16.dp), tint = CloverText3)
+                        }
+                    }
+                    StatusChip(friendlyTaskStatus(task.status))
+                }
+            },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(friendlyTaskMode(task.mode))
@@ -787,6 +815,21 @@ internal fun String.taskNeedsAttention(): Boolean = when (lowercase()) {
 internal fun String.taskIsActive(): Boolean = when (lowercase()) {
     "pending", "queued", "running", "in_progress", "in-progress" -> true
     else -> false
+}
+
+@Composable
+internal fun HideSessionCardDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从当前会话拿掉$name") },
+        text = { Text("只从这台手机的当前会话拿掉。电脑上的记录还在。") },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("删除") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 internal fun friendlyTaskStatus(status: String): String = statusChipLabel(status)

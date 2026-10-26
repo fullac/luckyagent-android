@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
@@ -502,8 +503,14 @@ private fun LazyListScope.memoryRecallItems(state: AppUiState, vm: AppViewModel)
             )
         }
     }
-    itemsIndexed(state.memoryEntries, key = { index, entry -> entry.id?.let { "memory-$it" } ?: "memory-index-$index" }) { _, entry ->
-        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { MemoryEntryCard(entry) }
+    itemsIndexed(state.memoryEntries, key = { index, entry -> entry.id?.let { "memory-$it" } ?: "memory-index-$index" }) { index, entry ->
+        val key = memoryCardKey(entry, index)
+        if (hiddenSessionCard(state.hiddenSessionCards, state.settings.sessionId, SessionCardKind.Memory, key)) return@itemsIndexed
+        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            MemoryEntryCard(entry) {
+                vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Memory, key)
+            }
+        }
     }
 }
 
@@ -519,11 +526,33 @@ private fun relativeTime(time: Long): String { val seconds = ((System.currentTim
 
 @Composable private fun StatPill(label: String, value: String) { Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) { Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3); Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) } }
 
+internal fun memoryCardKey(entry: MemoryEntry, index: Int): String {
+    val id = entry.id?.trim().orEmpty()
+    if (id.isNotEmpty()) return id
+    return "index-$index-${entry.content.orEmpty().hashCode()}"
+}
+
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun MemoryEntryCard(entry: MemoryEntry) {
+@Composable private fun MemoryEntryCard(entry: MemoryEntry, onHide: (() -> Unit)? = null) {
+    var confirmHide by remember { mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "记忆",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(entry.category ?: "memory", style = MaterialTheme.typography.labelLarge, color = CloverAccent, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (onHide != null) {
+                IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除记忆", modifier = Modifier.size(16.dp), tint = CloverText3)
+                }
+            }
             entry.tier?.let { MetaChip(it) }
             entry.importance?.let { Spacer(Modifier.width(6.dp)); MetaChip("imp ${"%.1f".format(it)}") }
         }

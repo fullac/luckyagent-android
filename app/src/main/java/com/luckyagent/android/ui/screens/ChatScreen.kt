@@ -59,6 +59,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -463,6 +464,33 @@ internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<I
 }
 
 /** Follow the newest row when the viewport was already on it, even if only its content changed. */
+/**
+ * Whether a row that was live should stay live after the list settles.
+ *
+ * A row absent from [visibleKeys] has been composed by prefetch but is not on
+ * screen, so its WebView should come down. An empty set means layout has not
+ * run yet; tearing the surface down then would flash a placeholder on open.
+ */
+internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean): Boolean = when {
+    visibleKeys.isEmpty() -> wasLive
+    key in visibleKeys -> true
+    else -> false
+}
+
+/**
+ * Keeps a heavy surface up while its row is on screen, and takes it down once
+ * the row has settled off screen. A fling does not mount or destroy anything:
+ * the decision waits for [LazyListState.isScrollInProgress] to clear.
+ */
+@Composable
+private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
+    var live by remember(key) { mutableStateOf(true) }
+    if (!listState.isScrollInProgress) {
+        live = surfaceStaysLive(listState.layoutInfo.visibleItemsInfo.map { it.key }, key, live)
+    }
+    return live
+}
+
 internal fun shouldFollowLatest(atBottom: Boolean, stuckToLastAutoScroll: Boolean): Boolean =
     atBottom || stuckToLastAutoScroll
 
@@ -1222,11 +1250,17 @@ private fun ChatConversation(
         }
         LaunchedEffect(state.settings.sessionId) {
             @OptIn(FlowPreview::class)
-            snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            snapshotFlow { listState.isScrollInProgress }
                 .debounce(400)
-                .collect { (index, offset) ->
-                    if (restoredSession == state.settings.sessionId) {
-                        vm.saveScrollAnchor(state.settings.sessionId, index, offset)
+                .collect { scrolling ->
+                    // Writing the anchor on every pixel used to wake the VM during
+                    // a fling. One write after the finger stops is enough to restore.
+                    if (!scrolling && restoredSession == state.settings.sessionId) {
+                        vm.saveScrollAnchor(
+                            state.settings.sessionId,
+                            listState.firstVisibleItemIndex,
+                            listState.firstVisibleItemScrollOffset,
+                        )
                     }
                 }
         }
@@ -1289,6 +1323,7 @@ private fun ChatConversation(
                                 bubbleOpacity = state.settings.bubbleOpacity,
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
+                                surfaceActive = bubbleSurfaceActive(listState, item.key),
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
                                 onQuote = { vm.quoteMessage(it) },
                                 onCopy = { bubble ->
@@ -1801,6 +1836,7 @@ private fun BubbleRow(
     bubbleOpacity: Int,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
+    surfaceActive: Boolean = true,
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
@@ -1826,7 +1862,12 @@ private fun BubbleRow(
             bubble.role.equals("search", ignoreCase = true) -> {
                 Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Text("搜索结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                    MarkdownText(markdown = bubble.content, imageHeaders = imageHeaders, imageBaseUrl = imageBaseUrl)
+                    MarkdownText(
+                        markdown = bubble.content,
+                        imageHeaders = imageHeaders,
+                        imageBaseUrl = imageBaseUrl,
+                        active = surfaceActive,
+                    )
                 }
             }
             isSystem -> {
@@ -1880,6 +1921,7 @@ private fun BubbleRow(
                                     imageHeaders = imageHeaders,
                                     imageBaseUrl = imageBaseUrl,
                                     streaming = bubble.streaming,
+                                    active = surfaceActive,
                                 )
                             }
                             if (bubble.contentTruncated) {

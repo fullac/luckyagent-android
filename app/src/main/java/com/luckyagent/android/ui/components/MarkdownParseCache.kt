@@ -10,7 +10,21 @@ internal data class ParsedMarkdown(
     val blocks: List<MdBlock>,
     val htmlNodes: List<List<HtmlNode>>,
     val richNodes: Map<String, List<HtmlNode>>,
-)
+) {
+    /** WebView / native drawing blocks. Plain text replies stay false. */
+    val needsLiveSurface: Boolean = blocks.any(::blockNeedsLiveSurface)
+}
+
+/**
+ * Blocks that keep a WebView or a native drawing surface alive.
+ * The chat list pauses those surfaces once the row leaves the window.
+ */
+internal fun blockNeedsLiveSurface(block: MdBlock): Boolean = when (block) {
+    is MdBlock.Mermaid -> true
+    is MdBlock.Html -> block.showPreview || requiresHtmlPage(block.source) || staticSvgDocument(block.source) != null
+    is MdBlock.Math -> true
+    else -> false
+}
 
 /**
  * Keeps the expensive, pure Markdown/CommonMark projection off the Compose

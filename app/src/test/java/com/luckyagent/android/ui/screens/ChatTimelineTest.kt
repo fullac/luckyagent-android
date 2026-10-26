@@ -492,4 +492,25 @@ class ChatTimelineTest {
         assertEquals(null, outerProcessLabel("reading the file", "已取消", isResponding = false, isLatestProcess = false))
         assertEquals("reading the file", outerProcessLabel("reading the file", "已取消", isResponding = true, isLatestProcess = true))
     }
+
+    @Test
+    fun surfaceStaysLiveForTheRowsOnScreen() {
+        val visible = listOf<Any>("a", "b", "c")
+
+        assertTrue(surfaceStaysLive(visible, "b", wasLive = true))
+        assertTrue(surfaceStaysLive(visible, "b", wasLive = false))
+    }
+
+    @Test
+    fun surfaceComesDownOnceARowSettlesOffScreen() {
+        val visible = listOf<Any>("a", "b", "c")
+
+        assertFalse(surfaceStaysLive(visible, "z", wasLive = true))
+    }
+
+    @Test
+    fun surfaceWaitsForTheFirstLayout() {
+        assertTrue(surfaceStaysLive(emptyList(), "a", wasLive = true))
+        assertFalse(surfaceStaysLive(emptyList(), "a", wasLive = false))
+    }
 }
